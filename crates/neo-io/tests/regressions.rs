@@ -7,7 +7,7 @@ use neo_io::osc_read::read_osm_change;
 use neo_io::pbf_write::{PbfWriteOptions, write_pbf_file};
 use neo_io::xml::{XmlReadOptions, XmlWriteMode, read_osm_xml, write_osm_xml};
 use neo_io::{collect_changeset, collect_changeset_selected, stamp_osmchange_changeset, write_changeset};
-use neo_osm::{ChangeState, Node, Tags, Way};
+use neo_osm::{ChangeState, Node, Relation, RelationMember, Tags, Way};
 use neo_store::{DataSet, MissingPolicy};
 
 fn node(id: i64, lat: f64, lon: f64) -> Node {
@@ -136,6 +136,49 @@ fn osc_decodes_entities_and_orders_delete_by_dependency() {
     let node_pos = text.find("<node").expect("node delete");
     assert!(way_pos < node_pos, "delete must be relation→way→node:\n{text}");
     assert!(text.contains("if-unused=\"true\""));
+}
+
+#[test]
+fn nested_relation_delete_emits_parent_before_child() {
+    // 父 relation 的 ID 比子 relation 大：只按 (kind, id) 排序会先输出子 relation，
+    // 服务端因为"子仍被父引用"而 412（配合 if-unused 则变成静默不删）。
+    let mut data = DataSet::new();
+    let role = data.intern("");
+    data.push_relation(
+        Relation {
+            id: ObjectId(20),
+            members: Vec::new().into(),
+            tags: Tags::new(),
+            meta: Meta::new_local(),
+        },
+        MissingPolicy::Error,
+    )
+    .unwrap();
+    data.push_relation(
+        Relation {
+            id: ObjectId(30),
+            members: vec![RelationMember {
+                kind: ObjectKind::Relation,
+                id: ObjectId(20),
+                role,
+            }]
+            .into(),
+            tags: Tags::new(),
+            meta: Meta::new_local(),
+        },
+        MissingPolicy::Error,
+    )
+    .unwrap();
+    data.set_change_state_visible(ObjectKind::Relation, ObjectId(20), ChangeState::Deleted, false);
+    data.set_change_state_visible(ObjectKind::Relation, ObjectId(30), ChangeState::Deleted, false);
+
+    let set = collect_changeset(&data).unwrap();
+    let mut out = Vec::new();
+    write_changeset(&set, &data, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let parent = text.find("<relation id=\"30\"").expect("parent delete");
+    let child = text.find("<relation id=\"20\"").expect("child delete");
+    assert!(parent < child, "父 relation 必须先于子 relation 删除:\n{text}");
 }
 
 #[test]

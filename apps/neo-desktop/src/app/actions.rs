@@ -20,6 +20,16 @@ use std::path::PathBuf;
 
 use super::{NeoApp, NotesRequest, autosave_dir, data_dir, kind_from_name, load_dataset_file};
 
+/// 把 ID 列表压成一行提示文本（最多列 5 个，其余省略）。
+fn id_list(ids: &[ObjectId]) -> String {
+    const MAX: usize = 5;
+    let mut shown: Vec<String> = ids.iter().take(MAX).map(|id| id.0.to_string()).collect();
+    if ids.len() > MAX {
+        shown.push("…".to_owned());
+    }
+    shown.join(", ")
+}
+
 impl NeoApp {
     pub(super) fn apply_actions(&mut self, mut actions: UiActions) -> Result<()> {
         if self.imagery.enabled {
@@ -990,38 +1000,58 @@ impl NeoApp {
             if targets.is_empty() {
                 self.status = t("app.error.no_selection").into();
             } else {
-                let total = targets.len();
-                let mut ok = 0usize;
-                let mut last_err: Option<String> = None;
+                let mut wanted: Vec<(ObjectKind, ObjectId)> = Vec::new();
                 for item in &targets {
                     let Some(kind) = kind_from_name(item.kind) else {
                         continue;
                     };
                     let id = ObjectId(item.id);
-                    match self
-                        .editor
-                        .execute(Box::new(neo_editor::DeleteObject::new(kind, id)))
-                    {
-                        Ok(()) => {
-                            ok += 1;
-                            self.editor.selection_mut().remove(kind, id);
-                        }
-                        Err(err) => last_err = Some(err.to_string()),
+                    if !wanted.contains(&(kind, id)) {
+                        wanted.push((kind, id));
                     }
                 }
-                self.status = match last_err {
-                    Some(err) => tf(
-                        "app.status.deleted_err",
-                        &[
-                            ("ok", &ok.to_string()),
-                            ("total", &total.to_string()),
-                            ("err", &err),
-                        ],
-                    ),
-                    None => tf("app.status.deleted", &[("ok", &ok.to_string())]),
-                };
-                self.resync_tags();
-                self.scene = None;
+                // 级联删除（JOSM 语义）：节点被 way 引用时不再直接拒绝，而是把引用它的
+                // way 一并修正；若 way 会因此不足 2 个节点，则整条删除 —— 这种破坏性
+                // 结果需要用户再按一次删除确认，避免误删一条道路。
+                match neo_editor::plan_delete(&mut self.editor, &wanted) {
+                    Ok(plan) => {
+                        let needs_confirm = !plan.reaped_ways.is_empty()
+                            && self.pending_delete.as_deref() != Some(wanted.as_slice());
+                        if needs_confirm {
+                            self.status = tf(
+                                "app.status.delete_confirm_ways",
+                                &[
+                                    ("n", &plan.reaped_ways.len().to_string()),
+                                    ("ways", &id_list(&plan.reaped_ways)),
+                                ],
+                            );
+                            self.pending_delete = Some(wanted);
+                        } else {
+                            self.pending_delete = None;
+                            let reaped = plan.reaped_ways.len();
+                            let total = wanted.len();
+                            match self.editor.execute_batch(plan.commands) {
+                                Ok(()) => {
+                                    for (kind, id) in &wanted {
+                                        self.editor.selection_mut().remove(*kind, *id);
+                                    }
+                                    self.status = if reaped == 0 {
+                                        tf("app.status.deleted", &[("ok", &total.to_string())])
+                                    } else {
+                                        tf(
+                                            "app.status.deleted_cascade",
+                                            &[("ok", &total.to_string()), ("ways", &reaped.to_string())],
+                                        )
+                                    };
+                                    self.resync_tags();
+                                    self.scene = None;
+                                }
+                                Err(err) => self.status = err.to_string(),
+                            }
+                        }
+                    }
+                    Err(err) => self.status = err.to_string(),
+                }
             }
         }
         if let Some(tags) = actions.apply_tags {
@@ -1059,25 +1089,49 @@ impl NeoApp {
             && let Some((ObjectKind::Way, way)) = self.selection_target()
             && let Some(handle) = self.editor.data().way_handle(way)
         {
+            // 反查表必须是新的：下面要判断哪些节点被 relation / 其它 way 引用。
+            self.editor.refresh_referrers();
             let nodes = self.editor.data().way_node_ids(handle);
-            let points: Vec<WorldPoint> = nodes
-                .iter()
-                .filter_map(|id| {
-                    self.editor
-                        .data()
-                        .node_handle(*id)
-                        .and_then(|handle| self.editor.data().nodes.position(handle))
-                        .map(WorldPoint::from_latlon)
-                })
-                .collect();
-            if points.len() > 2 {
+            let mut points: Vec<WorldPoint> = Vec::with_capacity(nodes.len());
+            for id in &nodes {
+                let Some(node_handle) = self.editor.data().node_handle(*id) else {
+                    break;
+                };
+                let Some(pos) = self.editor.data().nodes.position(node_handle) else {
+                    break;
+                };
+                points.push(WorldPoint::from_latlon(pos));
+            }
+            // 位置缺失时 points 会比 nodes 短，RDP 下标就会与 nodes 错位 —— 宁可不简化。
+            if points.len() == nodes.len() && points.len() > 2 {
                 let tolerance = self.camera.meters_per_px() * self.settings.simplify_px.max(0.5);
                 let keep = neo_geo::geometry::simplify_rdp_indices(&points, tolerance);
-                if keep.len() >= 2 && keep.len() < nodes.len() {
-                    let simplified: Vec<ObjectId> = keep
-                        .iter()
-                        .filter_map(|index| nodes.get(*index).copied())
-                        .collect();
+                // 简化不得删掉"有语义"的节点：带 tag 的、被 relation 引用的、与其它
+                // way 共享的 —— 否则交叉口/公交站/门会静默消失，几何也会被扯断。
+                let mut keep_set: std::collections::BTreeSet<usize> = keep.iter().copied().collect();
+                for (index, id) in nodes.iter().enumerate() {
+                    if keep_set.contains(&index) {
+                        continue;
+                    }
+                    let Some(node_handle) = self.editor.data().node_handle(*id) else {
+                        continue;
+                    };
+                    let tagged = self
+                        .editor
+                        .data()
+                        .node_view(node_handle)
+                        .is_some_and(|view| !view.tag_pairs.is_empty());
+                    let in_relation = !self.editor.referrers().relations_of_node(node_handle).is_empty();
+                    let shared = self.editor.referrers().ways_of_node(node_handle).len() > 1;
+                    if tagged || in_relation || shared {
+                        keep_set.insert(index);
+                    }
+                }
+                let simplified: Vec<ObjectId> = keep_set
+                    .iter()
+                    .filter_map(|index| nodes.get(*index).copied())
+                    .collect();
+                if simplified.len() >= 2 && simplified.len() < nodes.len() {
                     match self
                         .editor
                         .execute(Box::new(neo_editor::SetWayNodes::new(way, simplified)))

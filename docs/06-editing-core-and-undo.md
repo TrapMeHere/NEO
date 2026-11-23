@@ -129,6 +129,31 @@ UI 交接形态：`ConflictQueue` 由 `Editor` 拥有，UI 每帧只 `peek`，�
 
 **409 的翻译发生在应用层**：`neo-api::ApiError::Conflict(ConflictReport)` 只含 id/version/stage 与服务端文本，不含本地对象像；把 `ConflictReport` + ChangeSet base 像翻译成 `Conflict` 的适配器放在 `apps/neo-desktop/src/sync_bridge.rs`（同时依赖 api 与 editor 的唯一位置）。这样 editor 不依赖 api、api 不依赖 editor，冲突模型只由 ID/版本/对象像构成。
 
+### 2.6.1 引用完整性：删除 / 合并 / 分割的级联语义
+
+OSM 服务端拒绝删除仍被引用的对象（HTTP 412 `Node … is still used by ways …`），但允许在
+**同一个 changeset 里先修改引用者、再删除**。JOSM/iD 删除顶点就是这么做。所以本地不能
+"被引用就报错"，必须把引用者一起改掉：
+
+| 操作 | 引用者处理 | 实现 |
+|---|---|---|
+| 删节点 | 从各 way 的节点序列中摘掉；剩余不足 2 点的 way 整条删除（UI 二次确认） | `neo_editor::plan_delete` |
+| 删节点 / way / relation | 从 relation 成员列表中剔除该成员 | 同上 |
+| 合并 way B→A | 引用 B 的 relation 成员就地换成 A（保留角色），重复成员去重 | `MergeWay::apply` |
+| 分割 way | 新 way 紧跟原 way 插入其所在的 relation（同一角色） | `SplitWay::apply` |
+| 批量粘贴 relation | 成员 relation 先于引用者创建 | `neo_editor::order_relations_by_dependency` |
+
+`plan_delete` 只**生成**命令，由 `execute_batch` 提交：引用者修正与删除共享一次事务和
+**一条** undo 记录。`DeleteObject::precheck` 仍保持严格（被引用就拒绝）作为最后一道安全网；
+journal 记录的是整批命令，replay 按同样顺序复现。
+
+配套约束：
+
+- way 的节点数下限 2 由规划器保证（不会产生 1 点 way）；上限 2000 由服务端在上传时校验。
+- relation 成员不允许成环：`SetRelationMembers::precheck` 沿成员链检测（服务端会 412）。
+- osmChange 的 `<delete>` 按 relation → way → node 排列，relation 内部再按**祖先深度降序**
+  （父先于子）；否则子 relation 会因仍被父引用而被服务端拒绝。
+
 ### 2.7 Journal：格式、replay、与 autosave 的分工
 
 

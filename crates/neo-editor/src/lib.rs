@@ -17,9 +17,11 @@ pub mod command;
 pub mod commands;
 pub mod commands_geom;
 pub mod conflict;
+pub mod delete_plan;
 pub mod editor;
 pub mod history;
 pub mod journal;
+pub mod order;
 pub mod selection;
 
 pub use command::{Command, CommandError, CommandKind};
@@ -29,10 +31,12 @@ pub use commands::{
 };
 pub use commands_geom::{MergeWay, ReverseWay, SplitWay, merged_nodes, reverse_direction_tags};
 pub use conflict::{ConflictResolution, MergeCase, ObjectImage, TagMerge, classify, merge_tags, resolve};
+pub use delete_plan::{DeletePlan, plan_delete};
 pub use editor::{DiffMapping, EditContext, Editor, MergeStats, RecoveryReport, world_of};
 pub use history::History;
 pub use journal::{
     FileJournal, Journal, JournalCommand, JournalFrame, JournalSink, MemoryJournal, ReplayPlan,
     committed_prefix, read_journal, read_journal_report, replay_plan,
 };
+pub use order::order_relations_by_dependency;
 pub use selection::Selection;

@@ -52,6 +52,7 @@ impl NeoApp {
             status: String::new(),
             last_scene_micros: 0,
             data_label,
+            pending_delete: None,
             drag: None,
             box_select: None,
             clipboard: Clipboard::default(),

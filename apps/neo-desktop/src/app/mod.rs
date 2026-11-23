@@ -388,6 +388,9 @@ pub struct NeoApp {
     status: String,
     last_scene_micros: u64,
     data_label: String,
+    /// 等待二次确认的级联删除：记录首次按下删除时的目标集合。
+    /// 非空表示"同一批目标已被提示过会连带删除 way"。
+    pending_delete: Option<Vec<(ObjectKind, ObjectId)>>,
     drag: Option<DragState>,
     /// 框选矩形（世界坐标起止）
     box_select: Option<(WorldPoint, WorldPoint)>,

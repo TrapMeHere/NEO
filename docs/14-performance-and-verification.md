@@ -254,7 +254,8 @@ OK: PBF roundtrip preserved object counts
 | A 绘制：点击建节点/way（吸附近似节点）、Enter 结束线 | ✅ 节点+2 / way+1 / 脏 3 / 撤销 4 |
 | Ctrl+Z×3 / Ctrl+Y×3 | ✅ 撤销 1 重做 3 ↔ 撤销 4 重做 0，消息与版本号正确 |
 | S 选择节点 → 右侧属性（id/lat/lon/version）+ Tags 编辑面板 | ✅ |
-| 删除被 way 引用的节点 | ✅ 正确拒绝："deleted 0/1: node … is still referenced by 1 ways" |
+| 删除被 way 引用的节点 | ✅ 级联删除：先把它从各 way 摘掉，2 点 way 会先提示再整条删除（`plan_delete`） |
+| 同时选中节点与其 way 删除 | ✅ 一批提交、一次撤销（修复前逐条 execute 且节点先检查 → 永远 "0/2"） |
 | 工具栏「示例数据」、滚轮缩放 | ✅ 重置为 v1；z15.49→15.82→15.49 |
 | 原生文件对话框 / Shift 多选 / 合并按钮 | ⚠️ 未覆盖（需人工或更精确的 GUI 自动化） |
 

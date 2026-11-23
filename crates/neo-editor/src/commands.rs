@@ -510,6 +510,32 @@ impl Command for SetRelationMembers {
     fn label(&self) -> &'static str {
         "修改关系成员"
     }
+    fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
+        // 成员必须存在；relation 成员还不能形成环（OSM 服务端会 412，本地先拦）。
+        for member in &self.members {
+            let exists = match member.kind {
+                ObjectKind::Node => data.node_handle(member.id).is_some(),
+                ObjectKind::Way => data.way_handle(member.id).is_some(),
+                ObjectKind::Relation => data.relation_handle(member.id).is_some(),
+                ObjectKind::Changeset => false,
+            };
+            if !exists {
+                return Err(CommandError::NotFound {
+                    kind: member.kind,
+                    id: member.id,
+                });
+            }
+            if member.kind == ObjectKind::Relation
+                && (member.id == self.relation || relation_reaches(data, member.id, self.relation))
+            {
+                return Err(CommandError::Invalid(format!(
+                    "relation {} would contain itself as a member (via relation {})",
+                    self.relation, member.id
+                )));
+            }
+        }
+        Ok(())
+    }
     fn apply(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError> {
         let old = ctx.relation_members(self.relation)?;
         let state = ctx.data.change_state(ObjectKind::Relation, self.relation);
@@ -758,4 +784,35 @@ pub fn from_journal(record: &JournalCommand) -> Option<Box<dyn Command>> {
         JournalCommand::ReverseWay { way } => Box::new(crate::commands_geom::ReverseWay::new(ObjectId(*way))),
     };
     Some(cmd)
+}
+
+/// 从 `start` 沿 relation 成员向下能否到达 `target`（用于成环检测）。
+///
+/// 带 visited 集合：即使数据集里已经存在环（历史数据/插件写入）也不会死循环。
+fn relation_reaches(data: &DataSet, start: ObjectId, target: ObjectId) -> bool {
+    let mut stack = vec![start];
+    let mut seen: std::collections::BTreeSet<ObjectId> = std::collections::BTreeSet::new();
+    while let Some(current) = stack.pop() {
+        if current == target {
+            return true;
+        }
+        if !seen.insert(current) {
+            continue;
+        }
+        let Some(handle) = data.relation_handle(current) else {
+            continue;
+        };
+        let Some(view) = data.relation_view(handle) else {
+            continue;
+        };
+        for member in view.members {
+            if member.target.kind != ObjectKind::Relation {
+                continue;
+            }
+            if let Some(id) = member.target.as_relation().and_then(|h| data.relations.id(h)) {
+                stack.push(id);
+            }
+        }
+    }
+    false
 }

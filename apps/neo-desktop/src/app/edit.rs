@@ -157,7 +157,28 @@ impl NeoApp {
             cmd.id = Some(new_id);
             commands.push(Box::new(cmd));
         }
-        for relation in &clip.relations {
+        // relation 之间可以有成员依赖：父 relation 引用同批新建的子 relation 时，
+        // 子必须先建，否则 AddRelation::precheck 找不到成员、整批回滚（粘贴直接失效）。
+        let relation_ids: Vec<ObjectId> = clip.relations.iter().map(|relation| relation.id).collect();
+        let relation_order = neo_editor::order_relations_by_dependency(&relation_ids, |id| {
+            clip.relations
+                .iter()
+                .find(|relation| relation.id == id)
+                .map(|relation| {
+                    let members: Vec<ObjectId> = relation
+                        .members
+                        .iter()
+                        .filter(|(kind, _, _)| *kind == ObjectKind::Relation)
+                        .map(|(_, member, _)| *member)
+                        .collect();
+                    members
+                })
+                .unwrap_or_default()
+        });
+        for relation_id in relation_order {
+            let Some(relation) = clip.relations.iter().find(|relation| relation.id == relation_id) else {
+                continue;
+            };
             let Some(new_id) = relation_map.get(&relation.id).copied() else {
                 continue;
             };

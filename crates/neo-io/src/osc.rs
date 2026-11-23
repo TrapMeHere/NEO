@@ -9,6 +9,7 @@
 //! 这里手写 XML 序列化而不是依赖 quick-xml 的 writer：输出量小、可控性强，且便于
 //! 逐字节 golden test；读取侧（XML 导入）用到 quick-xml。
 
+use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Write};
 
 use neo_core::{ObjectId, ObjectKind};
@@ -223,8 +224,7 @@ fn collect_changeset_filtered(
         .sort_by_key(|element| (kind_order(element.kind()), element.id().0));
     set.modify
         .sort_by_key(|element| (kind_order(element.kind()), element.id().0));
-    set.delete
-        .sort_by_key(|element| (delete_order(element.kind()), element.id().0));
+    sort_deletes(data, &mut set.delete);
     Ok(set)
 }
 
@@ -252,10 +252,8 @@ pub fn collect_changeset(data: &DataSet) -> Result<ChangeSet, neo_core::NeoError
         .sort_by_key(|element| (kind_order(element.kind()), element.id().0));
     set.modify
         .sort_by_key(|element| (kind_order(element.kind()), element.id().0));
-    // 删除必须按 relation → way → node 的依赖序；服务端按文档顺序执行，
-    // 先删 node 会因仍被 way 引用而 412 整包失败。
-    set.delete
-        .sort_by_key(|element| (delete_order(element.kind()), element.id().0));
+    // 删除必须按依赖序；服务端按文档顺序执行，先删仍被引用的对象会 412 整包失败。
+    sort_deletes(data, &mut set.delete);
     Ok(set)
 }
 
@@ -275,6 +273,71 @@ fn delete_order(kind: ObjectKind) -> u8 {
         ObjectKind::Node => 2,
         ObjectKind::Changeset => 3,
     }
+}
+
+/// 删除块的排序：先按种类（relation → way → node），relation 内部再按**祖先深度降序**。
+///
+/// 服务端按文档顺序执行 `<delete>`：若子 relation 先于父 relation 被删，服务端会因为它
+/// 仍被父 relation 引用而 412（配合 `if-unused` 则变成"静默不删"）。所以父必须先于子。
+/// 深度相同则按 ID，保证导出字节稳定。
+fn sort_deletes(data: &DataSet, elements: &mut [Element]) {
+    let deleted_relations: BTreeSet<ObjectId> = elements
+        .iter()
+        .filter(|element| element.kind() == ObjectKind::Relation)
+        .map(|element| element.id())
+        .collect();
+    let mut memo: HashMap<ObjectId, u32> = HashMap::new();
+    let mut ranks: HashMap<ObjectId, u32> = HashMap::new();
+    for id in &deleted_relations {
+        let mut visiting: BTreeSet<ObjectId> = BTreeSet::new();
+        let depth = relation_depth(data, *id, &deleted_relations, &mut memo, &mut visiting);
+        ranks.insert(*id, depth);
+    }
+    elements.sort_by_key(|element| {
+        let rank = if element.kind() == ObjectKind::Relation {
+            u32::MAX - ranks.get(&element.id()).copied().unwrap_or(0)
+        } else {
+            0
+        };
+        (delete_order(element.kind()), rank, element.id().0)
+    });
+}
+
+/// relation 在"被删集合"内的祖先深度：父 relation 的深度大于子 relation。
+///
+/// 遇到环返回 0（不阻塞导出，交给服务端报错），并靠 `visiting` 保证不死循环。
+fn relation_depth(
+    data: &DataSet,
+    id: ObjectId,
+    deleted: &BTreeSet<ObjectId>,
+    memo: &mut HashMap<ObjectId, u32>,
+    visiting: &mut BTreeSet<ObjectId>,
+) -> u32 {
+    if let Some(depth) = memo.get(&id) {
+        return *depth;
+    }
+    if !visiting.insert(id) {
+        return 0;
+    }
+    let mut depth = 0;
+    if let Some(handle) = data.relation_handle(id)
+        && let Some(view) = data.relation_view(handle)
+    {
+        for member in view.members {
+            if member.target.kind != ObjectKind::Relation {
+                continue;
+            }
+            let Some(child) = member.target.as_relation().and_then(|h| data.relations.id(h)) else {
+                continue;
+            };
+            if child != id && deleted.contains(&child) {
+                depth = depth.max(1 + relation_depth(data, child, deleted, memo, visiting));
+            }
+        }
+    }
+    visiting.remove(&id);
+    memo.insert(id, depth);
+    depth
 }
 
 fn element_of(

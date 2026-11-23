@@ -11,6 +11,7 @@ use neo_core::{ObjectId, ObjectKind};
 use neo_store::DataSet;
 
 use crate::command::{Command, CommandError, CommandKind};
+use crate::commands::RelationMemberSpec;
 use crate::editor::EditContext;
 use crate::journal::JournalCommand;
 
@@ -61,6 +62,8 @@ pub struct SplitWay {
     undo_old_nodes: Option<Vec<ObjectId>>,
     applied_new: Option<ObjectId>,
     undo_state: Option<neo_osm::ChangeState>,
+    /// 被追加了新 way 的 relation：`(relation, 旧成员列表, 旧 change state)`。
+    undo_relations: Vec<(ObjectId, Vec<RelationMemberSpec>, neo_osm::ChangeState)>,
 }
 
 impl SplitWay {
@@ -73,6 +76,7 @@ impl SplitWay {
             undo_old_nodes: None,
             applied_new: None,
             undo_state: None,
+            undo_relations: Vec::new(),
         }
     }
 }
@@ -114,12 +118,51 @@ impl Command for SplitWay {
             ctx.data
                 .set_change_state(ObjectKind::Way, self.way, neo_osm::ChangeState::Modified);
         }
+        // 引用原 way 的 relation：紧跟原 way 之后插入新 way（沿用同一角色）。
+        // 不这么做的话 relation 只覆盖分割后的前半段，route 会静默断裂、multipolygon 少一条边。
+        let way_handle = ctx.way_handle(self.way)?;
+        let relation_handles: Vec<_> = ctx.referrers.relations_of_way(way_handle).to_vec();
+        for handle in relation_handles {
+            let Some(relation_id) = ctx.data.relations.id(handle) else {
+                continue;
+            };
+            let old = ctx.relation_members(relation_id)?;
+            let mut updated: Vec<RelationMemberSpec> = Vec::with_capacity(old.len() + 1);
+            let mut changed = false;
+            for member in &old {
+                updated.push(member.clone());
+                if member.kind == ObjectKind::Way && member.id == self.way {
+                    updated.push(RelationMemberSpec {
+                        kind: ObjectKind::Way,
+                        id: new_id,
+                        role: member.role.clone(),
+                    });
+                    changed = true;
+                }
+            }
+            if !changed {
+                continue;
+            }
+            let relation_state = ctx.data.change_state(ObjectKind::Relation, relation_id);
+            ctx.set_relation_members(relation_id, &updated)?;
+            if relation_state == neo_osm::ChangeState::Unchanged {
+                ctx.data
+                    .set_change_state(ObjectKind::Relation, relation_id, neo_osm::ChangeState::Modified);
+            }
+            self.undo_relations.push((relation_id, old, relation_state));
+        }
         self.undo_old_nodes = Some(old);
         self.applied_new = Some(new_id);
         self.undo_state = Some(state);
         Ok(())
     }
     fn undo(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError> {
+        // 先恢复 relation 成员（它们引用着即将被移除的新 way），再撤销 way 本身。
+        for (relation_id, old, state) in std::mem::take(&mut self.undo_relations).into_iter().rev() {
+            ctx.set_relation_members(relation_id, &old)?;
+            ctx.data
+                .set_change_state(ObjectKind::Relation, relation_id, state);
+        }
         if let Some(new_id) = self.applied_new {
             // 保留 applied_new 供 redo 复用同一 ID。
             ctx.remove_way(new_id)?;
@@ -154,6 +197,8 @@ pub struct MergeWay {
     undo_a_tags: Option<Vec<(String, String)>>,
     undo_a_state: Option<neo_osm::ChangeState>,
     undo_b_state: Option<(neo_osm::ChangeState, bool)>,
+    /// 被迁移过成员的 relation：`(relation, 旧成员列表, 旧 change state)`。
+    undo_relations: Vec<(ObjectId, Vec<RelationMemberSpec>, neo_osm::ChangeState)>,
     merged: Option<Vec<ObjectId>>,
 }
 
@@ -167,6 +212,7 @@ impl MergeWay {
             undo_a_tags: None,
             undo_a_state: None,
             undo_b_state: None,
+            undo_relations: Vec::new(),
             merged: None,
         }
     }
@@ -207,7 +253,7 @@ impl Command for MergeWay {
     fn label(&self) -> &'static str {
         "合并 way"
     }
-    fn precheck(&self, data: &DataSet, referrers: &neo_store::Referrers) -> Result<(), CommandError> {
+    fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         if self.a == self.b {
             return Err(CommandError::Invalid("cannot merge a way with itself".into()));
         }
@@ -219,13 +265,7 @@ impl Command for MergeWay {
             kind: ObjectKind::Way,
             id: self.b,
         })?;
-        if !referrers.relations_of_way(b).is_empty() {
-            return Err(CommandError::Referenced {
-                kind: ObjectKind::Way,
-                id: self.b,
-                what: "relations".into(),
-            });
-        }
+        // 被 relation 引用不再拒绝：apply 会把成员 `b` 就地换成 `a`（JOSM 语义）。
         let an: Vec<ObjectId> = data
             .try_way_node_ids(a)
             .map_err(|_| CommandError::Invalid("way has stale node references".into()))?;
@@ -262,6 +302,48 @@ impl Command for MergeWay {
             ctx.data
                 .set_change_state(ObjectKind::Way, self.a, neo_osm::ChangeState::Modified);
         }
+        // 引用 b 的 relation：成员就地换成 a（保留角色与顺序），并去掉重复成员。
+        // 这样合并一条 route/multipolygon 的成员 way 不会再被拒绝，也不会留下悬空成员。
+        let b_handle = ctx.way_handle(self.b)?;
+        let relation_handles: Vec<_> = ctx.referrers.relations_of_way(b_handle).to_vec();
+        for handle in relation_handles {
+            let Some(relation_id) = ctx.data.relations.id(handle) else {
+                continue;
+            };
+            let old = ctx.relation_members(relation_id)?;
+            let mut updated: Vec<RelationMemberSpec> = Vec::with_capacity(old.len());
+            let mut changed = false;
+            for member in &old {
+                let next = if member.kind == ObjectKind::Way && member.id == self.b {
+                    changed = true;
+                    RelationMemberSpec {
+                        kind: ObjectKind::Way,
+                        id: self.a,
+                        role: member.role.clone(),
+                    }
+                } else {
+                    member.clone()
+                };
+                let duplicate = updated
+                    .iter()
+                    .any(|kept| kept.kind == next.kind && kept.id == next.id && kept.role == next.role);
+                if duplicate {
+                    changed = true;
+                    continue;
+                }
+                updated.push(next);
+            }
+            if !changed {
+                continue;
+            }
+            let relation_state = ctx.data.change_state(ObjectKind::Relation, relation_id);
+            ctx.set_relation_members(relation_id, &updated)?;
+            if relation_state == neo_osm::ChangeState::Unchanged {
+                ctx.data
+                    .set_change_state(ObjectKind::Relation, relation_id, neo_osm::ChangeState::Modified);
+            }
+            self.undo_relations.push((relation_id, old, relation_state));
+        }
         ctx.mark_deleted(ObjectKind::Way, self.b)?;
         self.undo_a_nodes = Some(an);
         self.undo_a_tags = Some(a_tags);
@@ -273,6 +355,11 @@ impl Command for MergeWay {
     fn undo(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError> {
         if let Some((state, visible)) = self.undo_b_state.take() {
             ctx.restore_deleted(ObjectKind::Way, self.b, state, visible);
+        }
+        for (relation_id, old, state) in std::mem::take(&mut self.undo_relations).into_iter().rev() {
+            ctx.set_relation_members(relation_id, &old)?;
+            ctx.data
+                .set_change_state(ObjectKind::Relation, relation_id, state);
         }
         if let Some(old) = self.undo_a_nodes.take() {
             ctx.set_way_nodes(self.a, &old)?;
