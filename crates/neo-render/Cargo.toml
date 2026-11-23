@@ -1,0 +1,28 @@
+[package]
+name = "neo-render"
+description = "NEO wgpu renderer: device setup, pipelines, buffer pools, headless render, picking passes"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-core = { workspace = true }
+neo-geo = { workspace = true }
+neo-scene = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+tracing = { workspace = true }
+pollster = { workspace = true }
+thiserror = { workspace = true }
+image = { workspace = true }
+puffin = { workspace = true, optional = true }
+
+[features]
+profile = ["dep:puffin"]
+
+[lints]
+workspace = true

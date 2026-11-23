@@ -1,0 +1,22 @@
+[package]
+name = "neo-ui"
+description = "NEO egui UI: dock layout, panels, dialogs, menus, shortcuts"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-core = { workspace = true }
+neo-osm = { workspace = true }
+neo-store = { workspace = true }
+neo-i18n = { workspace = true }
+neo-style = { workspace = true }
+egui = { workspace = true }
+egui-phosphor = { workspace = true }
+
+[lints]
+workspace = true

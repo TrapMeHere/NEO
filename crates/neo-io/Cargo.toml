@@ -1,0 +1,25 @@
+[package]
+name = "neo-io"
+description = "NEO OSM IO: streaming PBF/XML/osmChange 0.6 readers and writers"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-core = { workspace = true }
+neo-osm = { workspace = true }
+neo-store = { workspace = true }
+smallvec = { workspace = true }
+osmpbf = { workspace = true }
+flate2 = { workspace = true }
+quick-xml = { workspace = true }
+rayon = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,210 @@
+//! iD 影像目录与国家边界。由 `scripts/build-imagery.py` 生成 JSON。
+
+use serde_json::Value;
+
+struct CountryPart {
+    bbox: [f64; 4],
+    rings: Vec<Vec<[f64; 2]>>,
+}
+
+struct Country {
+    code: String,
+    en: String,
+    zh: String,
+    parts: Vec<CountryPart>,
+}
+
+pub(crate) struct CatalogSource {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub url: String,
+    pub attribution: String,
+    pub max_zoom: u8,
+    pub countries: Vec<String>,
+    pub crs: String,
+    pub bbox_lat_first: bool,
+    pub best: bool,
+}
+
+fn countries() -> &'static [Country] {
+    static CACHE: std::sync::OnceLock<Vec<Country>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let Some(bytes) = crate::assets::read_asset("imagery/countries.json") else {
+            return Vec::new();
+        };
+        parse_countries(&bytes).unwrap_or_default()
+    })
+}
+
+pub(crate) fn sources() -> &'static [CatalogSource] {
+    static CACHE: std::sync::OnceLock<Vec<CatalogSource>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let Some(bytes) = crate::assets::read_asset("imagery/catalog.json") else {
+            return Vec::new();
+        };
+        parse_sources(&bytes).unwrap_or_default()
+    })
+}
+
+/// 经纬度所在国家的 ISO 3166-1 alpha-2。海域返回 `None`。
+pub(crate) fn country_at(lat: f64, lon: f64) -> Option<&'static str> {
+    for country in countries() {
+        for part in &country.parts {
+            let [min_lon, min_lat, max_lon, max_lat] = part.bbox;
+            if lon < min_lon || lon > max_lon || lat < min_lat || lat > max_lat {
+                continue;
+            }
+            if point_in_part(lon, lat, part) {
+                return Some(country.code.as_str());
+            }
+        }
+    }
+    None
+}
+
+/// 国家的英文名和中文名。
+pub(crate) fn country_names(code: &str) -> Option<(&'static str, &'static str)> {
+    countries().iter().find_map(|country| {
+        country
+            .code
+            .eq_ignore_ascii_case(code)
+            .then_some((country.en.as_str(), country.zh.as_str()))
+    })
+}
+
+fn parse_countries(bytes: &[u8]) -> Option<Vec<Country>> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    let list = value.as_array()?;
+    let mut countries = Vec::with_capacity(list.len());
+    for item in list {
+        let code = item.get("c")?.as_str()?.to_string();
+        let en = item
+            .get("en")
+            .and_then(Value::as_str)
+            .unwrap_or(&code)
+            .to_string();
+        let zh = item.get("zh").and_then(Value::as_str).unwrap_or(&en).to_string();
+        let mut parts = Vec::new();
+        for part in item.get("p").and_then(Value::as_array).into_iter().flatten() {
+            let bbox = array4(part.get("b")?)?;
+            let rings = rings_of(part.get("r")?)?;
+            if rings.is_empty() {
+                continue;
+            }
+            parts.push(CountryPart { bbox, rings });
+        }
+        if parts.is_empty() {
+            continue;
+        }
+        countries.push(Country { code, en, zh, parts });
+    }
+    Some(countries)
+}
+
+fn parse_sources(bytes: &[u8]) -> Option<Vec<CatalogSource>> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    let list = value.get("sources")?.as_array()?;
+    let mut sources = Vec::with_capacity(list.len());
+    for item in list {
+        let id = item.get("id")?.as_str()?.to_string();
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&id)
+            .to_string();
+        let kind = item.get("type")?.as_str()?.to_string();
+        let url = item.get("url")?.as_str()?.to_string();
+        if url.is_empty() {
+            continue;
+        }
+        let attribution = item
+            .get("attribution")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let max_zoom = item.get("max_zoom").and_then(Value::as_u64).unwrap_or(22).min(22) as u8;
+        let countries = item
+            .get("countries")
+            .and_then(Value::as_array)
+            .map(|codes| {
+                codes
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let crs = item.get("crs").and_then(Value::as_str).unwrap_or("").to_string();
+        sources.push(CatalogSource {
+            id,
+            name,
+            kind,
+            url,
+            attribution,
+            max_zoom,
+            countries,
+            crs,
+            bbox_lat_first: item.get("yx").and_then(Value::as_bool).unwrap_or(false),
+            best: item.get("best").and_then(Value::as_bool).unwrap_or(false),
+        });
+    }
+    Some(sources)
+}
+
+fn array4(value: &Value) -> Option<[f64; 4]> {
+    let list = value.as_array()?;
+    if list.len() != 4 {
+        return None;
+    }
+    Some([
+        list[0].as_f64()?,
+        list[1].as_f64()?,
+        list[2].as_f64()?,
+        list[3].as_f64()?,
+    ])
+}
+
+fn rings_of(value: &Value) -> Option<Vec<Vec<[f64; 2]>>> {
+    let rings = value.as_array()?;
+    let mut out = Vec::new();
+    for ring in rings {
+        let points = ring.as_array()?;
+        let mut parsed = Vec::with_capacity(points.len());
+        for point in points {
+            let pair = point.as_array()?;
+            if pair.len() < 2 {
+                continue;
+            }
+            parsed.push([pair[0].as_f64()?, pair[1].as_f64()?]);
+        }
+        if parsed.len() >= 3 {
+            out.push(parsed);
+        }
+    }
+    Some(out)
+}
+
+fn point_in_part(lon: f64, lat: f64, part: &CountryPart) -> bool {
+    let Some((outer, holes)) = part.rings.split_first() else {
+        return false;
+    };
+    point_in_ring(lon, lat, outer) && !holes.iter().any(|hole| point_in_ring(lon, lat, hole))
+}
+
+fn point_in_ring(lon: f64, lat: f64, ring: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    let mut previous = ring.len() - 1;
+    for index in 0..ring.len() {
+        let [xi, yi] = ring[index];
+        let [xj, yj] = ring[previous];
+        if (yi > lat) != (yj > lat) {
+            let cross = (xj - xi) * (lat - yi) / (yj - yi) + xi;
+            if lon < cross {
+                inside = !inside;
+            }
+        }
+        previous = index;
+    }
+    inside
+}

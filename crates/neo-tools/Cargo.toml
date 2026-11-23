@@ -1,0 +1,20 @@
+[package]
+name = "neo-tools"
+description = "NEO interactive tools: select, draw, move, split, merge, simplify, orthogonalize"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-core = { workspace = true }
+neo-osm = { workspace = true }
+neo-store = { workspace = true }
+neo-geo = { workspace = true }
+neo-editor = { workspace = true }
+
+[lints]
+workspace = true

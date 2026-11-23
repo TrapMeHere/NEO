@@ -1,0 +1,101 @@
+[workspace]
+resolver = "3"
+# 用 glob 让成员可以增量落地（没有 Cargo.toml 的目录自动忽略）。
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# 1.97 是 wasmtime 50（wasm-plugins feature）的最低要求；默认构建仍兼容 1.95 语法。
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/TrapMeHere/NEO"
+authors = ["NEO contributors"]
+
+[workspace.dependencies]
+webbrowser = "1.0"
+url = "2"
+base64 = "0.23"
+sha2 = "0.10"
+rand = "0.9"
+# ---- internal crates ----
+neo-core = { path = "crates/neo-core" }
+neo-osm = { path = "crates/neo-osm" }
+neo-store = { path = "crates/neo-store" }
+neo-io = { path = "crates/neo-io" }
+neo-geo = { path = "crates/neo-geo" }
+neo-style = { path = "crates/neo-style" }
+neo-scene = { path = "crates/neo-scene" }
+neo-render = { path = "crates/neo-render" }
+neo-editor = { path = "crates/neo-editor" }
+neo-tools = { path = "crates/neo-tools" }
+neo-api = { path = "crates/neo-api" }
+neo-persist = { path = "crates/neo-persist" }
+neo-validate = { path = "crates/neo-validate" }
+neo-query = { path = "crates/neo-query" }
+neo-plugin = { path = "crates/neo-plugin" }
+neo-ui = { path = "crates/neo-ui" }
+neo-i18n = { path = "crates/neo-i18n" }
+neo-ipc = { path = "crates/neo-ipc" }
+
+# ---- external crates (versions verified on crates.io 2026-11-15) ----
+anyhow = "1.0"
+arc-swap = "1.9"
+bytemuck = { version = "1.25", features = ["derive"] }
+earcutr = "0.5"
+eframe = { version = "0.36.2", features = ["persistence"] }
+egui = "0.36.2"
+# GUI stack is pinned to 0.36.x: egui_dock 0.21 and egui-phosphor 0.14 require `egui ^0.36`.
+# egui-wgpu 0.36.2 still requires `wgpu ^30`, so the GPU side stays on wgpu 30.
+egui-wgpu = "0.36.2"
+egui-phosphor = "0.14"
+flate2 = "1"
+hashbrown = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+osmpbf = "0.3.8"
+pollster = "1.0"
+puffin = "0.20"
+quick-xml = "0.42"
+rayon = "1.12"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.13", features = ["json", "multipart"] }
+rfd = "0.18"
+rstar = "0.14"
+rusqlite = { version = "0.42", features = ["bundled"] }
+rustc-hash = "2.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+smallvec = { version = "1.16", features = ["union"] }
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wasmtime = "50"
+wgpu = "30.0"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+# Fast dev iteration for the data-heavy crates; benchmarks always run on `release`/`bench`.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# 新的 cargo 清单 lint：workspace 依赖表是"备选库"，允许暂时未被任何 crate 使用。
+[workspace.lints.cargo]
+unused_workspace_dependencies = "warn"
+unused_workspace_package_fields = "warn"

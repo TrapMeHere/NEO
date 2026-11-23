@@ -1,0 +1,32 @@
+[book]
+title = "NEO — Next Editor for OSM"
+authors = ["NEO contributors"]
+language = "zh-CN"
+description = "Rust + wgpu 原生 OpenStreetMap 编辑器：使用教程与开发指南"
+src = "docs"
+build-dir = "book"
+git-repository-url = "https://github.com/TrapMeHere/NEO"
+edit-url-template = "https://github.com/TrapMeHere/NEO/edit/master/docs/{path}"
+site-url = "/NEO/"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+additional-css = ["theme/neo.css"]
+git-repository-icon = "fa-github"
+no-section-label = false
+curly-quotes = false
+
+[output.html.search]
+enable = true
+limit-results = 30
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = false
+
+[output.html.print]
+enable = true

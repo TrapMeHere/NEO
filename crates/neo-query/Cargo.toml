@@ -1,0 +1,20 @@
+[package]
+name = "neo-query"
+description = "NEO read-only map query layer: MapQuery trait + snapshot views for plugins, validator and background tasks"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-core = { workspace = true }
+neo-osm = { workspace = true }
+neo-store = { workspace = true }
+neo-geo = { workspace = true }
+arc-swap = { workspace = true }
+
+[lints]
+workspace = true

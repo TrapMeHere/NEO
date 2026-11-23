@@ -1,0 +1,19 @@
+[package]
+name = "neo-store"
+description = "NEO OSM storage: SoA arenas, tag arena, id indexes, referrer graph, dirty tracking"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-core = { workspace = true }
+neo-osm = { workspace = true }
+hashbrown = { workspace = true }
+rustc-hash = { workspace = true }
+
+[lints]
+workspace = true

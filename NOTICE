@@ -1,0 +1,41 @@
+NEO — Third-party notices
+================================
+
+NEO 本体代码：Apache-2.0 OR MIT（见 LICENSE / LICENSE-APACHE / LICENSE-MIT）。
+文档：CC-BY-SA-4.0。
+
+字体（构建期外置到 `assets/fonts/`，运行期加载，不嵌入 exe）
+--------------------------------------------------------------
+- Noto Sans CJK SC — SIL Open Font License 1.1
+- GNU Unifont（BMP）— SIL OFL 1.1 / GPLv2+ with GNU Font Embedding Exception
+- GNU Unifont Upper（SMP / Plane 2 / 3）— 同上
+- SIL OFL 1.1 全文：assets/fonts/OFL-1.1.txt
+
+图标
+----
+- Phosphor Icons (https://phosphoricons.com/) — MIT License，经 `egui-phosphor` 使用。
+
+预设数据（构建期由 npm 包生成，运行期从 `assets/presets/presets.gen.json` 读取）
+--------------------------------------------------------------------------------
+- id-tagging-schema (https://github.com/openstreetmap/id-tagging-schema) — ISC License，
+  版权归 id-tagging-schema contributors；许可全文：assets/presets/LICENSE-ISC.txt
+- name-suggestion-index (https://github.com/osmlab/name-suggestion-index) — BSD-3-Clause，
+  版权归 name-suggestion-index contributors；许可全文：assets/presets/LICENSE-BSD-3-Clause.txt
+- 上述两份数据在生成文件里混合存放（schema 预设与品牌建议），发行包应同时携带
+  NOTICE 与这两个许可文本。
+
+地图数据
+--------
+- OpenStreetMap 数据 © OpenStreetMap contributors，采用 ODbL 1.0：
+  https://www.openstreetmap.org/copyright
+- 示例数据 Monaco 摘自 OSM，仅用于开发演示；不随代码再分发原始数据。
+
+Rust 依赖
+---------
+第三方 crate 的许可信息由 `cargo metadata` / `cargo deny` 可查；
+发行二进制中包含的 crate 许可见 Cargo.lock 对应版本的上游声明。
+
+品牌
+----
+“NEO”“Next Editor for OSM”为项目名称；OSM 与 OpenStreetMap 是 OpenStreetMap Foundation
+的商标。本项目与 OpenStreetMap Foundation、JOSM 项目无隶属关系。

@@ -1,0 +1,296 @@
+/* NEO 默认地图样式。
+   深色底图上按要素种类分色，名称用同一色相的浅色，再由界面加描边。
+   `poi:` 图标由界面直接画，不读图片文件。 */
+
+node {
+    color: #f2f2f2;
+}
+
+way[highway] {
+    color: #d0d0d0;
+    width: 1.6;
+    text-color: #f3f3f3;
+}
+
+way[highway=service] {
+    color: #a8a8a8;
+    width: 1.1;
+    text-color: #dedede;
+}
+
+way[highway=residential],
+way[highway=unclassified],
+way[highway=living_street] {
+    color: #d8d8d8;
+    width: 1.8;
+    text-color: #f4f4f4;
+}
+
+way[highway=tertiary] {
+    color: #f3e7a2;
+    width: 2.2;
+    text-color: #fff3c4;
+}
+
+way[highway=secondary] {
+    color: #f6d56a;
+    width: 2.6;
+    text-color: #ffe7a0;
+}
+
+way[highway=primary] {
+    color: #f0b45a;
+    width: 3.2;
+    text-color: #ffd7a4;
+}
+
+way[highway=trunk] {
+    color: #ef8d4a;
+    width: 3.6;
+    text-color: #ffc49a;
+}
+
+way[highway=motorway] {
+    color: #e06a86;
+    width: 4.0;
+    text-color: #ffb3c4;
+}
+
+way[highway=footway],
+way[highway=path],
+way[highway=pedestrian],
+way[highway=steps] {
+    color: #d0a0a0;
+    width: 1.0;
+    dashes: 3, 2;
+    text-color: #f6d4d4;
+}
+
+way[highway=cycleway] {
+    color: #6eb6e6;
+    width: 1.2;
+    text-color: #c5e6ff;
+}
+
+way[highway=track] {
+    color: #c4a06a;
+    width: 1.1;
+    dashes: 5, 2;
+    text-color: #edd4a8;
+}
+
+way[railway] {
+    color: #b0b0bc;
+    width: 1.4;
+    dashes: 6, 3;
+    text-color: #e4e4ee;
+}
+
+way[waterway] {
+    color: #6aaee0;
+    width: 1.5;
+    fill-color: none;
+    text-color: #c5e6ff;
+}
+
+way[waterway=river] {
+    width: 2.4;
+    text-color: #d4eeff;
+}
+
+way[natural=water],
+way[waterway=riverbank],
+area[natural=water],
+way[natural=bay] {
+    fill-color: #1f5f96cc;
+    color: #8ec8f5;
+    width: 1.2;
+    text-color: #d4eeff;
+}
+
+way[landuse=forest],
+way[natural=wood] {
+    fill-color: #245c34cc;
+    color: #7dcc88;
+    width: 0.8;
+    text-color: #c8f0ce;
+}
+
+way[leisure=park],
+way[leisure=garden],
+way[landuse=grass],
+way[landuse=recreation_ground] {
+    fill-color: #2f6b3acc;
+    color: #9adf9a;
+    width: 0.8;
+    text-color: #dff8df;
+}
+
+way[landuse=farmland],
+way[landuse=meadow],
+way[natural=scrub],
+way[natural=grassland] {
+    fill-color: #5c6840aa;
+    color: #c6d48a;
+    width: 0.6;
+    text-color: #e7f0c4;
+}
+
+way[landuse=residential] {
+    fill-color: #3a342e88;
+    color: #8a7d72;
+    width: 0.6;
+    text-color: #e6d9cc;
+}
+
+way[landuse=commercial],
+way[landuse=retail] {
+    fill-color: #3a385888;
+    color: #9a96c0;
+    width: 0.6;
+    text-color: #ddd8f4;
+}
+
+way[landuse=industrial] {
+    fill-color: #44384888;
+    color: #b090a8;
+    width: 0.6;
+    text-color: #f0d4e4;
+}
+
+way[leisure=pitch] {
+    fill-color: #2a6848cc;
+    color: #8fd0a8;
+    width: 0.8;
+    text-color: #d4f5e4;
+}
+
+way[building],
+area[building] {
+    fill-color: #6e645ccc;
+    color: #cbbba8;
+    width: 0.8;
+    text-color: #f6ece2;
+}
+
+node[amenity=restaurant],
+node[amenity=fast_food] {
+    color: #e07040;
+    icon-image: poi:restaurant;
+    icon-width: 18;
+    text-color: #ffc8ae;
+}
+
+node[amenity=cafe] {
+    color: #c48848;
+    icon-image: poi:cafe;
+    icon-width: 18;
+    text-color: #f3d2ae;
+}
+
+node[amenity=bar],
+node[amenity=pub] {
+    color: #d06080;
+    icon-image: poi:bar;
+    icon-width: 18;
+    text-color: #ffc0d0;
+}
+
+node[amenity=school],
+node[amenity=university],
+node[amenity=college],
+node[amenity=kindergarten] {
+    color: #6aa0e0;
+    icon-image: poi:school;
+    icon-width: 18;
+    text-color: #cfe4ff;
+}
+
+node[amenity=hospital],
+node[amenity=clinic] {
+    color: #e05050;
+    icon-image: poi:hospital;
+    icon-width: 18;
+    text-color: #ffc8c8;
+}
+
+node[amenity=pharmacy] {
+    color: #50b070;
+    icon-image: poi:pharmacy;
+    icon-width: 18;
+    text-color: #c8f0d4;
+}
+
+node[amenity=fuel] {
+    color: #e09030;
+    icon-image: poi:fuel;
+    icon-width: 18;
+    text-color: #ffe0b0;
+}
+
+node[amenity=parking] {
+    color: #4a88d8;
+    icon-image: poi:parking;
+    icon-width: 18;
+    text-color: #c8dcff;
+}
+
+node[amenity=bus_station],
+node[highway=bus_stop] {
+    color: #4a90d0;
+    icon-image: poi:bus;
+    icon-width: 16;
+    text-color: #c8e0ff;
+}
+
+node[amenity=place_of_worship] {
+    color: #b090d0;
+    icon-image: poi:worship;
+    icon-width: 18;
+    text-color: #ead8ff;
+}
+
+node[amenity=bank],
+node[amenity=atm] {
+    color: #50a878;
+    icon-image: poi:bank;
+    icon-width: 16;
+    text-color: #c8f0dc;
+}
+
+node[shop] {
+    color: #c070b0;
+    icon-image: poi:shop;
+    icon-width: 16;
+    text-color: #f4d0ec;
+}
+
+node[tourism=hotel],
+node[tourism=guest_house],
+node[tourism=attraction] {
+    color: #d07070;
+    icon-image: poi:tourism;
+    icon-width: 18;
+    text-color: #ffd0d0;
+}
+
+node[amenity=toilets] {
+    color: #70a0c0;
+    icon-image: poi:toilets;
+    icon-width: 16;
+    text-color: #d4e8f4;
+}
+
+node[leisure=playground] {
+    color: #70b060;
+    icon-image: poi:park;
+    icon-width: 16;
+    text-color: #d8f4d0;
+}
+
+node[natural=tree] {
+    color: #5aaa62;
+    icon-image: poi:tree;
+    icon-width: 14;
+    text-color: #d0f0d4;
+}
