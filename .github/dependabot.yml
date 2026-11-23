@@ -1,0 +1,46 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    # GUI/GPU 钉版见 ADR-0011；zip 主版本 API 不兼容，勿自动跨大版本。
+    ignore:
+      - dependency-name: "egui*"
+      - dependency-name: "eframe*"
+      - dependency-name: "wgpu*"
+      - dependency-name: "egui-wgpu*"
+      - dependency-name: "egui_dock*"
+      - dependency-name: "egui-phosphor*"
+      - dependency-name: "zip"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "sha2"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "rand"
+        update-types: ["version-update:semver-major"]
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+        exclude-patterns:
+          - "wgpu*"
+          - "egui*"
+          - "eframe*"
+          - "egui-wgpu*"
+          - "egui_dock*"
+          - "egui-phosphor*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:30"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

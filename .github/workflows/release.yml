@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows release
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install preset packages
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify tag matches Cargo version
+        shell: pwsh
+        run: |
+          $raw = Get-Content Cargo.toml -Raw
+          $m = [regex]::Match($raw, '(?ms)^\[workspace\.package\].*?^version\s*=\s*"([^"]+)"')
+          if (-not $m.Success) { throw "Cannot read [workspace.package].version from Cargo.toml" }
+          $version = $m.Groups[1].Value
+          $tag = "${{ github.ref_name }}"
+          if ("v$version" -ne $tag) {
+            throw "Tag $tag does not match workspace version v$version. Bump Cargo.toml first."
+          }
+          Write-Host "Releasing NEO v$version"
+
+      - name: Check
+        run: cargo check --workspace --locked
+
+      - name: Test (release gate)
+        run: cargo test --workspace --locked
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked -p neo-desktop
+          cargo build --release --locked -p neo-cli
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.ref_name }}"
+          $name = "neo-desktop-$tag-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP "package"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item out\cargo\release\neo-desktop.exe $stage
+          Copy-Item out\cargo\release\neo-cli.exe $stage
+          foreach ($f in @("README.md","LICENSE","LICENSE-MIT","LICENSE-APACHE","NOTICE","CHANGELOG.md")) {
+            Copy-Item $f $stage
+          }
+          $assets = Join-Path $stage "assets"
+          New-Item -ItemType Directory -Force -Path (Join-Path $assets "fonts") | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $assets "presets") | Out-Null
+          Copy-Item assets\fonts\* (Join-Path $assets "fonts") -Force
+          foreach ($name in @("schema.neo", "suggestions.neo")) {
+            if (-not (Test-Path "assets\presets\$name")) { throw "missing assets/presets/$name" }
+            Copy-Item "assets\presets\$name" (Join-Path $assets "presets") -Force
+          }
+          Copy-Item assets\presets\README.md (Join-Path $assets "presets") -Force
+          Copy-Item assets\presets\LICENSE-ISC.txt (Join-Path $assets "presets") -Force
+          Copy-Item assets\presets\LICENSE-BSD-3-Clause.txt (Join-Path $assets "presets") -Force
+          Compress-Archive -Path "$stage\*" -DestinationPath "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Set-Content "$name.zip.sha256" -Encoding ascii
+          Get-Item "$name.zip","$name.zip.sha256" | Format-Table Name,Length
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            neo-desktop-*-windows-x86_64.zip
+            neo-desktop-*-windows-x86_64.zip.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## NEO ${{ github.ref_name }}
+
+            Windows x64 构建（无控制台 GUI 程序）。
+
+            - 下载 `neo-desktop-${{ github.ref_name }}-windows-x86_64.zip` 解压后运行 `neo-desktop.exe`
+            - 校验：`Get-FileHash .\*.zip -Algorithm SHA256` 与 `.sha256` 文件对比
+            - 使用教程与开发指南：https://novolife.github.io/neo/
+            - 完整变更见 `CHANGELOG.md`

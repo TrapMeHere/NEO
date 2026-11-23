@@ -1,0 +1,21 @@
+[package]
+name = "neo-core"
+description = "NEO core primitives: object ids, generational handles, interned symbols, fixed-point coordinates, errors"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[lints]
+workspace = true

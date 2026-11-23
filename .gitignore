@@ -1,0 +1,28 @@
+# Cargo 构建缓存实际在 out/cargo（.cargo/config.toml）。这条只挡住误生成的旧路径。
+/target
+
+# Preset packages (package-lock.json is committed)
+/node_modules
+
+# Generated preset catalog (~15 MB); rebuild with node scripts/build-presets.mjs
+/assets/presets/presets.gen.json
+/assets/presets/schema.neo
+/assets/presets/suggestions.neo
+**/*.rs.bk
+
+# Research artifacts (crate sources, JOSM sources, cheat-sheets) are local-only
+/.research
+
+# Prototype outputs
+/out
+*.png.tmp
+*.log
+
+# mdBook build output
+/book
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

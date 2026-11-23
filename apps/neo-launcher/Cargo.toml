@@ -1,0 +1,19 @@
+[package]
+name = "neo"
+description = "NEO desktop launcher"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neo"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

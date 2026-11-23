@@ -1,0 +1,28 @@
+[package]
+name = "neo-cli"
+description = "NEO command line: open data, GPX, presets coverage, imagery URLs, plugin demo"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+plugins = ["dep:neo-plugin", "neo-plugin/wasm-plugins"]
+
+[dependencies]
+neo-core = { workspace = true }
+neo-store = { workspace = true }
+neo-io = { workspace = true }
+neo-geo = { workspace = true }
+neo-scene = { workspace = true }
+neo-style = { workspace = true }
+neo-plugin = { workspace = true, optional = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

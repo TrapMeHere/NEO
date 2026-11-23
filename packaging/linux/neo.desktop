@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NEO
+Comment=Next Editor for OSM
+Exec=neo-desktop
+Icon=neo
+Terminal=false
+Categories=Education;Geography;

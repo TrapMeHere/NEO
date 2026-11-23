@@ -1,0 +1,20 @@
+[package]
+name = "neo-persist"
+description = "NEO persistence: SQLite WAL workspace, command journal, autosave, crash recovery"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+quick-xml = { workspace = true }
+rusqlite = { workspace = true }
+zip = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

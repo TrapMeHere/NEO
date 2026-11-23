@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/novolife/neo/security/advisories/new
+    about: 请通过私密 Security Advisory 报告安全问题（不要开公开 Issue）。
+  - name: Questions & discussion
+    url: https://github.com/novolife/neo/discussions
+    about: 使用问题、想法与展示可以发到 Discussions。
+  - name: Documentation
+    url: https://novolife.github.io/neo/
+    about: 使用教程与开发指南。

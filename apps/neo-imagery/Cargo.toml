@@ -1,0 +1,22 @@
+[package]
+name = "neo-imagery"
+description = "NEO imagery tile download sidecar"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neo-imagery"
+path = "src/main.rs"
+
+[dependencies]
+neo-ipc = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

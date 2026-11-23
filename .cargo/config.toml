@@ -1,0 +1,7 @@
+[net]
+retry = 3
+
+[build]
+incremental = true
+# 构建缓存在 out/cargo，不放在仓库根目录，也不使用 target 这个名字。
+target-dir = "out/cargo"

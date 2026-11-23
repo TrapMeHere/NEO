@@ -1,0 +1,23 @@
+[package]
+name = "neo-osm"
+description = "NEO OSM domain model: nodes, ways, relations, tags, members and change semantics"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+neo-core = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde", "neo-core/serde"]
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "neo-plugin"
+description = "NEO plugin host: WASM (wasmtime) plugins behind a versioned capability API"
+version.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# 默认关闭：wasmtime 体积大，且不进入最小可玩集（docs/02 §2.7）。
+wasm-plugins = ["dep:wasmtime"]
+
+[dependencies]
+neo-core = { workspace = true }
+neo-query = { workspace = true }
+neo-editor = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+zip = { workspace = true }
+wasmtime = { workspace = true, optional = true }
+
+[lints]
+workspace = true

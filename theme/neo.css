@@ -1,0 +1,36 @@
+/* NEO 文档站主题：在 mdBook 默认主题上做轻量定制 */
+:root {
+    --neo-accent: #4896f0;
+}
+
+.sidebar .chapter li a.active {
+    border-left: 3px solid var(--neo-accent);
+}
+
+.content main img {
+    border-radius: 6px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
+    max-width: 100%;
+}
+
+.content main h1 {
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+    padding-bottom: 0.3em;
+}
+
+.content main table {
+    font-size: 0.95em;
+}
+
+.content main code {
+    font-size: 0.9em;
+}
+
+blockquote {
+    border-left: 4px solid var(--neo-accent);
+    opacity: 0.95;
+}
+
+.menu-title {
+    font-weight: 600;
+}
