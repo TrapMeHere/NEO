@@ -51,7 +51,7 @@ impl NeoApp {
 
     pub(super) fn pick_at(&self, screen: [f32; 2]) -> Pick {
         // 节点优先。内圈其次，这样点在面上选的是面，而不是旁边的线。
-        // 最后才是线的外边距。隐藏节点不能截胡它下面的面或线。
+        // 最后才是线的外边距。
         let node_hit = {
             let tester = HitTester::new(self.editor.data(), self.editor.index());
             tester.pick_node(&self.camera, screen, NODE_PICK_MARGIN_PX)
@@ -60,7 +60,7 @@ impl NeoApp {
             && hit
                 .node
                 .and_then(|handle| self.editor.data().nodes.id(handle))
-                .is_some_and(|id| self.node_selectable(id) && !self.hidden.contains(&(ObjectKind::Node, id)))
+                .is_some_and(|id| self.node_selectable(id))
         {
             return Pick {
                 node: hit.node.and_then(|handle| self.editor.data().nodes.id(handle)),
@@ -79,9 +79,6 @@ impl NeoApp {
             return Pick::default();
         };
         let way = hit.way.and_then(|handle| self.editor.data().ways.id(handle));
-        if way.is_some_and(|id| self.hidden.contains(&(ObjectKind::Way, id))) {
-            return Pick::default();
-        }
         Pick {
             node: None,
             way,
@@ -95,9 +92,6 @@ impl NeoApp {
         let world = self.camera.screen_to_world(screen);
         let mut best: Option<(f64, ObjectKind, ObjectId)> = None;
         for band in &scene.area_bands {
-            if self.hidden.contains(&(band.kind, band.id)) {
-                continue;
-            }
             let inside = if band.solid {
                 neo_geo::geometry::point_in_ring(world, &band.outer)
                     && !band
@@ -152,23 +146,16 @@ impl NeoApp {
         if !self.way_member_nodes_force_zoom() {
             return false;
         }
-        if self.hidden.contains(&(ObjectKind::Node, node)) {
-            return false;
-        }
         if self.editor.data().node_handle(node).is_none() {
             return false;
         }
         if let Some(way) = self.hover_way
-            && !self.hidden.contains(&(ObjectKind::Way, way))
             && let Some(way_handle) = self.editor.data().way_handle(way)
             && self.editor.data().way_node_ids(way_handle).contains(&node)
         {
             return true;
         }
         for way in self.editor.selection().ways() {
-            if self.hidden.contains(&(ObjectKind::Way, *way)) {
-                continue;
-            }
             let Some(way_handle) = self.editor.data().way_handle(*way) else {
                 continue;
             };
@@ -184,9 +171,6 @@ impl NeoApp {
     /// 可拾取（
     /// renderer 共用 `node_visible_at` 规则；选中/悬停 way 的成员节点始终可选）
     pub(super) fn node_selectable(&self, node: ObjectId) -> bool {
-        if self.hidden.contains(&(ObjectKind::Node, node)) {
-            return false;
-        }
         if self.node_forced_visible(node) {
             return true;
         }
@@ -209,18 +193,45 @@ impl NeoApp {
         neo_scene::node_visible_at(zoom, refs)
     }
 
-    /// 缩放后清理已不可见的节点选择（way/relation 选择保留）
-    pub(super) fn prune_hidden_node_selection(&mut self) {
-        let hidden: Vec<ObjectId> = self
+    /// 清理已不存在于数据中的选择（节点/路径/关系）。
+    ///
+    /// 选择不再与渲染状态挂钩（框选可以选中缩放 LOD 隐藏的节点，见
+    /// [`Self::select_in_box`]），所以缩放到节点 LOD 以下也不会清掉已选中的节点；
+    /// 这里只剔除数据里已经不存在的陈旧 ID（删除、合并后）。
+    pub(super) fn prune_stale_node_selection(&mut self) {
+        let data = self.editor.data();
+        let stale_nodes: Vec<ObjectId> = self
             .editor
             .selection()
             .nodes()
             .iter()
             .copied()
-            .filter(|id| !self.node_selectable(*id))
+            .filter(|id| data.node_handle(*id).is_none())
             .collect();
-        for id in hidden {
+        let stale_ways: Vec<ObjectId> = self
+            .editor
+            .selection()
+            .ways()
+            .iter()
+            .copied()
+            .filter(|id| data.way_handle(*id).is_none())
+            .collect();
+        let stale_relations: Vec<ObjectId> = self
+            .editor
+            .selection()
+            .relations()
+            .iter()
+            .copied()
+            .filter(|id| data.relation_handle(*id).is_none())
+            .collect();
+        for id in stale_nodes {
             self.editor.selection_mut().remove(ObjectKind::Node, id);
+        }
+        for id in stale_ways {
+            self.editor.selection_mut().remove(ObjectKind::Way, id);
+        }
+        for id in stale_relations {
+            self.editor.selection_mut().remove(ObjectKind::Relation, id);
         }
     }
 
@@ -434,6 +445,14 @@ impl NeoApp {
                 let world = self.camera.screen_to_world(screen);
                 if self.mode == UiMode::Measure {
                     self.measure_click(world);
+                } else if self.mode == UiMode::SplitPoint {
+                    // 按点分割：点中的节点是路径内部节点时，把经过它的路径在此分割。
+                    let pick = self.pick_at(screen);
+                    if let Some(node) = pick.node {
+                        let outcome = self.controller.split_ways_at_node(&mut self.editor, node);
+                        self.apply_outcome(outcome);
+                        self.scene = None;
+                    }
                 } else if self.mode == UiMode::Select {
                     let pick = self.pick_at(screen);
                     let additive = ui.input(|i| i.modifiers.command);
@@ -519,7 +538,7 @@ impl NeoApp {
             self.hover_way = None;
         }
 
-        self.prune_hidden_node_selection();
+        self.prune_stale_node_selection();
         if self.data_listed && self.layer_visible {
             self.ensure_scene();
         }
@@ -652,80 +671,11 @@ impl NeoApp {
         );
     }
 
-    /// 按当前过滤器重算隐藏集合（用户点“应用”时才扫描）。
-    pub(super) fn recompute_filter(&mut self) {
-        self.hidden.clear();
-        if !self.filter.active {
-            self.builder.set_hidden(self.hidden.clone());
-            self.scene = None;
-            return;
-        }
-        let query = self.filter.query.trim().to_lowercase();
-        let id_query = query
-            .strip_prefix("id:")
-            .and_then(|value| value.trim().parse::<i64>().ok());
-        let tag_query = query
-            .split_once('=')
-            .map(|(key, value)| (key.trim().to_lowercase(), value.trim().to_lowercase()));
-        let data = self.editor.data();
-        let matches = |id: ObjectId, pairs: &[(neo_core::Sym, neo_core::Sym)]| -> bool {
-            if query.is_empty() {
-                return true;
-            }
-            if let Some(wanted) = id_query {
-                return id.0 == wanted;
-            }
-            if let Some((key, value)) = &tag_query {
-                return pairs.iter().any(|(k, v)| {
-                    data.resolve(*k).eq_ignore_ascii_case(key) && data.resolve(*v).eq_ignore_ascii_case(value)
-                });
-            }
-            id.0.to_string().contains(&query)
-                || pairs.iter().any(|(key, value)| {
-                    data.resolve(*key).to_lowercase().contains(&query)
-                        || data.resolve(*value).to_lowercase().contains(&query)
-                })
-        };
-        if self.filter.nodes {
-            for node in data.iter_nodes() {
-                if !matches(node.id, data.tag_pairs(node.tags)) {
-                    self.hidden.insert((ObjectKind::Node, node.id));
-                }
-            }
-        } else {
-            for node in data.iter_nodes() {
-                self.hidden.insert((ObjectKind::Node, node.id));
-            }
-        }
-        if self.filter.ways {
-            for way in data.iter_ways() {
-                if !matches(way.id, data.tag_pairs(way.tags)) {
-                    self.hidden.insert((ObjectKind::Way, way.id));
-                }
-            }
-        } else {
-            for way in data.iter_ways() {
-                self.hidden.insert((ObjectKind::Way, way.id));
-            }
-        }
-        if self.filter.relations {
-            for relation in data.iter_relations() {
-                if !matches(relation.id, data.tag_pairs(relation.tags)) {
-                    self.hidden.insert((ObjectKind::Relation, relation.id));
-                }
-            }
-        } else {
-            for relation in data.iter_relations() {
-                self.hidden.insert((ObjectKind::Relation, relation.id));
-            }
-        }
-        let count = self.hidden.len();
-        self.builder.set_hidden(self.hidden.clone());
-        self.scene = None;
-        self.status = tf("status.filter_applied", &[("n", &count.to_string())]);
-    }
-
     /// 框选（CAD / JOSM）：左→右仅整体在框内；右→左选相交或在框内。
+    ///
+    /// **只看几何、不看渲染状态**：缩放 LOD 隐藏的节点（z<17、非共享节点等）只要
+    /// 落在框内（或与框相交）都会被选中，便于批量编辑/删除当前画面里看不见的要素。
+    /// 点选与悬停仍遵循可见性规则（见 [`Self::node_selectable`]）。
     pub(super) fn select_in_box(&mut self, start: WorldPoint, end: WorldPoint, additive: bool) {
         let bounds = WorldBounds::from_points(start, end);
         let mode = neo_geo::box_select_mode(start, end);
@@ -740,8 +690,6 @@ impl NeoApp {
             };
             if bounds.contains(WorldPoint::from_latlon(pos))
                 && let Some(id) = self.editor.data().nodes.id(handle)
-                && self.node_selectable(id)
-                && !self.hidden.contains(&(ObjectKind::Node, id))
             {
                 nodes.push(id);
             }
@@ -753,7 +701,6 @@ impl NeoApp {
             let points = neo_geo::geometry::way_world_points(self.editor.data(), handle);
             if neo_geo::way_matches_box(&points, &bounds, mode)
                 && let Some(id) = self.editor.data().ways.id(handle)
-                && !self.hidden.contains(&(ObjectKind::Way, id))
             {
                 ways.push(id);
             }
@@ -846,7 +793,6 @@ impl NeoApp {
         let mut ways: Vec<ObjectId> = self.editor.selection().ways().iter().copied().collect();
         if let Some(way) = self.hover_way
             && !ways.contains(&way)
-            && !self.hidden.contains(&(ObjectKind::Way, way))
         {
             ways.push(way);
         }
@@ -868,9 +814,6 @@ impl NeoApp {
             rect.min + egui::vec2(screen[0] / ppp, screen[1] / ppp)
         };
         for way in self.midpoint_candidate_ways() {
-            if self.hidden.contains(&(ObjectKind::Way, way)) {
-                continue;
-            }
             let Some(handle) = self.editor.data().way_handle(way) else {
                 continue;
             };
@@ -919,9 +862,6 @@ impl NeoApp {
         }
         let mut best: Option<(f32, ObjectId, usize)> = None;
         for way in ways {
-            if self.hidden.contains(&(ObjectKind::Way, way)) {
-                continue;
-            }
             let Some(handle) = self.editor.data().way_handle(way) else {
                 continue;
             };
@@ -1012,8 +952,8 @@ impl NeoApp {
             &self.camera,
             screen,
             radius,
-            |id| self.node_selectable(id) && !self.hidden.contains(&(ObjectKind::Node, id)),
-            |id| !self.hidden.contains(&(ObjectKind::Way, id)),
+            |id| self.node_selectable(id),
+            |_| true,
         )
     }
 
@@ -1180,17 +1120,11 @@ impl NeoApp {
         let radius = 3.0;
         let mut seen = std::collections::HashSet::new();
         for way in ways {
-            if self.hidden.contains(&(ObjectKind::Way, way)) {
-                continue;
-            }
             let Some(handle) = self.editor.data().way_handle(way) else {
                 continue;
             };
             for node in self.editor.data().way_node_ids(handle) {
                 if !seen.insert(node) {
-                    continue;
-                }
-                if self.hidden.contains(&(ObjectKind::Node, node)) {
                     continue;
                 }
                 // 已选中的节点由红色高亮层绘制，这里只补「普通可见」。

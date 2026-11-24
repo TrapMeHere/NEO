@@ -156,25 +156,6 @@ impl NeoApp {
         }
     }
 
-    pub(super) fn current_bbox(&self) -> ((f64, f64, f64, f64), String) {
-        let bounds = self.camera.visible_bounds();
-        let a = bounds.min.to_latlon();
-        let b = bounds.max.to_latlon();
-        let min_lat = a.lat.to_degrees().min(b.lat.to_degrees());
-        let max_lat = a.lat.to_degrees().max(b.lat.to_degrees());
-        let min_lon = a.lon.to_degrees().min(b.lon.to_degrees());
-        let max_lon = a.lon.to_degrees().max(b.lon.to_degrees());
-        (
-            (min_lon, min_lat, max_lon, max_lat),
-            format!("{min_lon:.5}, {min_lat:.5} \n{max_lon:.5}, {max_lon:.5}"),
-        )
-    }
-
-    pub(super) fn start_sync_download(&mut self) {
-        let (bbox, _) = self.current_bbox();
-        self.start_api_download(bbox);
-    }
-
     pub(super) fn start_api_download(&mut self, bbox: (f64, f64, f64, f64)) {
         if self.sync_busy {
             self.sync_status = t("sync.busy").to_owned();

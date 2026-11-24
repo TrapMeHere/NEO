@@ -36,8 +36,7 @@ impl NeoApp {
             self.imagery_listed = true;
         }
         // 打开/下载均合并进图层，不覆盖当前编辑，故不进 destructive。
-        // 冲突后的「重新下载」仍可能覆盖意图，保留确认。
-        let destructive = actions.open_session || actions.sync_redownload || actions.recover_journal;
+        let destructive = actions.open_session || actions.recover_journal;
         if destructive && !self.confirm_discard() {
             return Ok(());
         }
@@ -49,7 +48,7 @@ impl NeoApp {
             actions.redo = false;
             actions.undo_to = None;
             actions.finish_way = false;
-            actions.apply_tags = None;
+            actions.tag_edit = None;
             actions.relation_member_edit = None;
             actions.split_way = false;
             actions.reverse_way = false;
@@ -122,9 +121,6 @@ impl NeoApp {
         }
         if actions.toggle_sync {
             self.show_sync = !self.show_sync;
-        }
-        if actions.sync_download || actions.sync_redownload {
-            self.start_sync_download();
         }
         if actions.sync_upload {
             self.start_sync_upload(false);
@@ -265,28 +261,6 @@ impl NeoApp {
         }
         if actions.toggle_search {
             self.show_search = !self.show_search;
-        }
-        if actions.toggle_filter {
-            self.show_filter = !self.show_filter;
-        }
-        if actions.apply_filter {
-            self.recompute_filter();
-        }
-        if actions.clear_filter {
-            self.hidden.clear();
-            self.filter.active = false;
-            self.builder.set_hidden(self.hidden.clone());
-            self.scene = None;
-            self.status = t("status.filter_cleared").to_owned();
-        }
-        if actions.hide_selected {
-            let items = self.selection_list();
-            for (kind, id) in &items {
-                self.hidden.insert((*kind, *id));
-            }
-            self.builder.set_hidden(self.hidden.clone());
-            self.scene = None;
-            self.status = tf("status.hidden_selected", &[("n", &items.len().to_string())]);
         }
         if actions.toggle_notes {
             self.show_notes = !self.show_notes;
@@ -830,7 +804,7 @@ impl NeoApp {
         if let Some(mode) = actions.mode {
             self.mode = mode;
             self.controller.set_tool(match mode {
-                UiMode::Select | UiMode::Measure => ToolKind::Select,
+                UiMode::Select | UiMode::Measure | UiMode::SplitPoint => ToolKind::Select,
                 UiMode::DrawPoint => ToolKind::DrawPoint,
                 UiMode::DrawLine => ToolKind::DrawLine,
                 UiMode::DrawArea => ToolKind::DrawArea,
@@ -1054,36 +1028,8 @@ impl NeoApp {
                 }
             }
         }
-        if let Some(tags) = actions.apply_tags {
-            // 用标签编辑器自己的目标，而不是即时选择：面板在画布之前绘制
-            // 画布点击可能已经改变了选择，直接写 selection_target 会把标签落到
-            // 错误对象上
-            let target = self.tags.target();
-            if let Some((kind, id)) = target {
-                if self.selection_target() == Some((kind, id)) {
-                    match self
-                        .editor
-                        .execute(Box::new(neo_editor::SetTags::new(kind, id, tags)))
-                    {
-                        Ok(()) => self.tags.mark_applied(),
-                        Err(err) => {
-                            self.status = tf("app.error.tags_update", &[("err", &err.to_string())]);
-                            self.resync_tags();
-                        }
-                    }
-                } else {
-                    self.resync_tags();
-                }
-                self.scene = None;
-            }
-        }
-        if actions.split_way
-            && let Some((ObjectKind::Way, way)) = self.selection_target()
-        {
-            let at_node = self.editor.selection().nodes().iter().next().copied();
-            let outcome = self.controller.split_way(&mut self.editor, way, at_node);
-            self.apply_outcome(outcome);
-            self.scene = None;
+        if let Some(edit) = actions.tag_edit {
+            self.apply_tag_edit(edit);
         }
         if actions.simplify_way
             && let Some((ObjectKind::Way, way)) = self.selection_target()
@@ -1191,13 +1137,9 @@ impl NeoApp {
         }
         if actions.merge_ways {
             let ways: Vec<ObjectId> = self.editor.selection().ways().iter().copied().collect();
-            if ways.len() == 2 {
-                let outcome = self.controller.merge_ways(&mut self.editor, ways[0], ways[1]);
-                self.apply_outcome(outcome);
-                self.scene = None;
-            } else {
-                self.status = t("app.error.merge_need_adjacent").into();
-            }
+            let outcome = self.controller.merge_chain_ways(&mut self.editor, &ways);
+            self.apply_outcome(outcome);
+            self.scene = None;
         }
         if actions.recover_journal {
             self.recover_from_journal()?;

@@ -123,7 +123,7 @@ impl Command for AddNode {
     }
 }
 
-/// 添加 way。
+/// 添加路径。
 pub struct AddWay {
     /// 期望 ID。
     pub id: Option<ObjectId>,
@@ -151,7 +151,7 @@ impl Command for AddWay {
         CommandKind::AddWay
     }
     fn label(&self) -> &'static str {
-        "添加 way"
+        "添加路径"
     }
     fn precheck(&self, _data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         if self.nodes.len() < 2 {
@@ -346,7 +346,7 @@ impl Command for SetTags {
     }
 }
 
-/// 修改 way 的节点序列。
+/// 修改路径的节点序列。
 pub struct SetWayNodes {
     /// Way ID。
     pub way: ObjectId,
@@ -373,7 +373,7 @@ impl Command for SetWayNodes {
         CommandKind::SetWayNodes
     }
     fn label(&self) -> &'static str {
-        "修改 way 节点"
+        "修改路径节点"
     }
     fn apply(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError> {
         let old = ctx.way_node_ids(self.way)?;
@@ -407,7 +407,7 @@ impl Command for SetWayNodes {
     }
 }
 
-/// 新增 relation。
+/// 新增关系。
 pub struct AddRelation {
     /// 期望 ID（None 自动分配）。
     pub id: Option<ObjectId>,
@@ -481,7 +481,7 @@ impl Command for AddRelation {
     }
 }
 
-/// 替换 relation 成员（增删/改角色/排序统一走这一条命令）。
+/// 替换关系成员（增删/改角色/排序统一走这一条命令）。
 pub struct SetRelationMembers {
     /// Relation ID。
     pub relation: ObjectId,
@@ -511,7 +511,7 @@ impl Command for SetRelationMembers {
         "修改关系成员"
     }
     fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
-        // 成员必须存在；relation 成员还不能形成环（OSM 服务端会 412，本地先拦）。
+        // 成员必须存在；关系成员还不能形成环（OSM 服务端会 412，本地先拦）。
         for member in &self.members {
             let exists = match member.kind {
                 ObjectKind::Node => data.node_handle(member.id).is_some(),
@@ -786,7 +786,7 @@ pub fn from_journal(record: &JournalCommand) -> Option<Box<dyn Command>> {
     Some(cmd)
 }
 
-/// 从 `start` 沿 relation 成员向下能否到达 `target`（用于成环检测）。
+/// 从 `start` 沿关系成员向下能否到达 `target`（用于成环检测）。
 ///
 /// 带 visited 集合：即使数据集里已经存在环（历史数据/插件写入）也不会死循环。
 fn relation_reaches(data: &DataSet, start: ObjectId, target: ObjectId) -> bool {

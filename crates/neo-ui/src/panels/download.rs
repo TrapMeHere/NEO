@@ -206,12 +206,6 @@ fn select_bbox_button(ui: &mut egui::Ui, selecting: bool) -> egui::Response {
 fn bbox_tab(ui: &mut egui::Ui, actions: &mut UiActions, state: &mut DownloadUiState) {
     if let Some(bbox) = state.bbox {
         ui.monospace(bbox.text());
-    } else {
-        ui.label(
-            RichText::new(t("download.bbox_hint"))
-                .size(12.0)
-                .color(Color32::from_rgb(150, 160, 174)),
-        );
     }
     ui.horizontal(|ui| {
         if select_bbox_button(ui, state.selecting).clicked() {
@@ -241,7 +235,6 @@ fn overpass_tab(ui: &mut egui::Ui, actions: &mut UiActions, state: &mut Download
     );
     ui.add_space(4.0);
 
-    ui.label(t("download.overpass.helper"));
     ui.horizontal(|ui| {
         ui.label(t("download.overpass.key"));
         ui.add(

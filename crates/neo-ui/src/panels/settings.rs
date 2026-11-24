@@ -245,11 +245,6 @@ fn settings_editing(ui: &mut Ui, state: &mut SettingsUiState) {
             .suffix(" px")
             .clamping(egui::SliderClamping::Always),
     );
-    ui.label(
-        RichText::new(t("settings.editing.draw_snap_hint"))
-            .small()
-            .color(Color32::GRAY),
-    );
 }
 
 fn settings_validation(ui: &mut Ui, actions: &mut UiActions, _state: &mut SettingsUiState) {

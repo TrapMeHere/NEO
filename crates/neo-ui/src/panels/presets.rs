@@ -77,7 +77,8 @@ pub(super) fn preset_combo(
     id: ObjectId,
 ) {
     let geometry = preset_geometry_filter(data, kind, id);
-    let matched = neo_style::best_preset_for_tags(&tags_editor.rows, geometry);
+    let concrete = tags_editor.concrete_tags();
+    let matched = neo_style::best_preset_for_tags(&concrete, geometry);
     let zh = neo_i18n::current_language() == neo_i18n::Lang::ZhCn;
     let button_label = matched
         .map(|preset| {

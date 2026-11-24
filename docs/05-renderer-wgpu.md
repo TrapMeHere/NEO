@@ -126,7 +126,7 @@ pub struct CameraUniform {       // 32 B，16 B 对齐
 - 连接处（miter/bevel/round）由 `neo-geo` 生成的额外四边形补齐；round join 不生成扇面，用端点圆片 + 解析 AA。
 - 抗锯齿：片元用 `cov = saturate(1.0 - (abs(across) - 1.0 + 1.0/px))` 做 1 px 覆盖带，**不依赖 MSAA**。
 - 虚线：`flags.dash` + `uv.x = 累计弧长 / dash_period`，片元按 fract 取舍；`dash_reset` 表示新对象起点重置相位。
-- casing：**先**画宽 casing 批次、**后**画窄 fill 批次；由 `BatchFlags::casing_of` 保证相邻，任何 z-index 变化都必须整体移动这一对（`neo-scene` 负责，渲染层只校验顺序，违序则记一条 `debug!`）。
+- casing：**先**画宽 casing 批次、**后**画窄 fill 批次；由 `BatchFlags::casing_of` 保证相邻，任何 z-index 变化都必须整体移动这一对（`neo-scene` 负责，渲染层只校验顺序，违序则记一条 `debug!`）。当前实现（[11](11-style-presets-mapcss.md) §0）：每层一个独立 `BatchKind::Casing` 批次，提交顺序 `fill → casing → stroke → point`，桥梁外框/隧道虚线外框/过水路面水面都走这条通道。
 - 不走 `POLYGON_MODE_LINE`：它的线宽在所有后端都不可靠（多数实现固定 1 px），只作为调试开关。
 
 ### 2.4 管线 B：面 / 建筑 fill

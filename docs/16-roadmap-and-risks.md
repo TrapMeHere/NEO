@@ -76,7 +76,7 @@ NEO 按六个阶段推进：**技术底座 → OSM 数据核心 → 基础编辑
 
 | 维度 | 内容 |
 |---|---|
-| 交付物 | `neo-api`（API 0.6 客户端、changeset、diff 上传、409/412、notes）；`neo-persist`（SQLite WAL、journal 文件、autosave、崩溃恢复）；`neo-validate`（内置规则 + MapCSS validator）；`neo-style`（MapCSS 渲染样式、过滤器、Presets v1）；冲突解决 UI；下载/上传往返 |
+| 交付物 | `neo-api`（API 0.6 客户端、changeset、diff 上传、409/412、notes）；`neo-persist`（SQLite WAL、journal 文件、autosave、崩溃恢复）；`neo-validate`（内置规则 + MapCSS validator）；`neo-style`（MapCSS 渲染样式、Presets v1）；冲突解决 UI；下载/上传往返 |
 | 可量化验收 | (a) 完整工作流端到端跑通：下载区域 → 编辑 → 校验 → 上传 → 触发 409 → 解决冲突 → 重传成功；(b) 六类 `MergeCase` 全部有集成测试（[06](./06-editing-core-and-undo.md) §2.6）；(c) 断电/杀进程后 `RecoveryReport` 可见且 `replayed_txns > 0`；(d) 校验规则对已知错误集的召回与 JOSM 对齐（按规则逐条比对，差异登记）；(e) autosave 周期与保留代数符合配置 |
 | 依赖 | 阶段 3 的 `Editor`/`History`/`Journal` 接口；[09](./09-osm-api-and-sync.md) / [10](./10-persistence-and-recovery.md) / [12](./12-validation.md) 的契约 |
 | 主要风险 | R2（冲突语义与 JOSM 差异）、R3（MapCSS/Presets 兼容）、R4（JOSM presets 资产许可）、R1（reqwest 等清单外依赖准入） |

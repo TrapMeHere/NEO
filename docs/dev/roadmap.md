@@ -22,7 +22,7 @@
 - `neo-editor`：MergeCase/ConflictResolution/标签三方合并 + 6 类冲突测试；journal 恢复报告 `RecoveryReport`
 
 已交付：MapCSS 子集样式、真实 HTTP 同步 UI、KeepLocal/TakeRemote 冲突策略、SQLite 快照、
-changeset 端到端（mock）测试。仍待：手合并 UI、MapCSS text/icon/过滤器全集、
+changeset 端到端（mock）测试。仍待：手合并 UI、MapCSS text/icon 全集、
 上传前 validator gate、真实网络人工验收。
 
 ## 当前限制

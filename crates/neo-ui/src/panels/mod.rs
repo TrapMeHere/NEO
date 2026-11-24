@@ -18,7 +18,6 @@ mod changeset;
 mod chrome;
 mod download;
 mod export;
-mod filter;
 mod imagery;
 mod notes;
 mod plugins;
@@ -32,7 +31,6 @@ pub use changeset::{ChangesetUiState, ChangesetView, changeset_window};
 pub use chrome::{apply_modern_style, menu_bar, tool_palette, top_toolbar};
 pub use download::{BboxView, DownloadTab, DownloadUiState, download_window};
 pub use export::{ExportUiState, export_window};
-pub use filter::{FilterUiState, filter_window};
 pub use imagery::{ImageryUiState, imagery_window};
 pub use notes::{NoteCommentView, NoteView, NotesUiState, notes_window};
 pub use plugins::{PluginUiState, PluginView, plugins_window};
@@ -56,6 +54,8 @@ pub enum UiMode {
     DrawArea,
     /// 测距。
     Measure,
+    /// 按点分割：点击路径上的节点即在该点分割经过它的路径。
+    SplitPoint,
 }
 
 /// 关系成员编辑意图（由应用层转成 `SetRelationMembers` 命令）。
@@ -122,6 +122,37 @@ pub struct LayerView {
     pub role: LayerRole,
 }
 
+/// 一次标签修改：对 `targets` 每个对象应用 `set`（添加/覆盖），并删除 `remove` 里的 key。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagEdit {
+    /// 要修改的对象（kind, id）。
+    pub targets: Vec<(ObjectKind, ObjectId)>,
+    /// 要添加/覆盖的标签。
+    pub set: Vec<(String, String)>,
+    /// 要从所有对象删除的 key。
+    pub remove: Vec<String>,
+}
+
+/// 标签值在选中集合中的状态。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TagValue {
+    /// 所有选中对象该 key 的值一致。
+    Same(String),
+    /// 值不一致或部分对象缺少该 key；保存出现过的值（去重，按首次出现顺序）。
+    Mixed(Vec<String>),
+}
+
+/// 标签编辑器的一行（多个选中对象按并集展示）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagRow {
+    /// 当前 key（可编辑）。
+    pub key: String,
+    /// 同步时的 key；空表示用户新加的行。
+    pub original_key: String,
+    /// 值状态。
+    pub value: TagValue,
+}
+
 /// UI 产生的意图，由应用层翻译成编辑命令/IO/相机操作。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiActions {
@@ -167,8 +198,8 @@ pub struct UiActions {
     pub mode: Option<UiMode>,
     /// 结束当前绘制 way。
     pub finish_way: bool,
-    /// 应用标签编辑结果。
-    pub apply_tags: Option<Vec<(String, String)>>,
+    /// 标签修改（失焦/选择下拉值时产生）。
+    pub tag_edit: Option<TagEdit>,
     /// 分割选中的 way。
     pub split_way: bool,
     /// 反转选中的 way。
@@ -249,14 +280,6 @@ pub struct UiActions {
     pub relation_member_edit: Option<RelationMemberEdit>,
     /// 打开/关闭查找窗口。
     pub toggle_search: bool,
-    /// 打开/关闭过滤器窗口。
-    pub toggle_filter: bool,
-    /// 应用过滤器。
-    pub apply_filter: bool,
-    /// 清除过滤器。
-    pub clear_filter: bool,
-    /// 隐藏当前选择。
-    pub hide_selected: bool,
     /// 打开/关闭 Notes 窗口。
     pub toggle_notes: bool,
     /// 刷新当前区域的 notes。
@@ -301,16 +324,12 @@ pub struct UiActions {
     pub imagery_apply_offset: bool,
     /// 选中查找结果并定位。
     pub focus_object: Option<(ObjectKind, ObjectId)>,
-    /// 打开/关闭同步窗口。
+    /// 打开/关闭上传窗口（原“同步”窗口，现只负责上传；下载在独立窗口）。
     pub toggle_sync: bool,
-    /// 下载当前区域。
-    pub sync_download: bool,
     /// 上传本地修改。
     pub sync_upload: bool,
     /// 只上传选中对象的修改。
     pub sync_upload_selected: bool,
-    /// 冲突后重新下载（放弃本地修改）。
-    pub sync_redownload: bool,
     /// 冲突后保留本地（对齐版本并重试上传）。
     pub sync_keep_local: bool,
     /// 用服务端对象覆盖单个本地冲突对象。
@@ -387,11 +406,13 @@ pub enum ExportFormat {
     Session,
 }
 
-/// 标签编辑器状态（应用层每帧用当前选中对象的标签同步）。
+/// 标签编辑器状态：单选与多选共用同一套行模型（多选按并集显示）。
 #[derive(Default)]
 pub struct TagsEditor {
-    target: Option<(ObjectKind, ObjectId)>,
-    rows: Vec<(String, String)>,
+    targets: Vec<(ObjectKind, ObjectId)>,
+    rows: Vec<TagRow>,
+    /// 行模型对应的数据版本；版本变化（撤销/重做/外部修改）时重新同步。
+    synced_version: Option<u64>,
     preset_search: String,
     /// 当前预设分类 id；空表示全部分类。
     preset_category: String,
@@ -399,12 +420,12 @@ pub struct TagsEditor {
     preset_pinned: bool,
     /// 正在同一列表里选分组（不另开下拉）。
     preset_picking: bool,
-    /// 上次已写回数据的标签（用于自动应用，避免每帧重复提交）。
-    applied: Vec<(String, String)>,
     /// 添加关系成员时使用的角色。
     relation_role: String,
     /// 正在编辑的成员角色：(relation, index, buffer)。
     member_role_edit: Option<(ObjectId, usize, String)>,
+    /// 预设应用后待提交的标签修改（下一次 [`Self::show`] 返回）。
+    pending: Option<TagEdit>,
 }
 
 impl TagsEditor {
@@ -413,9 +434,9 @@ impl TagsEditor {
         Self::default()
     }
 
-    /// 当前目标。
-    pub fn target(&self) -> Option<(ObjectKind, ObjectId)> {
-        self.target
+    /// 当前编辑目标集合。
+    pub fn targets(&self) -> &[(ObjectKind, ObjectId)] {
+        &self.targets
     }
 
     /// 添加关系成员时使用的角色。
@@ -423,153 +444,406 @@ impl TagsEditor {
         &self.relation_role
     }
 
+    /// 目标集合或数据版本变化时需要重新扫描并集。
+    pub fn needs_sync(&self, targets: &[(ObjectKind, ObjectId)], version: u64) -> bool {
+        self.targets != targets || self.synced_version != Some(version)
+    }
+
+    /// 强制下一次同步重算（撤销/重做/删除后调用）。
+    pub fn invalidate(&mut self) {
+        self.synced_version = None;
+    }
+
     /// 清空（没有选中对象时）。
     pub fn clear(&mut self) {
-        self.target = None;
+        self.targets.clear();
         self.rows.clear();
+        self.synced_version = None;
         self.preset_search.clear();
         self.preset_category.clear();
         self.preset_pinned = false;
         self.preset_picking = false;
-        self.applied.clear();
         self.member_role_edit = None;
+        self.pending = None;
     }
 
-    /// 应用预设标签：已有 key 覆盖值，新 key 追加。
-    /// 先去掉现有 `area`（含绘制面时自动写入的 `area=yes`），再写入预设，避免与预设自带 `area=yes` 纠缠。
-    pub fn apply_preset(&mut self, tags: &[(&str, &str)]) {
-        self.rows.retain(|(key, _)| key != "area");
-        for (key, value) in tags {
-            if let Some(row) = self.rows.iter_mut().find(|(existing, _)| existing == key) {
-                row.1 = (*value).to_owned();
-            } else {
-                self.rows.push(((*key).to_owned(), (*value).to_owned()));
-            }
-        }
-    }
-
-    /// 应用 schema 或品牌预设：先去掉现有 `area` 与 `remove` 里的 key，再写入标签。
-    pub fn apply_preset_owned(&mut self, tags: &[(String, String)], remove: &[String]) {
-        self.rows.retain(|(key, _)| key != "area");
-        if !remove.is_empty() {
+    /// 用数据集当前的并集行模型同步编辑器。
+    pub fn sync(&mut self, targets: &[(ObjectKind, ObjectId)], version: u64, rows: &[TagRow]) {
+        let targets_changed = self.targets != targets;
+        // 未失焦的新增行（草稿）在数据版本变化时保留，避免别的行提交后
+        // 把用户正在输入的新行冲掉。
+        let drafts: Vec<TagRow> = if targets_changed {
+            Vec::new()
+        } else {
             self.rows
-                .retain(|(key, _)| !remove.iter().any(|gone| gone == key));
-        }
-        for (key, value) in tags {
-            if let Some(row) = self.rows.iter_mut().find(|(existing, _)| existing == key) {
-                row.1 = value.clone();
-            } else {
-                self.rows.push((key.clone(), value.clone()));
-            }
-        }
-    }
-
-    /// 用外部数据强制重载（undo/redo/同步后调用），避免把过期的 UI 值写回。
-    pub fn resync(&mut self, tags: &[(String, String)]) {
-        if self.target.is_some() {
-            self.rows = tags.to_vec();
-            self.applied = Self::cleaned_tags(tags);
-        }
-    }
-
-    /// 与当前选中对象同步；目标变化时重新加载标签。
-    pub fn sync(&mut self, kind: ObjectKind, id: ObjectId, tags: &[(String, String)]) {
-        if self.target != Some((kind, id)) {
-            self.target = Some((kind, id));
-            self.rows = tags.to_vec();
-            self.applied = Self::cleaned_tags(tags);
+                .iter()
+                .filter(|row| row.original_key.is_empty())
+                .cloned()
+                .collect()
+        };
+        self.targets = targets.to_vec();
+        self.synced_version = Some(version);
+        self.rows = rows.to_vec();
+        if targets_changed {
             self.preset_category.clear();
             self.preset_pinned = false;
             self.preset_picking = false;
         }
+        for draft in drafts {
+            let keep = !draft.key.trim().is_empty()
+                || !matches!(&draft.value, TagValue::Same(value) if value.is_empty());
+            if keep {
+                self.rows.push(draft);
+            }
+        }
+        self.pending = None;
     }
 
-    fn cleaned_tags(rows: &[(String, String)]) -> Vec<(String, String)> {
-        rows.iter()
-            .filter(|(key, value)| !key.trim().is_empty() && !value.trim().is_empty())
-            .map(|(key, value)| (key.trim().to_owned(), value.clone()))
+    /// 行模型里可落地的具体标签（用于预设匹配/差异计算）。
+    pub fn concrete_tags(&self) -> Vec<(String, String)> {
+        self.rows
+            .iter()
+            .filter_map(|row| match &row.value {
+                TagValue::Same(value) if !row.key.trim().is_empty() && !value.trim().is_empty() => {
+                    Some((row.key.trim().to_owned(), value.trim().to_owned()))
+                }
+                _ => None,
+            })
             .collect()
     }
 
-    /// 绘制编辑器。标签相对上次写回有变化时立即返回新标签。
-    /// 值被清空并失焦时立即删除该行（不允许空值标签）。
-    pub fn show(&mut self, ui: &mut Ui) -> Option<Vec<(String, String)>> {
-        let mut remove_at: Vec<usize> = Vec::new();
-        let mut defer_empty_apply = false;
+    fn upsert_concrete(&mut self, key: &str, value: &str) {
+        if let Some(row) = self.rows.iter_mut().find(|row| row.key == key) {
+            row.value = TagValue::Same(value.to_owned());
+        } else {
+            self.rows.push(TagRow {
+                key: key.to_owned(),
+                original_key: key.to_owned(),
+                value: TagValue::Same(value.to_owned()),
+            });
+        }
+    }
+
+    /// 应用 schema 或品牌预设：先去掉现有 `area` 与 `remove` 里的 key，再写入标签。
+    ///
+    /// 修改暂存为一次待提交的 [`TagEdit`]，由下一次 [`Self::show`] 返回。
+    pub fn apply_preset_owned(&mut self, tags: &[(String, String)], remove: &[String]) {
+        if self.targets.is_empty() {
+            return;
+        }
+        let before = self.concrete_tags();
+        self.rows
+            .retain(|row| row.key != "area" && !remove.iter().any(|gone| gone == &row.key));
+        for (key, value) in tags {
+            self.upsert_concrete(key, value);
+        }
+        let after = self.concrete_tags();
+        let set: Vec<(String, String)> = after
+            .iter()
+            .filter(|(key, value)| {
+                !before
+                    .iter()
+                    .any(|(old_key, old_value)| old_key == key && old_value == value)
+            })
+            .cloned()
+            .collect();
+        let remove_keys: Vec<String> = before
+            .iter()
+            .map(|(key, _)| key.clone())
+            .filter(|key| !after.iter().any(|(new_key, _)| new_key == key))
+            .collect();
+        if !set.is_empty() || !remove_keys.is_empty() {
+            self.pending = Some(TagEdit {
+                targets: self.targets.clone(),
+                set,
+                remove: remove_keys,
+            });
+        }
+    }
+
+    /// 绘制编辑器。用户完成一次编辑（失焦/选择值/删除行）时返回标签修改。
+    pub fn show(&mut self, ui: &mut Ui) -> Option<TagEdit> {
+        if let Some(edit) = self.pending.take() {
+            return Some(edit);
+        }
+        if self.targets.is_empty() {
+            return None;
+        }
+        let targets = self.targets.clone();
+        let mut edit: Option<TagEdit> = None;
+        let mut remove_row: Option<usize> = None;
+        let mut add_row = false;
         egui::ScrollArea::vertical()
             .id_salt("neo-tags-editor")
             .max_height(180.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                for (idx, (key, value)) in self.rows.iter_mut().enumerate() {
+                for (idx, row) in self.rows.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(key).desired_width(90.0));
-                        ui.label("=");
-                        let value_resp = ui.add(egui::TextEdit::singleline(value).desired_width(112.0));
-                        if value_resp.has_focus() && value.trim().is_empty() {
-                            // 仍在编辑空值：先不提交删除，等失焦。
-                            defer_empty_apply = true;
+                        // 值不一致时 key 只读：跨对象改名没有确定语义。
+                        if matches!(row.value, TagValue::Mixed(_)) {
+                            ui.add_sized(
+                                [90.0, ui.spacing().interact_size.y],
+                                egui::Label::new(RichText::new(row.key.as_str()).monospace()).truncate(),
+                            );
+                        } else {
+                            let key_resp =
+                                ui.add(egui::TextEdit::singleline(&mut row.key).desired_width(90.0));
+                            if key_resp.lost_focus() {
+                                let new_key = row.key.trim().to_owned();
+                                let value = match &row.value {
+                                    TagValue::Same(value) => value.trim().to_owned(),
+                                    TagValue::Mixed(_) => String::new(),
+                                };
+                                if !new_key.is_empty() {
+                                    if row.original_key.is_empty() {
+                                        if !value.is_empty() {
+                                            edit = Some(TagEdit {
+                                                targets: targets.clone(),
+                                                set: vec![(new_key.clone(), value)],
+                                                remove: Vec::new(),
+                                            });
+                                            row.original_key = new_key;
+                                        }
+                                    } else if new_key != row.original_key && !value.is_empty() {
+                                        edit = Some(TagEdit {
+                                            targets: targets.clone(),
+                                            set: vec![(new_key.clone(), value)],
+                                            remove: vec![row.original_key.clone()],
+                                        });
+                                        row.original_key = new_key;
+                                    }
+                                }
+                            }
                         }
-                        if value_resp.lost_focus() && value.trim().is_empty() {
-                            remove_at.push(idx);
+                        ui.label("=");
+                        match &mut row.value {
+                            TagValue::Same(value) => {
+                                let value_resp =
+                                    ui.add(egui::TextEdit::singleline(value).desired_width(112.0));
+                                if value_resp.lost_focus() {
+                                    let key = if row.original_key.is_empty() {
+                                        row.key.trim().to_owned()
+                                    } else {
+                                        row.original_key.clone()
+                                    };
+                                    if !key.is_empty() {
+                                        let new_value = value.trim().to_owned();
+                                        let empty = new_value.is_empty();
+                                        if row.original_key.is_empty() {
+                                            // 新行：只在有值时才写入；清空不产生删除。
+                                            if !empty {
+                                                row.original_key = key.clone();
+                                                edit = Some(TagEdit {
+                                                    targets: targets.clone(),
+                                                    set: vec![(key, new_value)],
+                                                    remove: Vec::new(),
+                                                });
+                                            }
+                                        } else {
+                                            edit = Some(TagEdit {
+                                                targets: targets.clone(),
+                                                set: if empty {
+                                                    Vec::new()
+                                                } else {
+                                                    vec![(key.clone(), new_value)]
+                                                },
+                                                remove: if empty { vec![key] } else { Vec::new() },
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            TagValue::Mixed(values) => {
+                                let button = ui.add_sized(
+                                    [112.0, ui.spacing().interact_size.y],
+                                    egui::Button::new("……"),
+                                );
+                                egui::Popup::menu(&button).width(160.0).show(|ui| {
+                                    for value in values.iter() {
+                                        if ui.button(value).clicked() {
+                                            edit = Some(TagEdit {
+                                                targets: targets.clone(),
+                                                set: vec![(row.key.clone(), value.clone())],
+                                                remove: Vec::new(),
+                                            });
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            }
                         }
                         if ui
                             .add(egui::Button::new(RichText::new(ph::X).size(12.0)).frame(false))
                             .clicked()
                         {
-                            remove_at.push(idx);
+                            remove_row = Some(idx);
                         }
                     });
                 }
             });
-        remove_at.sort_unstable();
-        remove_at.dedup();
-        for idx in remove_at.into_iter().rev() {
-            if idx < self.rows.len() {
-                self.rows.remove(idx);
+        if ui.button(format!("{} {}", ph::PLUS, t("tags.add"))).clicked() {
+            add_row = true;
+        }
+        if let Some(idx) = remove_row {
+            let row = self.rows.remove(idx);
+            let key = if row.original_key.is_empty() {
+                row.key.trim().to_owned()
+            } else {
+                row.original_key
+            };
+            if !key.is_empty() {
+                let removal = TagEdit {
+                    targets,
+                    set: Vec::new(),
+                    remove: vec![key],
+                };
+                edit = Some(match edit {
+                    Some(mut current) => {
+                        current.remove.extend(removal.remove);
+                        current
+                    }
+                    None => removal,
+                });
             }
         }
-        if self.target.is_some() && ui.button(format!("{} {}", ph::PLUS, t("tags.add"))).clicked() {
-            self.rows.push((String::new(), String::new()));
+        if add_row {
+            self.rows.push(TagRow {
+                key: String::new(),
+                original_key: String::new(),
+                value: TagValue::Same(String::new()),
+            });
         }
-        let cleaned = Self::cleaned_tags(&self.rows);
-        if self.target.is_some() && cleaned != self.applied && !defer_empty_apply {
-            return Some(cleaned);
-        }
-        None
+        edit
     }
+}
 
-    /// 上次返回的标签已成功写入数据。
-    pub fn mark_applied(&mut self) {
-        self.applied = Self::cleaned_tags(&self.rows);
+/// 多个选中对象的标签并集（单选即其自身标签）。
+///
+/// key 顺序按对象顺序首次出现排列；值完全一致时是 [`TagValue::Same`]，否则
+/// [`TagValue::Mixed`]（列出出现过的值）。
+pub fn tag_rows_from(lists: &[Vec<(String, String)>]) -> Vec<TagRow> {
+    if lists.is_empty() {
+        return Vec::new();
     }
+    let mut order: Vec<String> = Vec::new();
+    for list in lists {
+        for (key, _) in list {
+            if !order.iter().any(|existing| existing == key) {
+                order.push(key.clone());
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|key| {
+            let values: Vec<&str> = lists
+                .iter()
+                .filter_map(|list| {
+                    list.iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, value)| value.as_str())
+                })
+                .collect();
+            let all_same = values.len() == lists.len() && values.windows(2).all(|pair| pair[0] == pair[1]);
+            let value = if all_same {
+                TagValue::Same(values[0].to_owned())
+            } else {
+                let mut distinct: Vec<String> = Vec::new();
+                for value in values {
+                    if !distinct.iter().any(|seen| seen == value) {
+                        distinct.push(value.to_owned());
+                    }
+                }
+                TagValue::Mixed(distinct)
+            };
+            TagRow {
+                key: key.clone(),
+                original_key: key,
+                value,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tags_editor_tests {
-    use super::TagsEditor;
+    use super::{TagValue, TagsEditor, tag_rows_from};
     use neo_core::{ObjectId, ObjectKind};
 
-    #[test]
-    fn apply_preset_strips_existing_area_then_applies_preset() {
-        let mut editor = TagsEditor::new();
-        editor.sync(ObjectKind::Way, ObjectId(-1), &[("area".into(), "yes".into())]);
-        editor.apply_preset_owned(
-            &[("building".into(), "yes".into()), ("area".into(), "yes".into())],
-            &[],
-        );
-        assert_eq!(
-            editor.rows,
-            vec![("building".into(), "yes".into()), ("area".into(), "yes".into()),]
-        );
+    fn tags(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    fn targets() -> Vec<(ObjectKind, ObjectId)> {
+        vec![(ObjectKind::Way, ObjectId(1)), (ObjectKind::Way, ObjectId(2))]
     }
 
     #[test]
-    fn apply_preset_without_area_drops_creation_area_yes() {
+    fn union_rows_keep_common_values_and_mark_mixed() {
+        let rows = tag_rows_from(&[
+            tags(&[("highway", "residential"), ("name", "A"), ("surface", "asphalt")]),
+            tags(&[("highway", "residential"), ("name", "B")]),
+        ]);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].key, "highway");
+        assert_eq!(rows[0].value, TagValue::Same("residential".into()));
+        assert_eq!(rows[1].key, "name");
+        assert_eq!(rows[1].value, TagValue::Mixed(vec!["A".into(), "B".into()]));
+        // 只有第一个对象有 surface：也是混合，下拉里列出已有的值。
+        assert_eq!(rows[2].key, "surface");
+        assert_eq!(rows[2].value, TagValue::Mixed(vec!["asphalt".into()]));
+    }
+
+    #[test]
+    fn single_object_rows_are_all_same() {
+        let rows = tag_rows_from(&[tags(&[("building", "yes")])]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, TagValue::Same("yes".into()));
+        assert_eq!(rows[0].original_key, "building");
+    }
+
+    #[test]
+    fn sync_only_reloads_on_target_or_version_change() {
         let mut editor = TagsEditor::new();
-        editor.sync(ObjectKind::Way, ObjectId(-1), &[("area".into(), "yes".into())]);
-        editor.apply_preset_owned(&[("highway".into(), "pedestrian".into())], &[]);
-        assert_eq!(editor.rows, vec![("highway".into(), "pedestrian".into())]);
-        assert!(!editor.rows.iter().any(|(k, _)| k == "area"));
+        let rows = tag_rows_from(&[tags(&[("highway", "residential")])]);
+        let targets = targets();
+        assert!(editor.needs_sync(&targets, 7));
+        editor.sync(&targets, 7, &rows);
+        assert!(!editor.needs_sync(&targets, 7));
+        assert!(editor.needs_sync(&targets, 8));
+        assert!(editor.needs_sync(&targets[..1], 7));
+        editor.invalidate();
+        assert!(editor.needs_sync(&targets, 7));
+    }
+
+    #[test]
+    fn preset_change_returns_one_edit_for_all_targets() {
+        let mut editor = TagsEditor::new();
+        let rows = tag_rows_from(&[tags(&[("area", "yes")])]);
+        editor.sync(&targets(), 7, &rows);
+        editor.apply_preset_owned(&[("building".into(), "yes".into())], &[]);
+        let edit = editor.pending.clone().expect("预设应产生待提交修改");
+        assert_eq!(edit.targets, targets());
+        assert!(edit.set.contains(&("building".to_owned(), "yes".to_owned())));
+        // 旧实现会先清掉绘制时自动写入的 area，这里同样作为删除提交。
+        assert_eq!(edit.remove, vec!["area".to_owned()]);
+    }
+
+    #[test]
+    fn concrete_tags_skips_mixed_rows() {
+        let mut editor = TagsEditor::new();
+        let rows = tag_rows_from(&[
+            tags(&[("highway", "residential"), ("name", "A")]),
+            tags(&[("highway", "residential"), ("name", "B")]),
+        ]);
+        editor.sync(&targets(), 7, &rows);
+        assert_eq!(
+            editor.concrete_tags(),
+            vec![("highway".to_owned(), "residential".to_owned())]
+        );
     }
 }

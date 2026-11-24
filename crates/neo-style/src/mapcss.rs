@@ -4,9 +4,10 @@
 //! * 选择器：`way` / `node` / `relation` / `area` / `*`，可带 `[key]`、`[key=value]`；
 //! * 逗号分隔多个选择器；
 //! * 缩放过滤：`|z12-`、`|z14-z18`；
-//! * 声明：`color`、`fill-color`、`width`、`opacity`（`#rgb/#rrggbb/#rrggbbaa`）。
+//! * 声明：`color`、`fill-color`、`width`、`opacity`、`casing-color` /
+//!   `casing-width` / `casing-dashes`（`#rgb/#rrggbb/#rrggbbaa`）。
 //!
-//! 未支持：`@media`、`eval()`、`setting()`、图案、dashes、icon-image、text 等；
+//! 未支持：`@media`、`eval()`、`setting()`、图案等；
 //! 这些在 docs/11 中列为后续兼容项。解析失败不会让程序崩溃（调用方回退内置调色板）。
 
 #![allow(missing_docs)]
@@ -61,6 +62,12 @@ pub struct Declarations {
     pub icon_image: Option<String>,
     /// `icon-width`（屏幕像素）。
     pub icon_width: Option<f32>,
+    /// `casing-color`：外描边颜色。
+    pub casing_color: Option<[u8; 4]>,
+    /// `casing-width`：外描边宽度（屏幕像素）。
+    pub casing_width: Option<f32>,
+    /// `casing-dashes`：外描边虚线图案（屏幕像素）。
+    pub casing_dashes: Option<Vec<f32>>,
 }
 
 impl Declarations {
@@ -102,6 +109,15 @@ impl Declarations {
         }
         if other.icon_width.is_some() {
             self.icon_width = other.icon_width;
+        }
+        if other.casing_color.is_some() {
+            self.casing_color = other.casing_color;
+        }
+        if other.casing_width.is_some() {
+            self.casing_width = other.casing_width;
+        }
+        if other.casing_dashes.is_some() {
+            self.casing_dashes = other.casing_dashes.clone();
         }
     }
 }
@@ -419,6 +435,9 @@ fn parse_declarations(text: &str, warnings: &mut Vec<String>) -> Result<Declarat
                 None => warnings.push(format!("unsupported icon expression `{value}`")),
             },
             "icon-width" => decls.icon_width = Some(parse_f32(value)?),
+            "casing-color" => decls.casing_color = Some(parse_color(value)?),
+            "casing-width" => decls.casing_width = Some(parse_f32(value)?),
+            "casing-dashes" => decls.casing_dashes = Some(parse_dashes(value)?),
             _ => warnings.push(format!("unknown property `{key}`")),
         }
     }
@@ -529,6 +548,33 @@ mod tests {
         assert_eq!(parse_zoom(Some("z18")).unwrap(), (18.0, 18.0));
         assert_eq!(parse_zoom(Some("z14-")).unwrap().0, 14.0);
         assert!(parse_zoom(Some("z18-14")).is_err());
+    }
+
+    #[test]
+    fn casing_declarations_parse_and_merge() {
+        let css = MapCss::parse(
+            "way { casing-width: 4; casing-color: #112233; } way { casing-width: 6; casing-dashes: 4, 2; }",
+        )
+        .unwrap();
+        assert!(
+            css.warnings.is_empty(),
+            "casing-* 不应报 unknown property：{:?}",
+            css.warnings
+        );
+        let compiled = css.compile(|_| Sym::from_raw(0));
+        let decl = compiled.style(Element::Way, &[], 15.0).unwrap();
+        // 后规则覆盖前规则。
+        assert_eq!(decl.casing_width, Some(6.0));
+        assert_eq!(decl.casing_color, Some([0x11, 0x22, 0x33, 255]));
+        assert_eq!(decl.casing_dashes, Some(vec![4.0, 2.0]));
+    }
+
+    #[test]
+    fn casing_dashes_are_parsed() {
+        let css = MapCss::parse("way { casing-dashes: 4, 2; }").unwrap();
+        assert_eq!(css.rules[0].decls.casing_dashes, Some(vec![4.0, 2.0]));
+        assert_eq!(css.rules[0].decls.casing_width, None);
+        assert_eq!(css.rules[0].decls.casing_color, None);
     }
 
     #[test]

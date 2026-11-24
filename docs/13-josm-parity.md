@@ -154,7 +154,7 @@
 | Relations（`Alt+Shift+R`） | neo-ui · neo-editor | P0 | 设计 |
 | Conflict（JOSM 文档与 Selection 同键，NEO 需自定唯一键） | neo-ui · neo-editor | P0 | 设计 |
 | Validator Results（`Alt+Shift+V`，含定位/前后跳转/修复） | neo-ui · neo-validate | P0 | 设计 |
-| Filter（`Alt+Shift+F`，E/H/I/M + R/A/D/F 语义） | neo-style · neo-ui | P0 | 设计 |
+| Filter（`Alt+Shift+F`，E/H/I/M + R/A/D/F 语义） | — | — | 已移除（不做） |
 | Map Paint Styles（`Alt+Shift+M`）/Command Stack（`Alt+Shift+O`）/Changeset Manager（`Ctrl+Alt+C`） | neo-ui · neo-api | P1 | 设计 |
 | Notes / Mini Map / Authors / Geotagged Images（`Y`） | neo-ui | P2 | 未开始 |
 
@@ -237,7 +237,7 @@ JOSM 插件**无法**字节码兼容：它们编译依赖 `OsmPrimitive`/`MapMod
 | 4 | **全局撤销**：跨图层单一栈（命令持有自己的 dataset），切图层不清栈，含可撤销的 SelectCommand；上传后要正确阻断/警告 | 撤销行为与预期不符 |
 | 5 | **偏移按影像 id 持久化**（id 由 URL 派生），与偏移库无关也要存活重启 | 每次重新对齐影像 |
 | 6 | **validator 抑制持久化**："暂时忽略"与"整类忽略"不同，跨会话有效 | 每次启动都吵，用户关掉验证器 |
-| 7 | **Filter 语义**：每行 E/H/I/M（R 替换·A 增·D 删·F 找），自上而下求值，被过滤对象不可选中且**不参与搜索**，`Ctrl+Alt+E`+数字行开关 | 过滤变成"看不见但能选中"，出现幽灵操作 |
+| 7 | **Filter 语义**（已移除，不做：NEO 不再隐藏对象，选择不依赖渲染状态） | — |
 | 8 | **Expert mode 是功能门控**（Purge、复制坐标、Mirror、Follow Line、Add/Move Node、Changeset Manager、Jump To Position、Tiled Rendering…） | 隐藏错东西 → 高级用户以为功能消失 |
 
 ### 3.7 明确"不承诺"的范围
@@ -262,7 +262,7 @@ Day 2  追一条河（非分支选择）→ 分割/合并/反向（含 oneway �
 Day 3  编辑公交 relation（成员顺序、角色）→ 校验 → 上传；遇 409 → 四维度冲突解决 → 重传
 Day 4  导入本地 .osm + 参照 GPX/影像 → 偏移调整 → 存会话(.joz) → 重启 → 恢复
 Day 5  制造错误（自交/重复节点/未闭合 area）→ 修 3 条 / 抑制 2 条 → 重启确认抑制仍在
-Day 6  Filter 组合（R/A/D/F 各一次）+ 面板切换 + 全程键盘完成一次完整编辑；上传选中（局部）→ 关闭 changeset
+Day 6  全程键盘完成一次完整编辑：多选/框选 + 工具切换 + 属性编辑；上传选中（局部）→ 关闭 changeset
 Day 7  无头 validate/render 出报告与出图；用 `.joz` 会话在另一台机器复现今天的状态
 ```
 
@@ -314,7 +314,6 @@ Day 7  无头 validate/render 出报告与出图；用 `.joz` 会话在另一台
 - Data（零核心项、插件宿主）：https://josm.openstreetmap.de/wiki/Help/Menu/Data
 - Windows（面板与键位冲突）：https://josm.openstreetmap.de/wiki/Help/Menu/Windows
 - 冲突对话框（四维度/三列/Freeze）：https://josm.openstreetmap.de/wiki/Help/Dialog/Conflict
-- Filter（E/H/I/M 与 R/A/D/F）：https://josm.openstreetmap.de/wiki/Help/Dialog/Filter
 - 命令行选项（`render`/`project`/`validate`）：https://josm.openstreetmap.de/wiki/Help/CommandLineOptions
   > 待验证：`validate` 子命令选项表（一手文档只给用法块）。
 - 插件清单（233 个，含 `Plugin-Mainversion`）：https://josm.openstreetmap.de/plugin

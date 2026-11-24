@@ -389,7 +389,7 @@ pub struct NeoApp {
     last_scene_micros: u64,
     data_label: String,
     /// 等待二次确认的级联删除：记录首次按下删除时的目标集合。
-    /// 非空表示"同一批目标已被提示过会连带删除 way"。
+    /// 非空表示"同一批目标已被提示过会连带删除路径"。
     pending_delete: Option<Vec<(ObjectKind, ObjectId)>>,
     drag: Option<DragState>,
     /// 框选矩形（世界坐标起止）
@@ -401,9 +401,6 @@ pub struct NeoApp {
     show_help: bool,
     show_search: bool,
     search: neo_ui::SearchUiState,
-    show_filter: bool,
-    filter: neo_ui::FilterUiState,
-    hidden: std::collections::HashSet<(ObjectKind, ObjectId)>,
     show_notes: bool,
     notes: neo_ui::NotesUiState,
     notes_rx: Option<Receiver<Result<NotesOutcome, String>>>,
@@ -616,7 +613,7 @@ impl eframe::App for NeoApp {
         let selection = self.selection_target();
         let selection_list = self.selection_list();
         let validation_view = self.validation_view();
-        let merge_available = self.editor.selection().ways().len() == 2;
+        let merge_available = self.editor.selection().ways().len() >= 2;
         let history_labels = self.editor.history().labels();
         let layers_view = self.layers_view();
         egui::Panel::right("neo-properties")
@@ -683,7 +680,6 @@ impl eframe::App for NeoApp {
             .iter()
             .find(|account| account.active)
             .map(|account| account.display_name.clone());
-        let sync_bbox = self.current_bbox().1;
         let download_status = self.sync_status.clone();
         neo_ui::download_window(
             &ctx,
@@ -699,7 +695,6 @@ impl eframe::App for NeoApp {
             &mut actions,
             &mut self.show_sync,
             sync_account_name.as_deref(),
-            &sync_bbox,
             &mut self.sync_comment,
             &self.sync_status,
             self.sync_busy,
@@ -722,7 +717,6 @@ impl eframe::App for NeoApp {
             &mut self.search,
             self.editor.data(),
         );
-        neo_ui::filter_window(&ctx, &mut actions, &mut self.show_filter, &mut self.filter);
         neo_ui::notes_window(&ctx, &mut actions, &mut self.show_notes, &mut self.notes);
         neo_ui::plugins_window(&ctx, &mut actions, &mut self.show_plugins, &mut self.plugins);
         neo_ui::imagery_window(

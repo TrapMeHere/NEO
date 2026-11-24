@@ -61,9 +61,6 @@ impl NeoApp {
             show_help: std::env::var("NEO_SHOW_HELP").is_ok(),
             show_search: false,
             search: neo_ui::SearchUiState::default(),
-            show_filter: false,
-            filter: neo_ui::FilterUiState::default(),
-            hidden: std::collections::HashSet::new(),
             show_notes: false,
             notes: neo_ui::NotesUiState::default(),
             notes_rx: None,
@@ -239,6 +236,7 @@ impl NeoApp {
                 "line" | "draw" | "draw_line" => UiMode::DrawLine,
                 "area" | "draw_area" => UiMode::DrawArea,
                 "measure" => UiMode::Measure,
+                "split" | "split_point" => UiMode::SplitPoint,
                 _ => UiMode::Select,
             };
             app.controller.set_tool(match app.mode {
@@ -468,35 +466,67 @@ impl NeoApp {
         self.resync_tags();
     }
 
-    /// 用数据集的当前标签刷新标签编辑器（撤销/重做/删除后必须调用）
-    pub(super) fn resync_tags(&mut self) {
-        let Some((kind, id)) = self.tags.target() else {
-            return;
-        };
+    /// 读取一个对象的标签（字符串对）；对象不存在时返回 `None`。
+    pub(super) fn object_tag_strings(&self, kind: ObjectKind, id: ObjectId) -> Option<Vec<(String, String)>> {
         let data = self.editor.data();
         let pairs: &[(neo_core::Sym, neo_core::Sym)] = match kind {
             ObjectKind::Node => data
                 .node_handle(id)
                 .and_then(|handle| data.nodes.get(handle))
-                .map(|view| data.tag_pairs(view.tags))
-                .unwrap_or(&[]),
+                .map(|view| data.tag_pairs(view.tags))?,
             ObjectKind::Way => data
                 .way_handle(id)
                 .and_then(|handle| data.ways.get(handle))
-                .map(|view| data.tag_pairs(view.tags))
-                .unwrap_or(&[]),
+                .map(|view| data.tag_pairs(view.tags))?,
             ObjectKind::Relation => data
                 .relation_handle(id)
                 .and_then(|handle| data.relations.get(handle))
-                .map(|view| data.tag_pairs(view.tags))
-                .unwrap_or(&[]),
-            ObjectKind::Changeset => &[],
+                .map(|view| data.tag_pairs(view.tags))?,
+            ObjectKind::Changeset => return Some(Vec::new()),
         };
-        let tags: Vec<(String, String)> = pairs
-            .iter()
-            .map(|(key, value)| (data.resolve(*key).to_owned(), data.resolve(*value).to_owned()))
-            .collect();
-        self.tags.resync(&tags);
+        Some(
+            pairs
+                .iter()
+                .map(|(key, value)| (data.resolve(*key).to_owned(), data.resolve(*value).to_owned()))
+                .collect(),
+        )
+    }
+
+    /// 让标签编辑器在下一帧按当前数据重算（撤销/重做/删除/外部修改后调用）。
+    ///
+    /// 行模型由面板每帧按「选中集合 + 数据版本」自动同步，这里只需让缓存失效。
+    pub(super) fn resync_tags(&mut self) {
+        self.tags.invalidate();
+    }
+
+    /// 一次标签修改（单选/多选相同）：对每个目标对象套用「添加/覆盖 + 删除」。
+    ///
+    /// 所有改动用一次 `execute_batch` 提交，撤销时算一步。
+    pub(super) fn apply_tag_edit(&mut self, edit: neo_ui::TagEdit) {
+        let mut commands: Vec<Box<dyn neo_editor::Command>> = Vec::new();
+        for &(kind, id) in &edit.targets {
+            let Some(current) = self.object_tag_strings(kind, id) else {
+                continue;
+            };
+            let next = merged_tags(&current, &edit.set, &edit.remove);
+            if same_tags(&current, &next) {
+                continue;
+            }
+            commands.push(Box::new(neo_editor::SetTags::new(kind, id, next)));
+        }
+        if commands.is_empty() {
+            return;
+        }
+        match self.editor.execute_batch(commands) {
+            Ok(()) => {
+                self.resync_tags();
+                self.scene = None;
+            }
+            Err(err) => {
+                self.status = tf("app.error.tags_update", &[("err", &err.to_string())]);
+                self.resync_tags();
+            }
+        }
     }
 
     pub(super) fn ui_state(&self) -> UiState<'_> {
@@ -556,6 +586,7 @@ impl NeoApp {
             UiMode::DrawLine => t("app.mode.line"),
             UiMode::DrawArea => t("app.mode.area"),
             UiMode::Measure => t("app.mode.measure"),
+            UiMode::SplitPoint => t("app.mode.split"),
         }
     }
 
@@ -633,5 +664,85 @@ impl NeoApp {
         } else if !cancel {
             self.unsaved_prompt = Some(prompt);
         }
+    }
+}
+
+/// 在 `current` 上套用一次批量编辑：先删除 `remove` 里的 key，再写入 `set`
+/// （已存在的 key 覆盖值，新 key 追加）。
+fn merged_tags(
+    current: &[(String, String)],
+    set: &[(String, String)],
+    remove: &[String],
+) -> Vec<(String, String)> {
+    let mut next: Vec<(String, String)> = current
+        .iter()
+        .filter(|(key, _)| !remove.iter().any(|gone| gone == key))
+        .cloned()
+        .collect();
+    for (key, value) in set {
+        if let Some(row) = next.iter_mut().find(|(existing, _)| existing == key) {
+            row.1 = value.clone();
+        } else {
+            next.push((key.clone(), value.clone()));
+        }
+    }
+    next
+}
+
+/// 两组标签是否等价（与顺序无关；同一 key 以最后出现的为准）。
+fn same_tags(left: &[(String, String)], right: &[(String, String)]) -> bool {
+    fn normalized(tags: &[(String, String)]) -> Vec<(&str, &str)> {
+        let mut rows: Vec<(&str, &str)> = tags
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+    normalized(left) == normalized(right)
+}
+
+#[cfg(test)]
+mod bulk_tag_tests {
+    use super::{merged_tags, same_tags};
+
+    fn tags(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn merged_tags_adds_overwrites_and_removes() {
+        let current = tags(&[("highway", "residential"), ("surface", "asphalt")]);
+        let next = merged_tags(
+            &current,
+            &tags(&[("highway", "primary"), ("name", "Main")]),
+            &["surface".to_owned()],
+        );
+        assert_eq!(next, tags(&[("highway", "primary"), ("name", "Main")]));
+    }
+
+    #[test]
+    fn merged_tags_is_noop_for_an_identical_edit() {
+        let current = tags(&[("highway", "residential")]);
+        assert!(same_tags(&current, &merged_tags(&current, &[], &[])));
+        assert!(same_tags(
+            &current,
+            &merged_tags(&current, &tags(&[("highway", "residential")]), &[])
+        ));
+        assert!(!same_tags(
+            &current,
+            &merged_tags(&current, &tags(&[("highway", "primary")]), &[])
+        ));
+    }
+
+    #[test]
+    fn same_tags_ignores_order() {
+        let left = tags(&[("a", "1"), ("b", "2")]);
+        let right = tags(&[("b", "2"), ("a", "1")]);
+        assert!(same_tags(&left, &right));
+        assert!(!same_tags(&left, &tags(&[("a", "1")])));
     }
 }

@@ -8,13 +8,13 @@
 //! * 顶点坐标 = 世界坐标 - 批次原点（f32 米），原点取相机中心。
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::time::Instant;
 
-use neo_core::{Handle, ObjectId, ObjectKind};
+use neo_core::{Handle, ObjectKind};
 use neo_geo::{Camera, SpatialIndex, WorldCache, WorldPoint, geometry};
 use neo_store::DataSet;
-use neo_style::{Colors, MapCss, StyleKeys, StyleSheet};
+use neo_style::{Colors, HachureSide, MapCss, StyleKeys, StyleSheet};
 
 use crate::batches::{
     AreaBand, BatchKind, LabelPlace, MapVertex, RenderBatch, SceneFrame, SceneIcon, SceneLabel, SceneStats,
@@ -32,6 +32,7 @@ struct Scratch {
     stroke_indices: Vec<u32>,
     dash: Vec<WorldPoint>,
     positions: Vec<[f32; 2]>,
+    offset: Vec<WorldPoint>,
 }
 
 /// 进入 RDP 前的最大点数：超过则先做等比抽稀。
@@ -39,8 +40,13 @@ struct Scratch {
 const RDP_MAX_INPUT: usize = 256;
 
 /// 按 OSM `layer` 分桶的绘制批次；按 layer 升序提交，layer 大的压在上面。
+///
+/// 每层的提交顺序固定为 fill → casing → stroke → point：
+/// * `casing` 是结构物外描边（桥/隧道/过水路面的轮廓），必须压在主线下面；
+/// * `point` 最后，避免节点被线盖住。
 struct LayerBatches {
     fill: RenderBatch,
+    casing: RenderBatch,
     stroke: RenderBatch,
     point: RenderBatch,
 }
@@ -49,6 +55,8 @@ impl Default for LayerBatches {
     fn default() -> Self {
         Self {
             fill: RenderBatch::with_capacity(BatchKind::Fill, 8192, 16384),
+            // 桥/隧道只是少数要素，容量给得比 stroke 小一个量级。
+            casing: RenderBatch::with_capacity(BatchKind::Casing, 4096, 8192),
             stroke: RenderBatch::with_capacity(BatchKind::Stroke, 65536, 131072),
             point: RenderBatch::with_capacity(BatchKind::Point, 4096, 8192),
         }
@@ -58,15 +66,24 @@ impl Default for LayerBatches {
 fn total_layer_vertices(layers: &BTreeMap<i16, LayerBatches>) -> usize {
     layers
         .values()
-        .map(|batch| batch.fill.vertices.len() + batch.stroke.vertices.len() + batch.point.vertices.len())
+        .map(|batch| {
+            batch.fill.vertices.len()
+                + batch.casing.vertices.len()
+                + batch.stroke.vertices.len()
+                + batch.point.vertices.len()
+        })
         .sum()
 }
 
-fn way_layer(data: &DataSet, tags: &[(neo_core::Sym, neo_core::Sym)]) -> i16 {
+/// way 的绘制层。
+///
+/// 显式 `layer` 优先（与 JOSM 一致）；没有时按结构物语义取 `bias`（桥 +1、隧道 -1），
+/// 否则 0。这样桥面上的路不会被下方交叉路压住、隧道也不会盖住路面，不依赖遍历顺序。
+fn way_layer(data: &DataSet, tags: &[(neo_core::Sym, neo_core::Sym)], bias: i16) -> i16 {
     tags.iter()
         .find(|(key, _)| data.resolve(*key) == "layer")
         .and_then(|(_, value)| data.resolve(*value).trim().parse::<i16>().ok())
-        .unwrap_or(0)
+        .unwrap_or(bias)
         .clamp(-5, 5)
 }
 
@@ -152,8 +169,6 @@ pub struct SceneBuilder {
     pub style: StyleSheet,
     /// 配置。
     pub config: SceneConfig,
-    /// 被过滤器隐藏的对象（场景与拾取共用同一集合）。
-    hidden: HashSet<(ObjectKind, ObjectId)>,
     /// 复用缓冲区。
     scratch: RefCell<Scratch>,
 }
@@ -164,7 +179,6 @@ impl SceneBuilder {
         Self {
             style,
             config,
-            hidden: HashSet::new(),
             scratch: RefCell::new(Scratch::default()),
         }
     }
@@ -194,11 +208,6 @@ impl SceneBuilder {
     /// 为数据集构建默认样式（把 tag key 驻留进这份数据）。
     pub fn with_dataset(data: &mut DataSet) -> Self {
         Self::with_intern(|name| data.intern(name))
-    }
-
-    /// 设置过滤器隐藏集合；下一次 build 生效。
-    pub fn set_hidden(&mut self, hidden: HashSet<(ObjectKind, ObjectId)>) {
-        self.hidden = hidden;
     }
 
     /// 构建一帧场景。
@@ -250,12 +259,6 @@ impl SceneBuilder {
             let Some(handle) = entry.as_way() else {
                 return;
             };
-            if let Some(id) = data.ways.id(handle)
-                && self.hidden.contains(&(ObjectKind::Way, id))
-            {
-                stats.skipped += 1;
-                return;
-            }
             self.build_way(
                 data,
                 handle,
@@ -301,12 +304,6 @@ impl SceneBuilder {
                     return;
                 }
                 if let Some(handle) = entry.as_node() {
-                    if let Some(id) = data.nodes.id(handle)
-                        && self.hidden.contains(&(ObjectKind::Node, id))
-                    {
-                        stats.skipped += 1;
-                        return;
-                    }
                     let ref_count = referrers.ways_of_node(handle).len();
                     let visible = node_visible_at(camera.zoom, ref_count);
                     let shared = ref_count >= SHARED_NODE_MIN_WAYS;
@@ -333,6 +330,9 @@ impl SceneBuilder {
         for (_, batch) in layers {
             if !batch.fill.is_empty() {
                 batches.push(batch.fill);
+            }
+            if !batch.casing.is_empty() {
+                batches.push(batch.casing);
             }
             if !batch.stroke.is_empty() {
                 batches.push(batch.stroke);
@@ -390,7 +390,7 @@ impl SceneBuilder {
         let Some(color) = style.fill_color else {
             return;
         };
-        let layer = way_layer(data, view.tag_pairs);
+        let layer = way_layer(data, view.tag_pairs, 0);
         let _ = layers;
         let mut outers: Vec<Vec<WorldPoint>> = Vec::new();
         let mut inners: Vec<Vec<WorldPoint>> = Vec::new();
@@ -496,6 +496,7 @@ impl SceneBuilder {
             stroke_indices,
             dash,
             positions,
+            offset,
         } = &mut *scratch;
 
         geometry::way_points_cached_into(data, handle, cache, world);
@@ -511,9 +512,7 @@ impl SceneBuilder {
         let way_style = self.style.way_style(tags, camera.zoom as f32, &name_refs);
         // 节点引用闭合优先；世界坐标首尾相等作兜底（缺节点时仍可能画得出来）。
         let closed = view.is_closed() || (world.len() >= 4 && world[0] == world[world.len() - 1]);
-        let layer = way_layer(data, tags);
-        let batch = layers.entry(layer).or_default();
-        let stroke = &mut batch.stroke;
+        let layer = way_layer(data, tags, way_style.layer_bias);
         if let Some(label_key) = way_style.text.as_deref().or(Some("name"))
             && let Some((_, value)) = tags.iter().find(|(key, _)| data.resolve(*key) == label_key)
         {
@@ -611,74 +610,103 @@ impl SceneBuilder {
             return;
         }
         let width_m = camera.px_to_meters(width_px);
-        let mut dashed = false;
-        if let Some(pattern) = &way_style.dashes {
-            let pattern_m: Vec<f64> = pattern
-                .iter()
-                .filter_map(|px| {
-                    let value = camera.px_to_meters(*px);
-                    (value > 1e-6).then_some(value)
-                })
-                .collect();
-            if pattern_m.len() >= 2 {
-                dashed = true;
+        let batch = layers.entry(layer).or_default();
+
+        // ① 结构物外描边：桥梁轮廓、隧道虚线轮廓、过水路面水面。
+        //    单独一批先画（比主线宽，不能被同层的其它主线盖住）。
+        if let Some(casing) = &way_style.casing
+            && casing.width_px > 0.0
+        {
+            let casing_m = camera.px_to_meters(casing.width_px);
+            let mut drawn = false;
+            if let Some(pattern) = &casing.dashes {
+                drawn = dashed_stroke_into(
+                    simplified,
+                    casing_m,
+                    pattern,
+                    camera.meters_per_px(),
+                    dash,
+                    stroke_verts,
+                    stroke_indices,
+                );
+            }
+            if !drawn {
+                geometry::stroke_polyline_into(simplified, casing_m, stroke_verts, stroke_indices);
+            }
+            if !stroke_indices.is_empty() {
+                positions.clear();
+                positions.extend(stroke_verts.iter().map(|point| rel(*point, origin)));
+                batch.casing.push_indexed(positions, stroke_indices, casing.color);
+            }
+        }
+
+        // ② 路堤/路堑坡侧刻线：贴着主线画，短线颜色由样式层给定。
+        //    路堤还多一条外缘坡脚线（`baseline`），合起来是梯状坡面；路堑只有梳状齿线。
+        if let Some(hachure) = &way_style.hachure {
+            let sides: &[i8] = match hachure.side {
+                HachureSide::Left => &[1],
+                HachureSide::Right => &[-1],
+                HachureSide::Both => &[1, -1],
+            };
+            let length_m = camera.px_to_meters(hachure.length_px);
+            let width_m = camera.px_to_meters(hachure.width_px);
+            if hachure.baseline {
                 stroke_verts.clear();
                 stroke_indices.clear();
-                let mut on = true;
-                let mut index = 0usize;
-                let mut remaining = pattern_m[0];
-                for pair in simplified.windows(2) {
-                    let a = pair[0];
-                    let b = pair[1];
-                    let dx = b.x - a.x;
-                    let dy = b.y - a.y;
-                    let len = (dx * dx + dy * dy).sqrt();
-                    if len <= 1e-9 {
-                        continue;
-                    }
-                    let (ux, uy) = (dx / len, dy / len);
-                    let mut t = 0.0f64;
-                    while t < len - 1e-9 {
-                        if on && dash.is_empty() {
-                            dash.push(WorldPoint::new(a.x + ux * t, a.y + uy * t));
-                        }
-                        let step = (len - t).min(remaining);
-                        t += step;
-                        remaining -= step;
-                        if on {
-                            dash.push(WorldPoint::new(a.x + ux * t, a.y + uy * t));
-                        }
-                        if remaining <= 1e-9 {
-                            if on && dash.len() >= 2 {
-                                geometry::stroke_polyline_append(dash, width_m, stroke_verts, stroke_indices);
-                            }
-                            dash.clear();
-                            on = !on;
-                            index = (index + 1) % pattern_m.len();
-                            remaining = pattern_m[index];
-                        }
-                    }
+                for &side in sides {
+                    geometry::offset_polyline_into(simplified, length_m, side, offset);
+                    geometry::stroke_polyline_append(offset, width_m, stroke_verts, stroke_indices);
                 }
-                if on && dash.len() >= 2 {
-                    geometry::stroke_polyline_append(dash, width_m, stroke_verts, stroke_indices);
+                if !stroke_indices.is_empty() {
+                    positions.clear();
+                    positions.extend(stroke_verts.iter().map(|point| rel(*point, origin)));
+                    batch
+                        .stroke
+                        .push_indexed(positions, stroke_indices, hachure.color);
                 }
-                dash.clear();
             }
+            geometry::hachure_ticks(
+                simplified,
+                camera.px_to_meters(hachure.spacing_px),
+                length_m,
+                width_m,
+                if sides.len() == 2 { 0 } else { sides[0] },
+                stroke_verts,
+                stroke_indices,
+            );
+            if !stroke_indices.is_empty() {
+                positions.clear();
+                positions.extend(stroke_verts.iter().map(|point| rel(*point, origin)));
+                batch
+                    .stroke
+                    .push_indexed(positions, stroke_indices, hachure.color);
+            }
+        }
+
+        // ③ 主线：MapCSS dashes 优先，否则实线。
+        let mut dashed = false;
+        if let Some(pattern) = &way_style.dashes {
+            dashed = dashed_stroke_into(
+                simplified,
+                width_m,
+                pattern,
+                camera.meters_per_px(),
+                dash,
+                stroke_verts,
+                stroke_indices,
+            );
         }
         if !dashed {
             geometry::stroke_polyline_into(simplified, width_m, stroke_verts, stroke_indices);
         }
         if stroke_indices.is_empty() {
-            if dashed {
-                geometry::stroke_polyline_into(simplified, width_m, stroke_verts, stroke_indices);
-            }
-            if stroke_indices.is_empty() {
-                return;
-            }
+            return;
         }
         positions.clear();
         positions.extend(stroke_verts.iter().map(|p| rel(*p, origin)));
-        stroke.push_indexed(positions, stroke_indices, way_style.color);
+        batch
+            .stroke
+            .push_indexed(positions, stroke_indices, way_style.color);
         if let Some(forward) = way_arrow_forward(data, tags, closed && way_style.fill_color.is_some()) {
             let (arrow_verts, arrow_indices) = geometry::direction_arrows(
                 simplified,
@@ -690,7 +718,9 @@ impl SceneBuilder {
             if !arrow_indices.is_empty() {
                 positions.clear();
                 positions.extend(arrow_verts.iter().map(|point| rel(*point, origin)));
-                stroke.push_indexed(positions, &arrow_indices, arrow_ink(way_style.color));
+                batch
+                    .stroke
+                    .push_indexed(positions, &arrow_indices, arrow_ink(way_style.color));
             }
         }
         if !closed {
@@ -801,6 +831,78 @@ impl SceneBuilder {
     }
 }
 
+/// 按屏幕像素虚线模式描边，返回是否真的画出了至少一段。
+///
+/// `pattern_px` 是屏幕像素（奇偶交替实/虚），换算成米后沿折线走线；模式不足两段
+/// 或换算后为 0 时不画，调用方回退实线。结果覆盖写 `verts`/`indices`。
+#[allow(clippy::too_many_arguments)]
+fn dashed_stroke_into(
+    points: &[WorldPoint],
+    width_m: f64,
+    pattern_px: &[f32],
+    meters_per_px: f64,
+    dash: &mut Vec<WorldPoint>,
+    verts: &mut Vec<WorldPoint>,
+    indices: &mut Vec<u32>,
+) -> bool {
+    verts.clear();
+    indices.clear();
+    if points.len() < 2 || width_m <= 0.0 {
+        return false;
+    }
+    let pattern_m: Vec<f64> = pattern_px
+        .iter()
+        .map(|px| f64::from(*px) * meters_per_px)
+        .filter(|value| *value > 1e-6)
+        .collect();
+    if pattern_m.len() < 2 {
+        return false;
+    }
+    let mut drew = false;
+    let mut on = true;
+    let mut index = 0usize;
+    let mut remaining = pattern_m[0];
+    for pair in points.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len <= 1e-9 {
+            continue;
+        }
+        let (ux, uy) = (dx / len, dy / len);
+        let mut t = 0.0f64;
+        while t < len - 1e-9 {
+            if on && dash.is_empty() {
+                dash.push(WorldPoint::new(a.x + ux * t, a.y + uy * t));
+            }
+            let step = (len - t).min(remaining);
+            t += step;
+            remaining -= step;
+            if on {
+                dash.push(WorldPoint::new(a.x + ux * t, a.y + uy * t));
+            }
+            if remaining <= 1e-9 {
+                if on && dash.len() >= 2 {
+                    geometry::stroke_polyline_append(dash, width_m, verts, indices);
+                    drew = true;
+                }
+                dash.clear();
+                on = !on;
+                index = (index + 1) % pattern_m.len();
+                remaining = pattern_m[index];
+            }
+        }
+    }
+    if on && dash.len() >= 2 {
+        geometry::stroke_polyline_append(dash, width_m, verts, indices);
+        drew = true;
+    }
+    dash.clear();
+    drew
+}
+
 #[inline]
 fn rel(p: WorldPoint, origin: WorldPoint) -> [f32; 2] {
     // 日期变更线：把顶点放到离相机原点最近的"世界副本"，跨 180° 的 way
@@ -849,7 +951,7 @@ fn paint_area_bands(
     let mut hits = Vec::with_capacity(areas.len());
     for area in areas {
         let fill = &mut layers.entry(area.layer).or_default().fill;
-        let band = area_band_geometry(&area.outer, px_per_meter, width_m);
+        let band = area_band_geometry(&area.outer, &area.holes, px_per_meter, width_m);
         let solid = band.is_none();
         let drawn = if let Some((outer_band, outer_indices)) = band {
             push_band(fill, origin, &outer_band, &outer_indices, area.color);
@@ -878,12 +980,19 @@ fn paint_area_bands(
 }
 
 /// 短边够放下内圈时返回条带；否则返回 `None`，调用方改画实心。随当前缩放重算。
+///
+/// 有洞时还要求所有洞都远离条带内边界：条带几何不扣洞，洞若落在条带范围内会被整片
+/// 盖住（小内院建筑在 z≈15.7–16 时整洞变实），此时改走“实心 + 挖洞”。
 fn area_band_geometry(
     outer: &[WorldPoint],
+    holes: &[Vec<WorldPoint>],
     px_per_meter: f64,
     width_m: f64,
 ) -> Option<(Vec<WorldPoint>, Vec<u32>)> {
     if area_span_px(outer, px_per_meter) < AREA_BAND_PX {
+        return None;
+    }
+    if !geometry::band_clears_holes(outer, holes, width_m) {
         return None;
     }
     let band = geometry::ring_band(outer, 0.0, width_m, true);
@@ -1048,7 +1157,9 @@ fn area_name_allowed(zoom: f64, area_m2: f64, px_per_meter: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use neo_store::DataSet;
+    use neo_core::{LatLon, Meta, ObjectId};
+    use neo_osm::{Node, Tags, Way};
+    use neo_store::{DataSet, MissingPolicy};
 
     #[test]
     fn layer_tag_is_parsed_and_clamped() {
@@ -1056,11 +1167,25 @@ mod tests {
         let key = data.intern("layer");
         let value = data.intern("99");
         let tags = vec![(key, value)];
-        assert_eq!(way_layer(&data, &tags), 5);
+        assert_eq!(way_layer(&data, &tags, 0), 5);
         let value = data.intern("-2");
         let tags = vec![(key, value)];
-        assert_eq!(way_layer(&data, &tags), -2);
-        assert_eq!(way_layer(&data, &[]), 0);
+        assert_eq!(way_layer(&data, &tags, 0), -2);
+        assert_eq!(way_layer(&data, &[], 0), 0);
+    }
+
+    #[test]
+    fn structure_bias_only_applies_without_explicit_layer() {
+        let mut data = DataSet::new();
+        let layer = data.intern("layer");
+        let explicit = data.intern("2");
+        assert_eq!(
+            way_layer(&data, &[(layer, explicit)], 1),
+            2,
+            "显式 layer 优先于结构物偏移"
+        );
+        assert_eq!(way_layer(&data, &[], 1), 1, "桥默认 +1");
+        assert_eq!(way_layer(&data, &[], -1), -1, "隧道默认 -1");
     }
 
     #[test]
@@ -1103,9 +1228,19 @@ mod tests {
     fn areas_smaller_than_the_band_are_filled_solid() {
         let small = square(0.0, 10.0);
         let large = square(0.0, 100.0);
-        assert!(area_band_geometry(&small, 1.0, 20.0).is_none());
-        assert!(area_band_geometry(&large, 1.0, 20.0).is_some());
-        assert!(area_band_geometry(&small, 5.0, AREA_BAND_PX / 5.0).is_some());
+        assert!(area_band_geometry(&small, &[], 1.0, 20.0).is_none());
+        assert!(area_band_geometry(&large, &[], 1.0, 20.0).is_some());
+        assert!(area_band_geometry(&small, &[], 5.0, AREA_BAND_PX / 5.0).is_some());
+    }
+
+    #[test]
+    fn donut_with_a_hole_inside_the_band_falls_back_to_solid() {
+        // 1 px/m、带宽 20px：外环 100px 会进入条带模式，内边界是 20..80 的环。
+        let outer = square(0.0, 100.0);
+        // 洞在深处：条带扫不到，继续用条带 + 洞边条带。
+        assert!(area_band_geometry(&outer, &[square(40.0, 60.0)], 1.0, 20.0).is_some());
+        // 洞贴着外边界、落在条带里：条带会盖住洞，必须退回实心挖洞。
+        assert!(area_band_geometry(&outer, &[square(5.0, 15.0)], 1.0, 20.0).is_none());
     }
 
     fn square(min: f64, max: f64) -> Vec<WorldPoint> {
@@ -1134,5 +1269,174 @@ mod tests {
         assert_eq!(name_color(None, [10, 20, 30, 128], false), [10, 20, 30, 255]);
         let lifted = name_color(None, [0, 0, 0, 255], true);
         assert!(lifted[0] > 100);
+    }
+
+    // ---- 桥梁 / 隧道 / 路堤 / 路堑 / 过水路面 的场景装配 ----
+
+    /// 造一条水平 way。每个 way 自带独立节点，避免共享节点改变节点 LOD，
+    /// 也避免跨 way 的节点吸附干扰断言。
+    fn add_way(data: &mut DataSet, id: i64, lat: f64, tags: &[(&str, &str)]) {
+        let mut way = Way {
+            id: ObjectId::new(id),
+            nodes: Default::default(),
+            tags: Tags::new(),
+            meta: Meta::new_local(),
+        };
+        for step in 0..2i64 {
+            let node_id = ObjectId::new(id * 10 + step);
+            data.push_node(Node {
+                id: node_id,
+                pos: LatLon::from_degrees(lat, 0.0001 + 0.0005 * step as f64),
+                tags: Tags::new(),
+                meta: Meta::new_local(),
+            })
+            .expect("node");
+            way.nodes.push(node_id);
+        }
+        for (key, value) in tags {
+            let key = data.intern(key);
+            let value = data.intern(value);
+            way.tags.set(key, value);
+        }
+        data.push_way(way, MissingPolicy::Error)
+            .expect("way")
+            .expect("way handle");
+    }
+
+    /// 按 `(纬度, tag)` 列表造一个只含这些水平 way 的场景帧。
+    fn scene_for(ways: &[(f64, &[(&str, &str)])]) -> SceneFrame {
+        let mut data = DataSet::new();
+        let builder = SceneBuilder::with_dataset(&mut data);
+        for (index, (lat, tags)) in ways.iter().enumerate() {
+            add_way(&mut data, index as i64 + 1, *lat, tags);
+        }
+        let index = SpatialIndex::build(&data);
+        let referrers = data.build_referrers();
+        let cache = WorldCache::build(&data);
+        let camera = Camera::from_latlon(LatLon::from_degrees(0.0003, 0.00035), 18.0, [800, 600]);
+        builder.build(&data, &index, &referrers, &cache, &camera)
+    }
+
+    fn batch_kinds(frame: &SceneFrame) -> Vec<BatchKind> {
+        frame.batches.iter().map(|batch| batch.kind).collect()
+    }
+
+    fn stroke_triangles(frame: &SceneFrame) -> usize {
+        frame
+            .batches
+            .iter()
+            .filter(|batch| batch.kind == BatchKind::Stroke)
+            .map(RenderBatch::triangle_count)
+            .sum()
+    }
+
+    #[test]
+    fn bridge_casing_is_drawn_above_the_crossing_road() {
+        let frame = scene_for(&[
+            (0.0, &[("highway", "primary")]),
+            (0.0002, &[("highway", "primary"), ("bridge", "yes")]),
+        ]);
+        // 桥没有显式 layer，按 OSM 约定 +1：地面道路先画，桥的轮廓 + 桥面后画。
+        assert_eq!(
+            batch_kinds(&frame),
+            vec![BatchKind::Stroke, BatchKind::Casing, BatchKind::Stroke]
+        );
+        assert_eq!(
+            frame.batches[1].vertices[0].color,
+            Colors::default().bridge_casing
+        );
+    }
+
+    #[test]
+    fn tunnel_casing_is_dashed_and_drawn_below_roads() {
+        let frame = scene_for(&[
+            (0.0, &[("highway", "primary")]),
+            (0.0002, &[("highway", "primary"), ("tunnel", "yes")]),
+        ]);
+        // 隧道按 -1 层先画：先虚线轮廓后主线，然后才是地面道路。
+        assert_eq!(
+            batch_kinds(&frame),
+            vec![BatchKind::Casing, BatchKind::Stroke, BatchKind::Stroke]
+        );
+        let casing = &frame.batches[0];
+        assert_eq!(casing.vertices[0].color, Colors::default().tunnel_casing);
+        assert!(
+            casing.triangle_count() > 2,
+            "隧道轮廓应是多段虚线而不是一条连续带"
+        );
+    }
+
+    #[test]
+    fn ford_gets_a_water_casing() {
+        let frame = scene_for(&[(0.0, &[("highway", "residential"), ("ford", "yes")])]);
+        assert_eq!(batch_kinds(&frame), vec![BatchKind::Casing, BatchKind::Stroke]);
+        assert_eq!(frame.batches[0].vertices[0].color, Colors::default().ford_water);
+    }
+
+    #[test]
+    fn plain_ways_have_no_casing() {
+        let frame = scene_for(&[(0.0, &[("highway", "primary")])]);
+        assert!(!frame.batches.iter().any(|batch| batch.kind == BatchKind::Casing));
+    }
+
+    fn stroke_has_color(frame: &SceneFrame, want: [u8; 4]) -> bool {
+        frame
+            .batches
+            .iter()
+            .filter(|batch| batch.kind == BatchKind::Stroke)
+            .flat_map(|batch| batch.vertices.iter())
+            .any(|vertex| vertex.color == want)
+    }
+
+    #[test]
+    fn embankment_and_cutting_use_distinct_slope_symbols() {
+        let plain = scene_for(&[(0.0, &[])]);
+        let embankment = scene_for(&[(0.0, &[("man_made", "embankment")])]);
+        let cutting = scene_for(&[(0.0, &[("man_made", "cutting")])]);
+        let plain_tris = stroke_triangles(&plain);
+        assert!(stroke_triangles(&embankment) > plain_tris, "路堤应画出坡侧刻线");
+        assert!(stroke_triangles(&cutting) > plain_tris, "路堑应画出坡侧刻线");
+        // 两种符号用不同颜色：路堤金色（带坡脚线），路堑砖红（梳状齿线）。
+        let colors = Colors::default();
+        assert!(stroke_has_color(&embankment, colors.embankment));
+        assert!(!stroke_has_color(&embankment, colors.cutting));
+        assert!(stroke_has_color(&cutting, colors.cutting));
+        assert!(!stroke_has_color(&cutting, colors.embankment));
+    }
+
+    #[test]
+    fn link_roads_keep_their_parent_colour_but_are_thinner() {
+        // 用默认样式表（assets/styles/neo.mapcss）验证：*_link 与本体同色、更细。
+        let mut data = DataSet::new();
+        let builder = SceneBuilder::with_dataset(&mut data);
+        let key = data.intern("highway");
+        for (parent, link) in [
+            ("motorway", "motorway_link"),
+            ("trunk", "trunk_link"),
+            ("primary", "primary_link"),
+            ("secondary", "secondary_link"),
+            ("tertiary", "tertiary_link"),
+        ] {
+            let parent_tags = [(key, data.intern(parent))];
+            let link_tags = [(key, data.intern(link))];
+            let parent_style = builder
+                .style
+                .way_style(&parent_tags, 18.0, &[("highway", parent)]);
+            let link_style = builder.style.way_style(&link_tags, 18.0, &[("highway", link)]);
+            assert_eq!(
+                link_style.color, parent_style.color,
+                "{link} 的颜色应与 {parent} 一致"
+            );
+            assert_eq!(
+                link_style.text_color, parent_style.text_color,
+                "{link} 的文字色应与 {parent} 一致"
+            );
+            assert!(
+                link_style.width_px < parent_style.width_px,
+                "{link} 应比 {parent} 细（{} vs {}）",
+                link_style.width_px,
+                parent_style.width_px
+            );
+        }
     }
 }

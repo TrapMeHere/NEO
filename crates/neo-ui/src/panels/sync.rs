@@ -1,4 +1,7 @@
-//! sync 面板。
+//! 上传面板（原“同步”窗口）：只负责把本地修改上传到 OSM。
+//!
+//! 下载是独立功能（`download.rs` 的下载窗口），这里不再提供任何 bbox 下载入口，
+//! 避免“同步”既下又上、语义混杂。冲突处理只保留上传 409 的解决动作。
 
 use egui::{Color32, RichText};
 use egui_phosphor::regular as ph;
@@ -18,21 +21,20 @@ pub struct SyncConflict {
     pub version: Option<i32>,
 }
 
-/// 同步窗口。
+/// 上传窗口。
 #[allow(clippy::too_many_arguments)]
 pub fn sync_window(
     ctx: &egui::Context,
     actions: &mut UiActions,
     open: &mut bool,
     account: Option<&str>,
-    bbox: &str,
     comment: &mut String,
     status: &str,
     busy: bool,
     has_pending_changes: bool,
     conflicts: &[SyncConflict],
 ) {
-    egui::Window::new(format!("{} {}", ph::GLOBE, t("sync.title")))
+    egui::Window::new(format!("{} {}", ph::CLOUD_ARROW_UP, t("sync.title")))
         .open(open)
         .collapsible(false)
         .resizable(false)
@@ -43,7 +45,6 @@ pub fn sync_window(
             } else {
                 ui.label(RichText::new(t("sync.no_account")).color(Color32::from_rgb(235, 170, 100)));
             }
-            ui.monospace(bbox);
             ui.add_space(4.0);
             ui.add(
                 egui::TextEdit::singleline(comment)
@@ -51,15 +52,6 @@ pub fn sync_window(
                     .hint_text(t("sync.comment")),
             );
             ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !busy,
-                        egui::Button::new(format!("{} {}", ph::CLOUD_ARROW_DOWN, t("sync.download"))),
-                    )
-                    .clicked()
-                {
-                    actions.sync_download = true;
-                }
                 if ui
                     .add_enabled(
                         account.is_some() && !busy && has_pending_changes,
@@ -122,16 +114,6 @@ pub fn sync_window(
                         .clicked()
                     {
                         actions.sync_keep_local = true;
-                    }
-                    if ui
-                        .button(format!(
-                            "{} {}",
-                            ph::ARROW_COUNTER_CLOCKWISE,
-                            t("sync.redownload")
-                        ))
-                        .clicked()
-                    {
-                        actions.sync_redownload = true;
                     }
                 });
             }

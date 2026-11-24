@@ -85,6 +85,13 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             if ui
+                .button(format!("{} {}", ph::CLOUD_ARROW_DOWN, t("menu.file.download")))
+                .clicked()
+            {
+                actions.toggle_download = true;
+                ui.close();
+            }
+            if ui
                 .button(format!("{} {}", ph::CLOUD_ARROW_UP, t("menu.file.sync")))
                 .clicked()
             {
@@ -217,25 +224,6 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
             }
             ui.separator();
             if ui
-                .button(format!("{} {}", ph::FUNNEL, t("menu.view.filter")))
-                .clicked()
-            {
-                actions.toggle_filter = true;
-                ui.close();
-            }
-            if ui
-                .button(format!(
-                    "{} {}",
-                    ph::ARROW_COUNTER_CLOCKWISE,
-                    t("menu.view.filter_clear")
-                ))
-                .clicked()
-            {
-                actions.clear_filter = true;
-                ui.close();
-            }
-            ui.separator();
-            if ui
                 .button(format!("{} {}", ph::CHAT_CIRCLE, t("menu.view.notes")))
                 .clicked()
             {
@@ -274,19 +262,7 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
         });
 
         ui.menu_button(t("menu.tools"), |ui| {
-            for (mode, icon, label) in [
-                (UiMode::DrawPoint, ph::MAP_PIN, t("tool.point")),
-                (UiMode::DrawLine, ph::LINE_SEGMENT, t("tool.line")),
-                (UiMode::DrawArea, ph::POLYGON, t("tool.area")),
-                (UiMode::Measure, ph::RULER, t("tool.measure")),
-            ] {
-                let selected = state.mode == mode;
-                if ui.selectable_label(selected, format!("{icon} {label}")).clicked() {
-                    // 再点一次取消，回到选择。
-                    actions.mode = Some(if selected { UiMode::Select } else { mode });
-                    ui.close();
-                }
-            }
+            // 选择与绘制
             if ui
                 .selectable_label(
                     state.mode == UiMode::Select,
@@ -298,6 +274,18 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             ui.separator();
+            for (mode, icon, label) in [
+                (UiMode::DrawPoint, ph::MAP_PIN, t("tool.point")),
+                (UiMode::DrawLine, ph::LINE_SEGMENT, t("tool.line")),
+                (UiMode::DrawArea, ph::POLYGON, t("tool.area")),
+            ] {
+                let selected = state.mode == mode;
+                if ui.selectable_label(selected, format!("{icon} {label}")).clicked() {
+                    // 再点一次取消，回到选择。
+                    actions.mode = Some(if selected { UiMode::Select } else { mode });
+                    ui.close();
+                }
+            }
             if ui
                 .button(format!("{} {}", ph::CHECK, t("menu.tools.finish")))
                 .clicked()
@@ -306,18 +294,34 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             ui.separator();
+            // 测距
+            let measuring = state.mode == UiMode::Measure;
             if ui
-                .button(format!("{} {}", ph::SCISSORS, t("menu.tools.split")))
+                .selectable_label(measuring, format!("{} {}", ph::RULER, t("tool.measure")))
                 .clicked()
             {
-                actions.split_way = true;
+                actions.mode = Some(if measuring {
+                    UiMode::Select
+                } else {
+                    UiMode::Measure
+                });
                 ui.close();
             }
+            ui.separator();
+            // 路径：分割 ↔ 合并相邻，反转、简化
+            let splitting = state.mode == UiMode::SplitPoint;
             if ui
-                .button(format!("{} {}", ph::ARROWS_LEFT_RIGHT, t("menu.tools.reverse")))
+                .selectable_label(
+                    splitting,
+                    format!("{} {}", ph::SCISSORS, t("menu.tools.split_point")),
+                )
                 .clicked()
             {
-                actions.reverse_way = true;
+                actions.mode = Some(if splitting {
+                    UiMode::Select
+                } else {
+                    UiMode::SplitPoint
+                });
                 ui.close();
             }
             if ui
@@ -328,12 +332,21 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             if ui
+                .button(format!("{} {}", ph::ARROWS_LEFT_RIGHT, t("menu.tools.reverse")))
+                .clicked()
+            {
+                actions.reverse_way = true;
+                ui.close();
+            }
+            if ui
                 .button(format!("{} {}", ph::WAVE_SAWTOOTH, t("menu.tools.simplify")))
                 .clicked()
             {
                 actions.simplify_way = true;
                 ui.close();
             }
+            ui.separator();
+            // 节点：粘合 ↔ 解粘，对齐/等距分布，镜像成对
             if ui
                 .add_enabled(
                     state.selection_len >= 2,
@@ -344,7 +357,16 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 actions.merge_nodes = true;
                 ui.close();
             }
-            ui.separator();
+            if ui
+                .add_enabled(
+                    state.selection_len >= 1,
+                    egui::Button::new(format!("{} {}", ph::SCISSORS, t("menu.tools.unglue"))),
+                )
+                .clicked()
+            {
+                actions.unglue = true;
+                ui.close();
+            }
             if ui
                 .add_enabled(
                     state.selection_len >= 2,
@@ -390,14 +412,22 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             ui.separator();
+            // 面与其它几何工具
             if ui
                 .add_enabled(
-                    state.selection_len >= 1,
-                    egui::Button::new(format!("{} {}", ph::SCISSORS, t("menu.tools.unglue"))),
+                    state.selection_len >= 2,
+                    egui::Button::new(format!("{} {}", ph::TREE_STRUCTURE, t("menu.tools.join_areas"))),
                 )
                 .clicked()
             {
-                actions.unglue = true;
+                actions.join_areas = true;
+                ui.close();
+            }
+            if ui
+                .button(format!("{} {}", ph::SQUARE, t("menu.tools.orthogonalize")))
+                .clicked()
+            {
+                actions.orthogonalize = true;
                 ui.close();
             }
             if ui
@@ -411,20 +441,10 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             if ui
-                .button(format!("{} {}", ph::SQUARE, t("menu.tools.orthogonalize")))
+                .button(format!("{} {}", ph::BUILDING, t("menu.tools.extrude")))
                 .clicked()
             {
-                actions.orthogonalize = true;
-                ui.close();
-            }
-            if ui
-                .add_enabled(
-                    state.selection_len >= 2,
-                    egui::Button::new(format!("{} {}", ph::TREE_STRUCTURE, t("menu.tools.join_areas"))),
-                )
-                .clicked()
-            {
-                actions.join_areas = true;
+                actions.extrude = true;
                 ui.close();
             }
             if ui
@@ -435,13 +455,6 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 .clicked()
             {
                 actions.move_node_onto_way = true;
-                ui.close();
-            }
-            if ui
-                .button(format!("{} {}", ph::BUILDING, t("menu.tools.extrude")))
-                .clicked()
-            {
-                actions.extrude = true;
                 ui.close();
             }
             ui.separator();
@@ -579,6 +592,7 @@ pub fn tool_palette(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>) {
             (UiMode::DrawLine, ph::LINE_SEGMENT, t("tool.line")),
             (UiMode::DrawArea, ph::POLYGON, t("tool.area")),
             (UiMode::Measure, ph::RULER, t("tool.measure")),
+            (UiMode::SplitPoint, ph::SCISSORS, t("tool.split_point")),
         ] {
             let selected = state.mode == mode;
             if tool_button(ui, icon, tip, selected) {
@@ -592,14 +606,11 @@ pub fn tool_palette(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>) {
             actions.finish_way = true;
         }
         ui.separator();
-        if icon_button(ui, ph::SCISSORS, t("tool.split"), true) {
-            actions.split_way = true;
+        if icon_button(ui, ph::ARROWS_MERGE, t("tool.merge"), true) {
+            actions.merge_ways = true;
         }
         if icon_button(ui, ph::ARROWS_LEFT_RIGHT, t("tool.reverse"), true) {
             actions.reverse_way = true;
-        }
-        if icon_button(ui, ph::ARROWS_MERGE, t("tool.merge"), true) {
-            actions.merge_ways = true;
         }
     });
 }

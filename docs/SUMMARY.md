@@ -10,7 +10,7 @@
 - [编辑操作](guide/editing.md)
 - [文件、会话与恢复](guide/files-and-sessions.md)
 - [设置与多语言](guide/settings-and-i18n.md)
-- [OSM 同步（下载 / 上传）](guide/sync.md)
+- [OSM 上传](guide/sync.md)
 - [性能与大数据](guide/performance.md)
 - [常见问题（FAQ）](guide/faq.md)
 

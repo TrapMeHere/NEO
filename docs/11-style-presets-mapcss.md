@@ -1,4 +1,4 @@
-# 11 样式、预设、过滤与搜索（MapCSS / Presets / Imagery）
+# 11 样式、预设与搜索（MapCSS / Presets / Imagery）
 
 > 状态：草案 v0.1 ｜ 日期：2026-11-15 ｜ 归属 crate：`neo-style`（求值与资产）、`neo-ui`（表单）、`neo-validate`（规则消费方）
 > 相关：[04-spatial-index-and-geometry.md](04-spatial-index-and-geometry.md) ｜ [05-renderer-wgpu.md](05-renderer-wgpu.md) ｜ [12-validation.md](12-validation.md) ｜ [13-josm-parity.md](13-josm-parity.md) ｜ [ADR-0010](adr/0010-mapcss-compatibility.md) ｜ [14-performance-and-verification.md](14-performance-and-verification.md)
@@ -10,7 +10,6 @@
 - 兼容目标是 **未修改的 `elemstyles.mapcss` 能加载并画出同一张地图**，而不是"支持 MapCSS 0.2 规范"。差异用清单管理（§2.7），不是用 bug 修。
 - 不支持的属性（`line: image`、`shield:`、`label:` 下的 `font-variant`/`text-decoration`/`text-transform`/`max-width`）在**编译期**识别，给出可读警告并降级到最近的可实现视觉效果，绝不静默丢弃。
 - `defaultpresets.xml`（660 KB）同样是**兼容目标**：`group/item/chunk/reference`、`key/text/combo/multiselect/check/roles`、`type` 组合（`multipolygon` 不在 `relation` 内）全部要能吃下；XML→egui 表单走中性 `PresetForm` 描述，UI 不解析 XML。
-- Filter 的语义是硬契约：`E/H/I/M` + `R/A/D/F`，自上而下求值，被过滤对象**不可选中且不参与搜索**（[13](13-josm-parity.md) §4 第 7 条）。
 - 搜索框是 MapCSS 的子集 DSL：`type:`/`key=value`/`-`/`&`/`|`/正则/`preset:` + NEO 的空间谓词；语法与求值分开，`SearchQuery` 可编译成 mapcss 选择器（JOSM 的 MapCSS 模式）。
 - 所有 JOSM 资源（presets/styles/rules/boundaries）**运行时加载、不编进二进制**：GPL/CC-BY-SA 资产与 NEO 代码隔离（[ADR-0010](adr/0010-mapcss-compatibility.md)）。
 - 影像目录来自 ELI（Editor Layer Index），其 GitHub 许可标注为 **NOASSERTION**：不打包、不假设 CC0，运行时下载并逐条显示 attribution。
@@ -19,10 +18,16 @@
 
 - `neo-style::mapcss`：MapCSS **子集**解析器 + 编译（选择器 `way/node/area/relation/*`、
   `[key]`/`[key=value]`、逗号多选择器、`|z12-` 缩放、`color/fill-color/width/opacity`、
-  `#rgb/#rrggbb/#rrggbbaa`）
+  `dashes/text/text-color/font-size/icon-image/icon-width`、
+  `casing-color/casing-width/casing-dashes`、`#rgb/#rrggbb/#rrggbbaa`）
 - 默认样式表 `assets/styles/neo.mapcss`（编译期嵌入），`SceneBuilder` 在构建几何时按
   `(tags, zoom)` 解析，命中则覆盖内置调色板/线宽，未命中回退
-- 未支持：text/icon-image、eval/setting、图案、dashes、@media、MapCSS validator（后续）
+- 结构物渲染（桥梁/隧道/路堤/路堑/过水路面）：`neo_style::structure_facts` 从标签解析语义，
+  `WayStyle` 新增 `casing`（外描边）、`hachure`（坡侧符号）、`layer_bias`（桥 +1 / 隧道 −1）；
+  路堤与路堑用**形状 + 色相**双重区分（梯状坡面 vs 梳状齿线），不只靠刻线朝向；
+  MapCSS 新增 `casing-color` / `casing-width` / `casing-dashes`；`neo-scene` 每层批次顺序为
+  fill → casing → stroke → point
+- 未支持：eval/setting、图案、@media、MapCSS validator（后续）
 
 ## 1 目标与范围
 
@@ -31,8 +36,7 @@
 1. 完整覆盖 `elemstyles.mapcss` 实际使用的语法子集（选择器、运算符、伪类、`::layer`、`@supports`、territory），并让渲染结果与 JOSM 可对拍。
 2. 样式求值在 10M 对象规模下可由「tag 指纹缓存 + 候选剪枝」做到增量重算。
 3. `defaultpresets.xml` 零修改加载；表单生成的交互（字段类型、默认值、`match` 过滤）与 JOSM 等价。
-4. Filter 与 Search 共用同一表达式求值器，保证"过滤掉的搜不到"。
-5. 资产许可可审计：每个资产有来源、版本、sha256、许可标识。
+4. 资产许可可审计：每个资产有来源、版本、sha256、许可标识。
 
 ### 1.2 非目标
 
@@ -221,7 +225,6 @@ compose(props) -> ResolvedStyle             # 按 z-index 排序层，逐层叠�
 | 选中/高亮/修改状态变化 | 维护 `pseudo → BTreeSet<ObjId>`，只重算含该伪类的规则命中对象 |
 | 样式热重载 | 整表重建 + 全缓存清空（样式切换本来就是低频） |
 | zoom 跨档 | 只影响几何/LOD，样式命中不变（除非规则含 zoom 选择器 → 按档位分桶缓存） |
-| Filter 变化 | 不影响样式，只影响可见集与可选中性 |
 
 `TagFingerprint` = 排序后的 `(key, value)` 序列的 64 位哈希（含类型位），碰撞用全量比对兜底。这一层是「10M 对象 × 数千规则」能成立的前提。
 
@@ -280,23 +283,9 @@ XML → egui 表单的映射（`PresetForm` 是中性描述，`neo-ui` 才认识
 | URL 模板 | TMS `{z}/{x}/{y}`；WMS `SERVICE=WMS&REQUEST=GetMap&…&BBOX={bbox}&WIDTH={width}&HEIGHT={height}&SRS={proj}`；WMTS `TileMatrix={z}&TileRow={y}&TileCol={x}`；子域轮转 `{switch:a,b,c}` | 模板变量表随实现固定；**完整占位符集合 > 待验证**（以 `maps.xsd` 为准） |
 | 偏移 | 偏移库是 **XML**（不是 JSON），端点 `GET {server}get?lat=…&lon=…`，返回 `<offset>`；本地偏移按影像持久化 | 只做本地 x/y 偏移 + 手动调整；在线偏移库 P1（默认服务器 `https://offsets.textual.ru/`，注意这是第三方服务） |
 
-### 2.12 Filter 语义
+### 2.12 Filter 语义（已移除）
 
-| 列 | 含义 | 影响 |
-|---|---|---|
-| **E**（Enable） | 该行是否启用 | 关闭 = 该行不参与 |
-| **H**（Hide） | 匹配对象**完全隐藏**（不是灰显） | 灰显 = disable（不可选但仍可见）；hide = 不可见 |
-| **Text** | 过滤表达式（与搜索同一 DSL） | 见 §2.13 |
-| **I**（Inverse） | 反转：只显示匹配对象 | 与 H 组合等价于"只隐藏不匹配的" |
-| **M**（Mode） | 与**上面各行**的组合方式 | `R` 替换（忽略上面所有行）/`A` 追加（各行独立，最常用）/`D` 移除（取消上面的过滤）/`F` 在结果中再查找 |
-
-硬契约（与 JOSM 一致，[13](13-josm-parity.md) §4 第 7 条）：
-
-1. 自上而下求值，`M` 决定与上面结果的合成。
-2. 被过滤对象**不可选中**（选择工具、框选、`Ctrl+A` 后不可被选中）；例外极少，NEO 不复制那些例外。
-3. 被过滤对象**不出现在搜索结果里**（"过滤掉的搜不到"）。
-4. 过滤不改变数据：仍会上传、仍参与校验、仍计入统计。UI 显示"Filter active / N objects hidden"。
-5. 快捷键 `Ctrl+Alt+E` + `[1-9,0,A-Z]` 按行号切换 E 列。
+过滤器在 v0.1.0 中曾实现（隐藏匹配对象），因与"选择不依赖渲染状态"的产品决定冲突已整体移除；框选改为纯几何选择，点选/悬停仍按渲染 LOD。
 
 ### 2.13 搜索 DSL
 
@@ -310,12 +299,12 @@ XML → egui 表单的映射（`PresetForm` 是中性描述，`neo-ui` 才认识
 | `expr1 expr2` / `expr1 & expr2` | AND（并列即 AND） | 已核实 |
 | `expr1 \| expr2` | OR | 已核实 |
 | `key=~/regex/`、`/^addr:/` | 正则（JOSM 用 Java regex；NEO 用 `regex` crate，构造差异见 §2.6） | 已核实 |
-| `id:`、`user:`、`timestamp:a/b`、`version:`、`changeset:` | 元数据谓词 | 已核实（filter 示例含 `user:Steve`） |
+| `id:`、`user:`、`timestamp:a/b`、`version:`、`changeset:` | 元数据谓词 | 已核实（示例含 `user:Steve`） |
 | `preset:"Craft/Beekeeper"` | 按预设匹配 | 已核实 |
 | 整串交给 MapCSS 选择器 | JOSM 搜索框的 "MapCSS selector" 模式 | 已核实 |
 | `in <bbox>` / `bbox:` | 空间范围谓词 | **> 待验证**：JOSM 官方搜索页未列出 `in`/`bbox`，NEO 作为扩展实现并标注 |
 
-求值顺序：`DSL parse → 类型/键索引剪枝 → 谓词求值 → 排除 Filter 命中 → 返回 Vec<ObjId>`。空间谓词用 [04](04-spatial-index-and-geometry.md) 的对象 R-tree；`-` 与 `&`/`|` 的优先级遵循"`-` 最强、`&` 次之、`|` 最弱"，括号显式分组。
+求值顺序：`DSL parse → 类型/键索引剪枝 → 谓词求值 → 返回 Vec<ObjId>`。空间谓词用 [04](04-spatial-index-and-geometry.md) 的对象 R-tree；`-` 与 `&`/`|` 的优先级遵循"`-` 最强、`&` 次之、`|` 最弱"，括号显式分组。
 
 ### 2.14 i18n 与资产加载
 
@@ -379,23 +368,11 @@ impl PresetCatalog {
     pub fn form(&self, item: &PresetItem) -> PresetForm;   // 与 egui 无关的中性描述
 }
 
-// ── neo-style/src/filter.rs ─────────────────────────────────────────────────
-pub enum FilterMode { Replace, Add, Remove, Find }
-pub struct FilterRow { pub enabled: bool, pub hide: bool, pub inverse: bool, pub mode: FilterMode, pub expr: SearchQuery }
-pub struct FilterSet { /* rows + 求值缓存 + pseudo 集合 */ }
-impl FilterSet {
-    pub fn rows(&self) -> &[FilterRow];
-    pub fn evaluate(&mut self, snapshot: &Snapshot, index: &SpatialIndex) -> FilterOutcome;
-    pub fn is_visible(&self, id: ObjId) -> bool;
-    pub fn is_selectable(&self, id: ObjId) -> bool;
-    pub fn hidden_count(&self) -> usize;
-}
-
 // ── neo-editor/src/search.rs ────────────────────────────────────────────────
 pub struct SearchQuery { /* AST */ }
 impl SearchQuery {
     pub fn parse(src: &str) -> Result<Self, Vec<SearchError>>;
-    pub fn eval(&self, snapshot: &Snapshot, index: &SpatialIndex, filters: &FilterSet, bbox: Option<Aabb>) -> Vec<ObjId>;
+    pub fn eval(&self, snapshot: &Snapshot, index: &SpatialIndex, bbox: Option<Aabb>) -> Vec<ObjId>;
     pub fn to_mapcss_selector(&self) -> Option<String>;   // JOSM 的 MapCSS 搜索模式
 }
 
@@ -409,7 +386,7 @@ impl SearchQuery {
              validator/*.mapcss ─► StyleSheet::compile(Validator) ─► neo-validate
              boundaries.osm ─► TerritoryDb；ELI/maps.xml ─► ImageryCatalog（缓存 + attribution）
 每帧：① 数据快照 ─► ② 样式求值（工作线程，指纹缓存）─► ③ 打包 SceneFrame ─► neo-render（仅 ③ 在主线程）
-编辑：改 tag ─► 指纹失效 ─► 只重算该对象；改选择 ─► 只重算 :selected/:highlighted 相关；Filter 变 ─► 只重建可见集
+编辑：改 tag ─► 指纹失效 ─► 只重算该对象；改选择 ─► 只重算 :selected/:highlighted 相关
 ```
 
 ```
@@ -417,7 +394,6 @@ impl SearchQuery {
   parse("type:way highway & -service") ──► AST
      ├─ 键索引：候选 = ways 且含 highway
      ├─ 谓词求值（标签 + 正则 + 空间）
-     ├─ 减去 FilterSet 命中（不可见/不可选）
      └─ 结果 Vec<ObjId> ──► 选中集（可撤销为独立命令）
 ```
 
@@ -431,7 +407,6 @@ impl SearchQuery {
 | tag 指纹缓存 + key 倒排剪枝 | 逐对象逐规则全量匹配 | 10M × 数千规则不可行 | 缓存失效逻辑是新 bug 面 |
 | 资产运行时加载 | 编进二进制 | GPL/CC-BY-SA 隔离 + 可热更新 + 用户可换 | 启动要多一次 IO 与校验；缺资产要优雅降级 |
 | Presets 中性 `PresetForm` | UI 直接操作 XML DOM | egui 与 XML 解耦，可单测表单生成 | 多一层映射代码 |
-| Filter 与 Search 共用求值器 | 各写一套 | 避免"过滤掉的能搜到" | 求值器要同时满足两种性能画像 |
 | 影像不打包、在线目录 | 内置一份快照 | 许可（NOASSERTION）与时效性 | 首次启动需联网；离线需缓存 |
 
 ## 6 风险
@@ -452,16 +427,14 @@ impl SearchQuery {
 2. **渲染对拍**：参考数据集在 zoom 10/13/16/19 四档与 JOSM 截图九宫格比对，差异条目 ≤ 5 且每条有理由。
 3. **级联**：构造 20 条用例覆盖"后覆盖前"、`::layer` 排序、`::*` 展开、相对 `+2`、casing 成对，全部通过。
 4. **Presets**：`group/item/chunk/reference` 展开正确；`type` 组合（含 `multipolygon` 与 `relation` 的差异）用例通过；`match` 过滤在 10k 对象上单次 ≤ 【待实测，见 docs/14-performance-and-verification.md】。
-5. **Filter**：被过滤对象在（框选、`Ctrl+A`、搜索、hover）四条路径上均不可命中；`E/H/I/M`+`R/A/D/F` 组合 8 例与 JOSM 行为一致。
-6. **搜索**：§2.13 表中每条语法至少 2 个用例；`-`/`&`/`|` 优先级用例通过；filtered 排除用例通过。
-7. **许可**：`assets/manifest.json` 覆盖全部资产，缺 license/sha256 时 CI 失败；二进制中 grep 不到任何资产文件的字符串常量。
+5. **搜索**：§2.13 表中每条语法至少 2 个用例；`-`/`&`/`|` 优先级用例通过。
+6. **许可**：`assets/manifest.json` 覆盖全部资产，缺 license/sha256 时 CI 失败；二进制中 grep 不到任何资产文件的字符串常量。
 
 ## 8 参考
 
 - JOSM MapCSS 实现（选择器、运算符、`::layer`、`@supports`、不支持项清单）：<https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation>
 - MapCSS tag checker（`throw*/fix*/assertMatch`、`{n}` 占位符）：<https://josm.openstreetmap.de/wiki/Help/Validator/MapCSSTagChecker>
 - Tagging presets（XML 结构、`chunk`/`reference`、字段类型）：<https://josm.openstreetmap.de/wiki/TaggingPresets>
-- Filter 面板（E/H/I/M 与 R/A/D/F、被过滤对象不可选、不参与搜索）：<https://josm.openstreetmap.de/wiki/Help/Dialog/Filter>
 - 搜索语法（`type:`、`key=value`、`-`、`&`、`|`、正则、`preset:`、MapCSS 模式）：<https://josm.openstreetmap.de/wiki/Help/Action/Search>
 - Editor Layer Index（许可标注 NOASSERTION，需逐条确认）：<https://github.com/osmlab/editor-layer-index>
 - JOSM 影像偏移库（XML + 查询串端点）：<https://josm.openstreetmap.de/wiki/Plugin/ImageryOffsetDb>

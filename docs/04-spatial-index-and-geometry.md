@@ -21,7 +21,7 @@
 1. 在 1M–10M+ OSM 对象的全量数据层上，视口内几何生成与拾取不随总量线性劣化。
 2. 完整覆盖 JOSM 的工作流所需的几何语义：闭合判定、multipolygon/内环、`area=no`、未闭合 multipolygon、relation 成员顺序无关的 bbox。
 3. 支持多投影（默认 EPSG:3857，可切 EPSG:4326 与 proj 0.32 提供的其它 CRS），且投影切换不重建索引。
-4. 拾取行为与 JOSM 一致：node 优先于 way、way 优先于 area；容差以屏幕像素表达并随 zoom 变化；被 Filter 禁用的对象不可拾取（语义在 [11](11-style-presets-mapcss.md) §2.11）。
+4. 拾取行为与 JOSM 一致：node 优先于 way、way 优先于 area；容差以屏幕像素表达并随 zoom 变化；框选是纯几何选择，不受渲染 LOD 与拾取优先级影响。
 5. 为 `neo-render` 提供**已量化、可直接上传**的顶点/索引批次；渲染层不得回溯查询数据模型。
 
 ### 1.2 非目标
@@ -220,7 +220,7 @@ LOD 判定集中在一处（`Lod::for_zoom`），避免样式、几何、渲染�
 4. **优先级**（同距离时，与 JOSM 心智一致）：`node` > `way`（段） > `closed way` 面积内部 > `relation` 成员。面积内部命中只在没有更近的线/点、且该样式允许拾取面积时生效。
 5. **多边形内部**：`geo` 的 `PreparedGeometry`（`algorithm::indexed::prepared_geometry`）一次构建多次查询，比每次 `Contains` 快；仍先用对象 AABB 粗筛。
 6. **容差随 zoom 变化**：`radius_px` 固定 8 px（可配置），因为它是屏幕量，zoom 变化时容差自然收敛；不要用固定的地面米容差——低 zoom 下会命中一片对象。
-7. **Filter 交互**：被 Filter 禁用/隐藏的对象**不可拾取**（与 JOSM 一致），过滤在候选阶段做而不是命中后做，否则「最上层的不可选对象」会盖住下面可选的。
+7. **候选阶段过滤**：可见性（如节点 LOD）在候选阶段判定，而不是命中后回退，否则「最上层的不可见对象」会盖住下面可选的。
 
 | 方案 | 精度 | 成本 | 结论 |
 |---|---|---|---|
@@ -298,7 +298,7 @@ impl SpatialIndex {
 }
 
 // ── neo-geo/src/hit.rs ──────────────────────────────────────────────────────
-pub struct HitOpts { pub radius_px: f32, pub allow_area: bool, pub layers: LayerMask, pub skip_filtered: bool }
+pub struct HitOpts { pub radius_px: f32, pub allow_area: bool, pub layers: LayerMask }
 pub enum HitCandidate {
     Node(ObjId),
     WaySegment { way: ObjId, seg: u32, t: f32, dist: f64 },
@@ -314,7 +314,7 @@ impl<'a> HitTester<'a> {
 // ── neo-scene/src/visible.rs ────────────────────────────────────────────────
 pub struct VisibleSet { pub objects: Vec<ObjId>, pub batches: Vec<RenderBatch>, pub stats: VisibleStats }
 impl VisibleSet {
-    pub fn rebuild(index: &SpatialIndex, cam: &Camera, style: &StyleSheet, filter: &FilterSet) -> Self;
+    pub fn rebuild(index: &SpatialIndex, cam: &Camera, style: &StyleSheet) -> Self;
     pub fn bucket_at(&self, px: [f32; 2]) -> &[ObjId];   // 屏幕空间索引，256 px 网格
 }
 ```
@@ -331,7 +331,7 @@ impl VisibleSet {
         │        └─ Polyline / AreaGeom（投影平面 f64 + 屏幕量参数）
         ├─►  neo-geo::index      upsert/remove；churn>10% 触发后台重建
         ▼
-  neo-scene::visible  (cam, style, filter) ──► VisibleSet { objects, batches, 分桶 }
+  neo-scene::visible  (cam, style) ──► VisibleSet { objects, batches, 分桶 }
         │  重定基 f64→f32，LOD 过滤，按 (layer, z-index, casing) 排序合批
         ▼
   neo-scene::frame    SceneFrame { MapVertex[], 索引, RenderBatch[], LabelBatch }
@@ -346,7 +346,7 @@ frame:
   input ──► Camera 更新（f64）
      │
      ├─ zoom 跨 LOD 档 或 rebase 跨网格 ──► version+1 ──► 几何重建（分帧预算）
-     ├─ style/filter 变更 ────────────────► version+1 ──► 只重算受影响的 tag 指纹桶
+     ├─ style 变更 ──────────────────────► version+1 ──► 只重算受影响的 tag 指纹桶
      │
      ├─ 索引查询 view_bounds(margin) ──► 候选（O(log n + k)）
      ├─ LOD 丢弃 + 合批 ──► RenderBatch[]
@@ -383,7 +383,7 @@ frame:
 2. **索引**：1M / 10M 对象两档数据集，`view_bounds` 查询候选返回正确（与暴力扫描逐项比对）；`bulk_load` 后 `size()` 与输入一致；1000 次随机 `upsert`/`remove` 后仍与暴力扫描一致。
 3. **几何**：闭合判定、`area=no`、未闭合 multipolygon、内含 2 层孔洞的 relation 各 20 例与 JOSM 渲染截图人工比对通过。
 4. **LOD**：在 0/8/13/16/19 五档 zoom 下，`VisibleStats.vertices` 随 zoom 单调（允许 ±10% 抖动），且**不随总对象数**从 1M 到 10M 显著增长。
-5. **拾取**：与 JOSM 同名操作的命中对象一致率 ≥ 95%（200 次人工点击回归）；filtered 对象命中率 = 0。
+5. **拾取**：与 JOSM 同名操作的命中对象一致率 ≥ 95%（200 次人工点击回归）。
 6. **耗时**：索引查询、几何重建、拾取三项在参考机（i5-12400F / 32 GB / RTX 3070 / Windows）上的单次耗时【待实测，见 docs/14-performance-and-verification.md】。
 
 ## 8 参考

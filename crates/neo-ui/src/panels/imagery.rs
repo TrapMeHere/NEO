@@ -94,8 +94,7 @@ pub fn imagery_window(
                 ui.add(
                     egui::TextEdit::singleline(&mut state.api_key)
                         .desired_width(490.0)
-                        .password(true)
-                        .hint_text(t("imagery.apikey_hint")),
+                        .password(true),
                 );
             }
             if !state.attribution.is_empty() {
@@ -238,9 +237,6 @@ fn preset_row(ui: &mut egui::Ui, state: &mut ImageryUiState, lat: f64, lon: f64)
             .hint_text(t("imagery.search")),
     );
     let query = state.query.trim().to_lowercase();
-    if !state.region_only && query.is_empty() {
-        ui.label(t("imagery.search_hint"));
-    }
     let mut shown: Vec<&neo_style::ImageryPreset> = neo_style::imagery_presets()
         .iter()
         .filter(|preset| {

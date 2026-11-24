@@ -349,6 +349,49 @@ pub fn point_in_inner_band(
     near(outer) || holes.iter().any(|hole| near(hole))
 }
 
+/// 环带（`outer` 向内 `width` 的条带）是否完全避开所有洞。
+///
+/// 只画条带时，条带几何不扣洞；因此仅当每个洞都完整落在条带内边界以内
+/// （远离边界、条带不会扫到）时才可以安全地“条带 + 洞边条带”绘制。否则调用方
+/// 应改画“实心 + 挖洞”，否则洞会被条带盖住（小内院建筑在中间缩放级别会整洞变实）。
+///
+/// 条带退化（偏移失败）时返回 `true`：调用方会因条带为空而走实心路径。
+pub fn band_clears_holes(outer: &[WorldPoint], holes: &[Vec<WorldPoint>], width: f64) -> bool {
+    let base_len = strip_closing_point(outer).len();
+    let (vertices, indices) = ring_band(outer, 0.0, width, true);
+    if indices.is_empty() || vertices.len() != base_len * 2 {
+        return true;
+    }
+    let inner = &vertices[base_len..];
+    holes.iter().all(|hole| {
+        let ring = strip_closing_point(hole);
+        if ring.len() < 3 {
+            return true;
+        }
+        // 洞必须完整落在内边界以内，且洞边不能穿出内边界。
+        ring.iter().all(|point| point_in_ring(*point, inner)) && !ring_edges_cross(ring, inner)
+    })
+}
+
+/// 两个环的边是否相交（用于判断洞是否穿出条带内边界）。
+fn ring_edges_cross(a: &[WorldPoint], b: &[WorldPoint]) -> bool {
+    let na = a.len();
+    let nb = b.len();
+    if na < 2 || nb < 2 {
+        return false;
+    }
+    for i in 0..na {
+        let a0 = a[i];
+        let a1 = a[(i + 1) % na];
+        for j in 0..nb {
+            if segments_cross(a0, a1, b[j], b[(j + 1) % nb]) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 沿环生成一条向内（或向围成区域外）的等宽条带。偏移把环撑破时返回空。
 pub fn ring_band(
     ring: &[WorldPoint],
@@ -705,6 +748,69 @@ pub fn stroke_polyline_into(
     stroke_polyline_append(points, width_m, verts, indices);
 }
 
+/// 折线在某个顶点处的斜接法线，返回 `(nx, ny, 斜接放大系数)`。
+///
+/// 法线取相邻线段法线的平均（左侧为 `(-dy, dx)`，与
+/// [stroke_polyline_append] 的描边方向约定一致）；反向折返退化为单侧法线，
+/// 相邻重复点不做斜接放大，避免屏幕上长出尖刺。
+fn join_normal(prev: Option<WorldPoint>, cur: WorldPoint, next: Option<WorldPoint>) -> (f64, f64, f64) {
+    let normal_of = |d: WorldPoint| WorldPoint::new(-d.y, d.x);
+    let dir_prev = prev.map(|p| normalize(WorldPoint::new(cur.x - p.x, cur.y - p.y)));
+    let dir_next = next.map(|p| normalize(WorldPoint::new(p.x - cur.x, p.y - cur.y)));
+    let n_prev = dir_prev.map(normal_of);
+    let n_next = dir_next.map(normal_of);
+    match (n_prev, n_next) {
+        (Some(a), Some(b)) => {
+            let (mut mx, mut my) = (a.x + b.x, a.y + b.y);
+            let mlen = (mx * mx + my * my).sqrt();
+            if mlen < 1e-9 {
+                // 反向折返：退化为单侧法线。
+                (a.x, a.y, 1.0)
+            } else {
+                mx /= mlen;
+                my /= mlen;
+                let cos_half = mx * a.x + my * a.y;
+                let s = if cos_half > 1e-3 {
+                    (1.0 / cos_half).min(3.0)
+                } else {
+                    3.0
+                };
+                if a.x == 0.0 && a.y == 0.0 {
+                    (b.x, b.y, 1.0)
+                } else if b.x == 0.0 && b.y == 0.0 {
+                    (a.x, a.y, 1.0)
+                } else {
+                    (mx, my, s)
+                }
+            }
+        }
+        (Some(a), None) => (a.x, a.y, 1.0),
+        (None, Some(b)) => (b.x, b.y, 1.0),
+        (None, None) => (0.0, 0.0, 0.0),
+    }
+}
+
+/// 把一条折线整体向一侧平移 `distance_m`（`side`: `1` 左侧、`-1` 右侧）。
+///
+/// 用于画路堤的坡脚线：平移方向取相邻线段法线的斜接平均，拐角处保持等距。
+/// 覆盖写 `out`；参数非法（距离非有限或 ≤0、点数 <2）时清空。
+pub fn offset_polyline_into(points: &[WorldPoint], distance_m: f64, side: i8, out: &mut Vec<WorldPoint>) {
+    out.clear();
+    if points.len() < 2 || !distance_m.is_finite() || distance_m <= 1e-9 {
+        return;
+    }
+    let sign = if side == -1 { -1.0 } else { 1.0 };
+    let n = points.len();
+    for i in 0..n {
+        let prev = if i > 0 { Some(points[i - 1]) } else { None };
+        let cur = points[i];
+        let next = if i + 1 < n { Some(points[i + 1]) } else { None };
+        let (nx, ny, scale) = join_normal(prev, cur, next);
+        let off = distance_m * scale * sign;
+        out.push(WorldPoint::new(cur.x + nx * off, cur.y + ny * off));
+    }
+}
+
 /// 把一条折线的描边接到已有三角形后面。虚线要逐段调用，不能每次覆盖。
 pub fn stroke_polyline_append(
     points: &[WorldPoint],
@@ -718,50 +824,12 @@ pub fn stroke_polyline_append(
     let half = width_m * 0.5;
     let n = points.len();
     let base = verts.len() as u32;
-    let normal_of = |d: WorldPoint| WorldPoint::new(-d.y, d.x);
 
     for i in 0..n {
         let prev = if i > 0 { Some(points[i - 1]) } else { None };
         let cur = points[i];
         let next = if i + 1 < n { Some(points[i + 1]) } else { None };
-
-        let dir_prev = prev.map(|p| normalize(WorldPoint::new(cur.x - p.x, cur.y - p.y)));
-        let dir_next = next.map(|p| normalize(WorldPoint::new(p.x - cur.x, p.y - cur.y)));
-        let n_prev = dir_prev.map(normal_of);
-        let n_next = dir_next.map(normal_of);
-
-        let (nx, ny, scale) = match (n_prev, n_next) {
-            (Some(a), Some(b)) => {
-                let (mut mx, mut my) = (a.x + b.x, a.y + b.y);
-                let mlen = (mx * mx + my * my).sqrt();
-                if mlen < 1e-9 {
-                    // 反向折返：退化为单侧法线。
-                    (a.x, a.y, 1.0)
-                } else {
-                    mx /= mlen;
-                    my /= mlen;
-                    let cos_half = mx * a.x + my * a.y;
-                    let s = if cos_half > 1e-3 {
-                        (1.0 / cos_half).min(3.0)
-                    } else {
-                        3.0
-                    };
-                    // 相邻重复点会得到零方向法线：此时不要再做斜接放大，
-                    // 否则 1 个重复点会在屏幕上长出 3 倍宽的尖刺。
-                    if a.x == 0.0 && a.y == 0.0 {
-                        (b.x, b.y, 1.0)
-                    } else if b.x == 0.0 && b.y == 0.0 {
-                        (a.x, a.y, 1.0)
-                    } else {
-                        (mx, my, s)
-                    }
-                }
-            }
-            (Some(a), None) => (a.x, a.y, 1.0),
-            (None, Some(b)) => (b.x, b.y, 1.0),
-            (None, None) => (0.0, 0.0, 0.0),
-        };
-
+        let (nx, ny, scale) = join_normal(prev, cur, next);
         let off = half * scale;
         verts.push(WorldPoint::new(cur.x + nx * off, cur.y + ny * off));
         verts.push(WorldPoint::new(cur.x - nx * off, cur.y - ny * off));
@@ -846,6 +914,64 @@ fn point_along(points: &[WorldPoint], distance: f64) -> Option<(WorldPoint, f64,
         remain -= len;
     }
     None
+}
+
+/// 沿折线放坡侧刻线（路堤/路堑）。`side`: 1 = 点序左侧, -1 = 右侧, 0 = 两侧。
+///
+/// 每条刻线是从折线上的采样点垂直向外、长 `length_m`、宽 `width_m` 的短线；采样沿弧长
+/// 从 `spacing_m * 0.5` 开始、步长 `spacing_m`。覆盖写 `verts`/`indices`；参数非法
+/// （非有限、≤0）或折线不足 2 点时两者清空。
+///
+/// 折线总长不足一个 `spacing_m` 时只在弧长中点放一根；`side` 只认 `1`/`-1`，其它值按
+/// `0`（两侧）处理。左侧法线取 `(-dy, dx)`，与 [stroke_polyline_append] 内部的
+/// `normal_of` 约定一致。刻线 tip 可以越过折线端点（刻线不是路径）。
+pub fn hachure_ticks(
+    points: &[WorldPoint],
+    spacing_m: f64,
+    length_m: f64,
+    width_m: f64,
+    side: i8,
+    verts: &mut Vec<WorldPoint>,
+    indices: &mut Vec<u32>,
+) {
+    verts.clear();
+    indices.clear();
+    let valid = |value: f64| value.is_finite() && value > 1e-9;
+    if !valid(spacing_m) || !valid(length_m) || !valid(width_m) || points.len() < 2 {
+        return;
+    }
+    let total = polyline_length(points);
+    if total <= 1e-9 {
+        return;
+    }
+    // 只认 ±1；其它值按 0（两侧）处理。顺序固定为左再右，便于场景层统一叠加。
+    let sides: &[f64] = match side {
+        1 => &[1.0],
+        -1 => &[-1.0],
+        _ => &[1.0, -1.0],
+    };
+    let push_tick = |distance: f64, verts: &mut Vec<WorldPoint>, indices: &mut Vec<u32>| {
+        let Some((base, dx, dy)) = point_along(points, distance) else {
+            return;
+        };
+        // 左侧法线 = (-dy, dx)；右侧取反。
+        let (nx, ny) = (-dy, dx);
+        for &sign in sides {
+            let tip = WorldPoint::new(base.x + nx * sign * length_m, base.y + ny * sign * length_m);
+            // 复用栈上数组，热路径不额外分配 Vec。
+            let segment = [base, tip];
+            stroke_polyline_append(&segment, width_m, verts, indices);
+        }
+    };
+    if total < spacing_m {
+        push_tick(total * 0.5, verts, indices);
+        return;
+    }
+    let mut distance = spacing_m * 0.5;
+    while distance <= total - 1e-9 {
+        push_tick(distance, verts, indices);
+        distance += spacing_m;
+    }
 }
 
 #[cfg(test)]
@@ -1064,5 +1190,204 @@ mod tests {
         assert!(!way_matches_box(&crossing, &bounds, BoxSelectMode::Window));
         let outside = [WorldPoint::new(20.0, 20.0), WorldPoint::new(30.0, 20.0)];
         assert!(!way_matches_box(&outside, &bounds, BoxSelectMode::Crossing));
+    }
+
+    #[test]
+    fn hachure_ticks_place_evenly_on_the_left_side() {
+        let line = [WorldPoint::new(0.0, 0.0), WorldPoint::new(100.0, 0.0)];
+        // 预填垃圾，验证覆盖写而不是追加。
+        let mut verts = vec![WorldPoint::new(-999.0, -999.0)];
+        let mut indices = vec![7_u32];
+        hachure_ticks(&line, 10.0, 5.0, 1.0, 1, &mut verts, &mut indices);
+        // total=100，采样弧长 5,15,…,95 共 10 根；每根两点描边 = 2 点 × 2 顶点、6 索引。
+        assert_eq!(indices.len(), 60);
+        assert_eq!(verts.len(), 40);
+        assert_eq!(indices.len() % 6, 0);
+        assert!(indices.iter().all(|&index| (index as usize) < verts.len()));
+        // side=1 用左法线 (0,1)：所有顶点 y ≥ 0 且不超过刻线长度。
+        assert!(verts.iter().all(|v| v.y >= -1e-9));
+        assert!(verts.iter().all(|v| v.y <= 5.0 + 1e-9));
+        assert!(verts.iter().any(|v| (v.y - 5.0).abs() < 1e-9));
+        // 第一根的 base 弧长 5、最后一根 95（描边沿 x 方向再偏 ±半宽 0.5）。
+        assert!((verts[0].x - 4.5).abs() < 1e-9);
+        assert!((verts[36].x - 94.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hachure_ticks_right_side_points_away_from_the_point_order() {
+        let line = [WorldPoint::new(0.0, 0.0), WorldPoint::new(100.0, 0.0)];
+        let mut verts = Vec::new();
+        let mut indices = Vec::new();
+        hachure_ticks(&line, 10.0, 5.0, 1.0, -1, &mut verts, &mut indices);
+        assert_eq!(indices.len(), 60);
+        // 右法线 (0,-1)：tip 在折线下方。
+        assert!(verts.iter().all(|v| v.y <= 1e-9));
+        assert!(verts.iter().any(|v| v.y < -4.9));
+    }
+
+    #[test]
+    fn hachure_ticks_both_sides_and_unknown_side_defaults_to_both() {
+        let line = [WorldPoint::new(0.0, 0.0), WorldPoint::new(100.0, 0.0)];
+        let mut left = Vec::new();
+        let mut left_indices = Vec::new();
+        hachure_ticks(&line, 10.0, 5.0, 1.0, 1, &mut left, &mut left_indices);
+        let mut right = Vec::new();
+        let mut right_indices = Vec::new();
+        hachure_ticks(&line, 10.0, 5.0, 1.0, -1, &mut right, &mut right_indices);
+        for side in [0_i8, 7] {
+            let mut verts = Vec::new();
+            let mut indices = Vec::new();
+            hachure_ticks(&line, 10.0, 5.0, 1.0, side, &mut verts, &mut indices);
+            assert_eq!(indices.len(), left_indices.len() + right_indices.len());
+            assert_eq!(verts.len(), left.len() + right.len());
+            assert!(verts.iter().any(|v| v.y > 4.9));
+            assert!(verts.iter().any(|v| v.y < -4.9));
+        }
+    }
+
+    #[test]
+    fn hachure_ticks_left_normal_follows_the_point_order() {
+        let line = [WorldPoint::new(0.0, 0.0), WorldPoint::new(0.0, 100.0)];
+        let mut verts = Vec::new();
+        let mut indices = Vec::new();
+        hachure_ticks(&line, 10.0, 5.0, 1.0, 1, &mut verts, &mut indices);
+        assert_eq!(indices.len(), 60);
+        // 点序向上时左法线为 (-1,0)，刻线落在 x<0 一侧。
+        assert!(verts.iter().all(|v| v.x >= -5.0 - 1e-9 && v.x <= 1e-9));
+        assert!(verts.iter().any(|v| v.x < -4.9));
+    }
+
+    #[test]
+    fn hachure_ticks_clear_output_for_invalid_parameters() {
+        let line = [WorldPoint::new(0.0, 0.0), WorldPoint::new(100.0, 0.0)];
+        let single = [WorldPoint::new(1.0, 2.0)];
+        let degenerate = [WorldPoint::new(3.0, 4.0), WorldPoint::new(3.0, 4.0)];
+        let cases: &[(&[WorldPoint], f64, f64, f64)] = &[
+            (&line, 0.0, 5.0, 1.0),
+            (&line, -10.0, 5.0, 1.0),
+            (&line, 10.0, -1.0, 1.0),
+            (&line, 10.0, 5.0, 0.0),
+            (&line, f64::NAN, 5.0, 1.0),
+            (&line, f64::INFINITY, 5.0, 1.0),
+            (&line, 10.0, f64::NAN, 1.0),
+            (&single, 10.0, 5.0, 1.0),
+            (&[], 10.0, 5.0, 1.0),
+            (&degenerate, 10.0, 5.0, 1.0),
+        ];
+        for &(points, spacing, length, width) in cases {
+            let mut verts = vec![WorldPoint::new(-999.0, -999.0)];
+            let mut indices = vec![7_u32];
+            hachure_ticks(points, spacing, length, width, 1, &mut verts, &mut indices);
+            assert!(
+                verts.is_empty(),
+                "verts 未清空: {points:?} {spacing} {length} {width}"
+            );
+            assert!(indices.is_empty(), "indices 未清空: {points:?}");
+        }
+    }
+
+    #[test]
+    fn hachure_ticks_single_tick_for_a_polyline_shorter_than_spacing() {
+        let line = [WorldPoint::new(0.0, 0.0), WorldPoint::new(4.0, 0.0)];
+        let mut verts = Vec::new();
+        let mut indices = Vec::new();
+        hachure_ticks(&line, 10.0, 5.0, 1.0, 1, &mut verts, &mut indices);
+        // total=4 < spacing=10：只在弧长中点 2.0 放一根。
+        assert_eq!(indices.len(), 6);
+        assert_eq!(verts.len(), 4);
+        assert!((verts[0].x - 1.5).abs() < 1e-9);
+        assert!(verts.iter().all(|v| v.y >= -1e-9 && v.y <= 5.0 + 1e-9));
+        assert!(verts.iter().any(|v| (v.y - 5.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn offset_polyline_moves_to_the_requested_side() {
+        let line = [WorldPoint::new(0.0, 0.0), WorldPoint::new(100.0, 0.0)];
+        let mut out = Vec::new();
+        offset_polyline_into(&line, 5.0, 1, &mut out);
+        assert_eq!(out.len(), 2);
+        assert!((out[0].x - 0.0).abs() < 1e-9 && (out[0].y - 5.0).abs() < 1e-9);
+        assert!((out[1].x - 100.0).abs() < 1e-9 && (out[1].y - 5.0).abs() < 1e-9);
+
+        offset_polyline_into(&line, 5.0, -1, &mut out);
+        assert_eq!(out.len(), 2);
+        assert!((out[0].y + 5.0).abs() < 1e-9 && (out[1].y + 5.0).abs() < 1e-9);
+
+        // 覆盖写，而不是追加；非法参数清空。
+        for &(distance, points) in &[(0.0_f64, &line[..]), (f64::NAN, &line[..]), (5.0, &[][..])] {
+            let mut out = vec![WorldPoint::new(-999.0, -999.0)];
+            offset_polyline_into(points, distance, 1, &mut out);
+            assert!(out.is_empty(), "距离 {distance} 时应清空输出");
+        }
+    }
+
+    #[test]
+    fn offset_polyline_keeps_a_constant_distance_around_a_corner() {
+        let corner = [
+            WorldPoint::new(0.0, 0.0),
+            WorldPoint::new(10.0, 0.0),
+            WorldPoint::new(10.0, 10.0),
+        ];
+        let mut out = Vec::new();
+        offset_polyline_into(&corner, 2.0, 1, &mut out);
+        assert_eq!(out.len(), 3);
+        // 90° 拐角的斜接交点：(10,0) 左移 2、上移 2 → (8, 2)。
+        let miter = out[1];
+        assert!((miter.x - 8.0).abs() < 1e-6);
+        assert!((miter.y - 2.0).abs() < 1e-6);
+        // 两种平移方向互为镜像。
+        let mut right = Vec::new();
+        offset_polyline_into(&corner, 2.0, -1, &mut right);
+        assert!((right[1].x - 12.0).abs() < 1e-6);
+        assert!((right[1].y + 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bands_only_clear_holes_that_sit_deep_inside() {
+        let outer = [
+            WorldPoint::new(0.0, 0.0),
+            WorldPoint::new(100.0, 0.0),
+            WorldPoint::new(100.0, 100.0),
+            WorldPoint::new(0.0, 100.0),
+        ];
+        // 带宽 20：条带内边界是 20..80 的环。
+        let deep = vec![
+            WorldPoint::new(40.0, 40.0),
+            WorldPoint::new(60.0, 40.0),
+            WorldPoint::new(60.0, 60.0),
+            WorldPoint::new(40.0, 60.0),
+        ];
+        assert!(band_clears_holes(&outer, std::slice::from_ref(&deep), 20.0));
+
+        // 洞落在条带范围内：条带几何不扣洞，会被整片盖住。
+        let in_band = vec![
+            WorldPoint::new(5.0, 5.0),
+            WorldPoint::new(15.0, 5.0),
+            WorldPoint::new(15.0, 15.0),
+            WorldPoint::new(5.0, 15.0),
+        ];
+        assert!(!band_clears_holes(&outer, &[in_band], 20.0));
+
+        // 洞跨过条带内边界。
+        let crossing = vec![
+            WorldPoint::new(10.0, 10.0),
+            WorldPoint::new(30.0, 10.0),
+            WorldPoint::new(30.0, 30.0),
+            WorldPoint::new(10.0, 30.0),
+        ];
+        assert!(!band_clears_holes(&outer, &[crossing], 20.0));
+
+        // 洞包住整条内边界。
+        let huge = vec![
+            WorldPoint::new(10.0, 10.0),
+            WorldPoint::new(90.0, 10.0),
+            WorldPoint::new(90.0, 90.0),
+            WorldPoint::new(10.0, 90.0),
+        ];
+        assert!(!band_clears_holes(&outer, &[huge], 20.0));
+
+        // 没有洞、或条带退化（宽度 0）时都交给实心路径。
+        assert!(band_clears_holes(&outer, &[], 20.0));
+        assert!(band_clears_holes(&outer, &[deep], 0.0));
     }
 }

@@ -56,6 +56,38 @@ way[highway=motorway] {
     text-color: #ffb3c4;
 }
 
+/* 连接路（*_link）：沿用本体等级的颜色与文字色，只把线宽收窄，
+   这样匝道/联络线一眼能看出属于哪一级道路，又不会抢本体的视觉权重。 */
+way[highway=motorway_link] {
+    color: #e06a86;
+    width: 2.4;
+    text-color: #ffb3c4;
+}
+
+way[highway=trunk_link] {
+    color: #ef8d4a;
+    width: 2.2;
+    text-color: #ffc49a;
+}
+
+way[highway=primary_link] {
+    color: #f0b45a;
+    width: 2.0;
+    text-color: #ffd7a4;
+}
+
+way[highway=secondary_link] {
+    color: #f6d56a;
+    width: 1.7;
+    text-color: #ffe7a0;
+}
+
+way[highway=tertiary_link] {
+    color: #f3e7a2;
+    width: 1.4;
+    text-color: #fff3c4;
+}
+
 way[highway=footway],
 way[highway=path],
 way[highway=pedestrian],
@@ -84,6 +116,38 @@ way[railway] {
     width: 1.4;
     dashes: 6, 3;
     text-color: #e4e4ee;
+}
+
+/* ---- 桥梁 / 隧道 / 路堤 / 路堑 / 过水路面 ----
+   结构物的轮廓（桥梁实线外框、隧道虚线外框、过水路面水面）由内置结构样式绘制，
+   这里只调线本身的颜色/宽度；`casing-*` 声明可覆盖结构样式给出的默认轮廓。 */
+
+/* 桥面比普通路亮一档；轮廓画在下面，桥按 layer+1 压在交叉路之上。 */
+way[bridge=yes],
+way[bridge=viaduct],
+way[bridge=aqueduct],
+way[bridge=boardwalk] {
+    color: #f4f4f4;
+}
+
+/* 过水路面：路面本身用水色虚线，外加一层半透明水面轮廓。 */
+way[ford],
+way[highway=ford] {
+    color: #4fa4dc;
+    dashes: 4, 3;
+    text-color: #bfe4ff;
+}
+
+/* 路堤/路堑：单独的坡线用不同色相；跟道路组合时保留道路分类色，只加坡侧符号。
+   路堤是金色“梯状坡面”（刻线 + 外缘坡脚线），路堑是砖红“梳状齿线”。 */
+way[man_made=embankment] {
+    color: #d8b878;
+    width: 1.4;
+}
+
+way[man_made=cutting] {
+    color: #c6604a;
+    width: 1.4;
 }
 
 way[waterway] {

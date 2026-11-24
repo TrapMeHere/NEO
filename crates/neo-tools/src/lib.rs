@@ -13,6 +13,8 @@
 
 mod geom;
 
+use std::collections::BTreeMap;
+
 use neo_core::{LatLon, ObjectId, ObjectKind};
 use neo_editor::{AddNode, AddWay, Editor, MoveNode, SetTags, SetWayNodes};
 use neo_geo::{SnapHit, SnapTarget};
@@ -60,7 +62,7 @@ impl ToolKind {
 pub struct Pick {
     /// 命中节点。
     pub node: Option<ObjectId>,
-    /// 命中 way。
+    /// 命中路径。
     pub way: Option<ObjectId>,
     /// 命中关系（点在面的内圈上）。
     pub relation: Option<ObjectId>,
@@ -147,24 +149,24 @@ impl EditController {
         self.pending_nodes.len()
     }
 
-    /// 当前绘制中的 way。
+    /// 当前绘制中的路径。
     pub fn pending_way(&self) -> Option<ObjectId> {
         self.pending_way
     }
 
-    /// 当前绘制中的节点序列（含尚未成 way 的起点）。
+    /// 当前绘制中的节点序列（含尚未成路径的起点）。
     pub fn pending_nodes(&self) -> &[ObjectId] {
         &self.pending_nodes
     }
 
-    /// 放弃未完成的 way。
+    /// 放弃未完成的路径。
     pub fn reset_pending(&mut self) {
         self.pending_nodes.clear();
         self.pending_way = None;
         self.draw_step_cmds.clear();
     }
 
-    /// 结束当前 way（面模式会先闭合并确保 `area=yes`；保留已创建的命令历史）。
+    /// 结束当前路径（面模式会先闭合并确保 `area=yes`；保留已创建的命令历史）。
     pub fn finish_way(&mut self, editor: &mut Editor) -> Outcome {
         if self.pending_nodes.is_empty() {
             return Outcome::None;
@@ -189,7 +191,7 @@ impl EditController {
             editor.selection_mut().select_only(ObjectKind::Way, way);
         }
         self.finished_feature = true;
-        Outcome::Message(format!("已结束 way（{count} 个节点）"))
+        Outcome::Message(format!("已结束路径（{count} 个节点）"))
     }
 
     /// 绘制模式下回退上一步绘制；若上一步不是绘制则不撤销其它历史。
@@ -329,7 +331,7 @@ impl EditController {
             return Outcome::Message("已有节点".into());
         }
         let before = editor.history().undo_len();
-        // 线段吸附：新建节点并插入该 way，成为共享成员。
+        // 线段吸附：新建节点并插入该路径，成为共享成员。
         if let Some(SnapHit {
             target: SnapTarget::WaySegment { way, seg, at },
             ..
@@ -359,7 +361,7 @@ impl EditController {
         }
     }
 
-    /// 在 way 线段中点插入节点并选中；成功时返回新节点 ID。
+    /// 在路径线段中点插入节点并选中；成功时返回新节点 ID。
     pub fn insert_midpoint_node(
         &mut self,
         editor: &mut Editor,
@@ -382,7 +384,7 @@ impl EditController {
             })
             .or(pick.node);
 
-        // 线工具、草稿为空：点击开放 way 端点 → 载入续画（不写状态栏）。
+        // 线工具、草稿为空：点击开放路径端点 → 载入续画（不写状态栏）。
         if self.pending_nodes.is_empty()
             && self.tool == ToolKind::DrawLine
             && let Some(node) = hit_node
@@ -451,7 +453,7 @@ impl EditController {
         let outcome = if let Some(way) = self.pending_way {
             let nodes = self.pending_nodes.clone();
             match editor.execute(Box::new(SetWayNodes::new(way, nodes))) {
-                Ok(()) => Outcome::Edited("追加 way 节点".into()),
+                Ok(()) => Outcome::Edited("追加路径节点".into()),
                 Err(err) => Outcome::Message(format!("追加失败：{err}")),
             }
         } else if self.pending_nodes.len() >= 2 {
@@ -466,9 +468,9 @@ impl EditController {
             match editor.execute(Box::new(cmd)) {
                 Ok(()) => {
                     self.pending_way = Some(way_id);
-                    Outcome::Edited(format!("开始 way {way_id}"))
+                    Outcome::Edited(format!("开始路径 {way_id}"))
                 }
-                Err(err) => Outcome::Message(format!("创建 way 失败：{err}")),
+                Err(err) => Outcome::Message(format!("创建路径失败：{err}")),
             }
         } else {
             Outcome::None
@@ -477,10 +479,10 @@ impl EditController {
         outcome
     }
 
-    /// 从已有开放 way 的端点开始续画。
+    /// 从已有开放路径的端点开始续画。
     fn begin_continue_way(&mut self, editor: &mut Editor, way: ObjectId, endpoint: ObjectId) -> Outcome {
         let Some(handle) = editor.data().way_handle(way) else {
-            return Outcome::Message("way 不存在".into());
+            return Outcome::Message("路径不存在".into());
         };
         let mut nodes = editor.data().way_node_ids(handle);
         if nodes.len() < 2 {
@@ -558,15 +560,58 @@ impl EditController {
         }
     }
 
-    /// 合并两条端点相邻的 way（自动处理方向）。
+    /// 合并两条端点相邻的路径（自动处理方向）。
     pub fn merge_ways(&mut self, editor: &mut Editor, a: ObjectId, b: ObjectId) -> Outcome {
         match editor.execute(Box::new(neo_editor::MergeWay::new(a, b))) {
-            Ok(()) => Outcome::Edited("合并 way".into()),
+            Ok(()) => Outcome::Edited("合并路径".into()),
             Err(err) => Outcome::Message(format!("合并失败：{err}")),
         }
     }
 
-    /// 批量移动节点（拖动选中的节点/way = 一条历史记录）。
+    /// 合并所选头尾相连的路径（可多条；每条链合并成一条）。
+    ///
+    /// 只考虑开放路径，按共享端点把所选路径连成链；分叉、成环或互不相邻的组会跳过。
+    /// 所有链的合并命令一次 `execute_batch` 提交，撤销一次可整批回退。
+    pub fn merge_chain_ways(&mut self, editor: &mut Editor, ways: &[ObjectId]) -> Outcome {
+        let mut node_seqs: Vec<(ObjectId, Vec<ObjectId>)> = Vec::with_capacity(ways.len());
+        for way in ways {
+            let Some(handle) = editor.data().way_handle(*way) else {
+                continue;
+            };
+            // 已逻辑删除的路径不再参与编辑。
+            let Some(view) = editor.data().way_view(handle) else {
+                continue;
+            };
+            if !view.info.meta.visible {
+                continue;
+            }
+            let Ok(nodes) = editor.data().try_way_node_ids(handle) else {
+                continue;
+            };
+            node_seqs.push((*way, nodes));
+        }
+        let chains = chain_merge_order(&node_seqs);
+        if chains.is_empty() {
+            return Outcome::Message("所选路径无法合并：需要至少两条头尾相连的开放路径".into());
+        }
+        let mut commands: Vec<Box<dyn neo_editor::Command>> = Vec::new();
+        for chain in &chains {
+            // 整条链串行并入链首：后续命令必须以仍存活的链路首为 a，
+            // 否则会去合并已被前一条命令逻辑删除的中间路径。
+            let Some((&survivor, rest)) = chain.split_first() else {
+                continue;
+            };
+            for way in rest {
+                commands.push(Box::new(neo_editor::MergeWay::new(survivor, *way)));
+            }
+        }
+        match editor.execute_batch(commands) {
+            Ok(()) => Outcome::Edited("合并路径".into()),
+            Err(err) => Outcome::Message(format!("合并失败：{err}")),
+        }
+    }
+
+    /// 批量移动节点（拖动选中的节点/路径 = 一条历史记录）。
     pub fn move_nodes_batch(&mut self, editor: &mut Editor, moves: &[(ObjectId, LatLon, LatLon)]) -> Outcome {
         let moves: Vec<_> = moves.iter().copied().filter(|(_, from, to)| from != to).collect();
         if moves.is_empty() {
@@ -584,34 +629,201 @@ impl EditController {
         }
     }
 
-    /// 反转选中的 way。
+    /// 反转选中的路径。
     pub fn reverse_way(&mut self, editor: &mut Editor, way: ObjectId) -> Outcome {
         match editor.execute(Box::new(neo_editor::ReverseWay::new(way))) {
-            Ok(()) => Outcome::Edited("反转 way".into()),
+            Ok(()) => Outcome::Edited("反转路径".into()),
             Err(err) => Outcome::Message(format!("反转失败：{err}")),
         }
     }
 
-    /// 在选中节点处分割 way；未选中节点时退化为中点分割。
+    /// 在选中节点处分割路径；未选中节点时退化为中点分割。
     pub fn split_way(&mut self, editor: &mut Editor, way: ObjectId, at_node: Option<ObjectId>) -> Outcome {
         let Some(handle) = editor.data().way_handle(way) else {
-            return Outcome::Message("way 不存在".into());
+            return Outcome::Message("路径不存在".into());
         };
         let nodes = editor.data().way_node_ids(handle);
         let len = nodes.len();
         if len < 3 {
-            return Outcome::Message("way 太短，无法分割".into());
+            return Outcome::Message("路径太短，无法分割".into());
         }
-        // 只有内部节点能作为分割点（首尾切出来会得到单点 way）。
+        // 只有内部节点能作为分割点（首尾切出来会得到单点路径）。
         let at = at_node
             .and_then(|node| nodes.iter().position(|id| *id == node))
             .filter(|index| *index >= 1 && *index + 1 < len)
             .unwrap_or(len / 2);
         match editor.execute(Box::new(neo_editor::SplitWay::new(way, at as u32))) {
-            Ok(()) => Outcome::Edited("分割 way".into()),
+            Ok(()) => Outcome::Edited("分割路径".into()),
             Err(err) => Outcome::Message(format!("分割失败：{err}")),
         }
     }
+
+    /// 在节点处分割所有经过它的路径（仅内部节点会分割）。
+    ///
+    /// 引用该节点的每条可见路径都会各自生成一条 `SplitWay` 命令，全部命令一次
+    /// `execute_batch` 原子提交（撤销一次即可整体回退）。节点不存在或只是路径端点
+    /// （没有内部引用）时返回提示信息。
+    pub fn split_ways_at_node(&mut self, editor: &mut Editor, node: ObjectId) -> Outcome {
+        let Some(node_handle) = editor.data().node_handle(node) else {
+            return Outcome::Message("节点不存在".into());
+        };
+        // 反查表是只读的，先按当前数据重建，避免拿到上一步编辑前的引用关系。
+        editor.refresh_referrers();
+        let way_handles: Vec<_> = editor.referrers().ways_of_node(node_handle).to_vec();
+        let mut commands: Vec<Box<dyn neo_editor::Command>> = Vec::new();
+        for way_handle in way_handles {
+            let Some(view) = editor.data().way_view(way_handle) else {
+                continue;
+            };
+            let way = view.id();
+            let Ok(nodes) = editor.data().try_way_node_ids(way_handle) else {
+                continue;
+            };
+            let Some(index) = nodes.iter().position(|id| *id == node) else {
+                continue;
+            };
+            let len = nodes.len();
+            // 只有内部节点能作为分割点：首尾节点切出来会得到单点路径。
+            if index >= 1 && index + 1 < len {
+                commands.push(Box::new(neo_editor::SplitWay::new(way, index as u32)));
+            }
+        }
+        if commands.is_empty() {
+            return Outcome::Message("该点不是路径的内部节点".into());
+        }
+        match editor.execute_batch(commands) {
+            Ok(()) => Outcome::Edited("分割路径".into()),
+            Err(err) => Outcome::Message(format!("分割失败：{err}")),
+        }
+    }
+}
+
+/// 计算链式合并顺序。
+///
+/// 输入是 `(路径, 节点序列)` 列表（通常来自用户选择），返回每条可合并链的路径顺序：
+/// 链内路径首尾相接，按顺序执行 `MergeWay::new(chain[0], chain[i])` 即可把整条链
+/// 合成一条（`MergeWay` 会自动处理四条方向，并保留 `chain[0]` 的 ID）。
+///
+/// 规则：
+/// * 只考虑开放路径（节点数 >= 2 且首尾节点不同）；闭合路径与重复路径直接忽略；
+/// * 按共享端点把路径连成连通分量，每个分量必须是**链**：端点处最多两条路径相接且
+///   不能成环（分叉、闭环分量整条跳过）；
+/// * 只有含 2 条及以上路径的分量才算可合并链，孤立路径不返回；
+/// * 链从较小的度 1 端点节点出发，保证顺序稳定。
+pub fn chain_merge_order(node_seqs: &[(ObjectId, Vec<ObjectId>)]) -> Vec<Vec<ObjectId>> {
+    // 过滤不可参与合并的路径，并按输入顺序去重。
+    let mut ways: Vec<(ObjectId, ObjectId, ObjectId)> = Vec::with_capacity(node_seqs.len());
+    let mut seen: Vec<ObjectId> = Vec::with_capacity(node_seqs.len());
+    for (way, nodes) in node_seqs {
+        if seen.contains(way) {
+            continue;
+        }
+        seen.push(*way);
+        let Some((first, last)) = nodes.first().zip(nodes.last()) else {
+            continue;
+        };
+        if nodes.len() < 2 || first == last {
+            continue;
+        }
+        ways.push((*way, *first, *last));
+    }
+    if ways.len() < 2 {
+        return Vec::new();
+    }
+
+    // 端点节点 -> 引用它的路径下标：共享端点即相邻。
+    let mut at_node: BTreeMap<ObjectId, Vec<usize>> = BTreeMap::new();
+    for (index, (_, first, last)) in ways.iter().enumerate() {
+        at_node.entry(*first).or_default().push(index);
+        at_node.entry(*last).or_default().push(index);
+    }
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); ways.len()];
+    for members in at_node.values() {
+        for &i in members {
+            for &j in members {
+                if i != j && !adjacency[i].contains(&j) {
+                    adjacency[i].push(j);
+                }
+            }
+        }
+    }
+
+    // 求连通分量（按路径相邻关系）。
+    let mut component: Vec<Option<usize>> = vec![None; ways.len()];
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    let mut unvisited: Vec<usize> = (0..ways.len()).rev().collect();
+    while let Some(start) = unvisited.pop() {
+        if component[start].is_some() {
+            continue;
+        }
+        let id = components.len();
+        let mut members = Vec::new();
+        let mut stack = vec![start];
+        component[start] = Some(id);
+        while let Some(index) = stack.pop() {
+            members.push(index);
+            for &next in &adjacency[index] {
+                if component[next].is_none() {
+                    component[next] = Some(id);
+                    stack.push(next);
+                }
+            }
+        }
+        components.push(members);
+    }
+
+    // 逐个分量校验并排出链序。
+    let mut chains = Vec::new();
+    for members in components {
+        if members.len() < 2 {
+            continue;
+        }
+        // 端点节点的度数：> 2 说明分叉，整条分量跳过。
+        let mut degree: BTreeMap<ObjectId, usize> = BTreeMap::new();
+        for &index in &members {
+            let (_, first, last) = ways[index];
+            *degree.entry(first).or_insert(0) += 1;
+            *degree.entry(last).or_insert(0) += 1;
+        }
+        if degree.values().any(|degree| *degree > 2) {
+            continue;
+        }
+        // 链（路径图）满足 边数 + 1 = 顶点数；否则说明成环或存在重复边。
+        if members.len() + 1 != degree.len() {
+            continue;
+        }
+        // 从最小的度 1 端点出发，沿未走过的路径走完整条链。
+        let Some(&start) = degree
+            .iter()
+            .find_map(|(node, degree)| (*degree == 1).then_some(node))
+        else {
+            continue;
+        };
+        let mut order = Vec::with_capacity(members.len());
+        let mut current = start;
+        let mut previous: Option<usize> = None;
+        while order.len() < members.len() {
+            let Some(candidates) = at_node.get(&current) else {
+                break;
+            };
+            let next: Vec<usize> = candidates
+                .iter()
+                .copied()
+                .filter(|index| Some(*index) != previous)
+                .collect();
+            let [index] = next.as_slice() else {
+                break;
+            };
+            order.push(ways[*index].0);
+            let (_, first, last) = ways[*index];
+            current = if first == current { last } else { first };
+            previous = Some(*index);
+        }
+        if order.len() == members.len() {
+            chains.push(order);
+        }
+    }
+    chains
 }
 
 /// 解析绘制落点：复用节点 / 线段插点 / 新建。返回 `(node_id, created_on_segment)`。
@@ -642,7 +854,7 @@ fn resolve_draw_node(
     }
 }
 
-/// 在 way 线段投影处新建节点并插入为成员。返回新节点 ID。
+/// 在路径线段投影处新建节点并插入为成员。返回新节点 ID。
 pub fn insert_node_on_segment(
     editor: &mut Editor,
     way: ObjectId,
@@ -659,10 +871,10 @@ pub fn insert_node_on_segment(
     Ok(id)
 }
 
-/// 在 way 的 `seg` 段几何中点新建并插入节点。
+/// 在路径的 `seg` 段几何中点新建并插入节点。
 pub fn insert_way_midpoint(editor: &mut Editor, way: ObjectId, seg: usize) -> Result<ObjectId, String> {
     let Some(handle) = editor.data().way_handle(way) else {
-        return Err("way 不存在".into());
+        return Err("路径不存在".into());
     };
     let nodes = editor.data().way_node_ids(handle);
     let (a, b) = nodes
@@ -691,10 +903,10 @@ pub fn segment_midpoint_latlon(a: LatLon, b: LatLon) -> LatLon {
     neo_geo::WorldPoint::new((wa.x + wb.x) * 0.5, (wa.y + wb.y) * 0.5).to_latlon()
 }
 
-/// 在 way 的 `seg` 段后插入已有节点（共享节点）。
+/// 在路径的 `seg` 段后插入已有节点（共享节点）。
 fn insert_node_on_way(editor: &mut Editor, way: ObjectId, seg: usize, node: ObjectId) -> Result<(), String> {
     let Some(handle) = editor.data().way_handle(way) else {
-        return Err("way 不存在".into());
+        return Err("路径不存在".into());
     };
     let mut nodes = editor.data().way_node_ids(handle);
     if nodes.contains(&node) {
@@ -710,7 +922,7 @@ fn insert_node_on_way(editor: &mut Editor, way: ObjectId, seg: usize, node: Obje
         .map_err(|err| format!("插入节点失败：{err}"))
 }
 
-/// 查找可从该端点续画的开放 way。
+/// 查找可从该端点续画的开放路径。
 fn find_continuable_way(
     editor: &mut Editor,
     endpoint: ObjectId,
@@ -745,7 +957,7 @@ fn find_continuable_way(
     if candidates.is_empty() {
         return None;
     }
-    // 端点仅挂接一条 way 时直接续画该 way。
+    // 端点仅挂接一条路径时直接续画该路径。
     if parent_count == 1 {
         return candidates.pop();
     }
@@ -779,6 +991,24 @@ mod tests {
         cmd.id = Some(id);
         editor.execute(Box::new(cmd)).unwrap();
         id
+    }
+
+    fn way_nodes(editor: &Editor, way: ObjectId) -> Vec<ObjectId> {
+        let handle = editor.data().way_handle(way).expect("路径存在");
+        editor.data().way_node_ids(handle)
+    }
+
+    fn visible_way_ids(editor: &Editor) -> Vec<ObjectId> {
+        editor
+            .data()
+            .iter_ways()
+            .filter(|way| way.meta.visible)
+            .map(|way| way.id)
+            .collect()
+    }
+
+    fn ids(values: &[i64]) -> Vec<ObjectId> {
+        values.iter().copied().map(ObjectId).collect()
     }
 
     #[test]
@@ -965,5 +1195,263 @@ mod tests {
         assert!(ctl.take_finished_feature());
         assert_eq!(editor.data().node_count(), nodes_before);
         assert!(editor.selection().contains(ObjectKind::Way, way));
+    }
+
+    #[test]
+    fn chain_merge_order_orders_three_ways() {
+        let chain = chain_merge_order(&[
+            (ObjectId(10), ids(&[1, 2, 3])),
+            (ObjectId(11), ids(&[3, 4, 5])),
+            (ObjectId(12), ids(&[5, 6, 7])),
+        ]);
+        assert_eq!(chain, vec![vec![ObjectId(10), ObjectId(11), ObjectId(12)]]);
+    }
+
+    #[test]
+    fn chain_merge_order_handles_reversed_and_duplicate_endpoints() {
+        // B 反向接入（B 首 = 4，B 尾 = A 尾 3），仍是同一条链。
+        let reversed = chain_merge_order(&[(ObjectId(10), ids(&[1, 2, 3])), (ObjectId(11), ids(&[4, 3]))]);
+        assert_eq!(reversed, vec![vec![ObjectId(10), ObjectId(11)]]);
+
+        // B 首 = A 首（都从节点 1 出发）也能成链；重复路径只算一次。
+        let head_to_head = chain_merge_order(&[
+            (ObjectId(10), ids(&[1, 2, 3])),
+            (ObjectId(11), ids(&[1, 4])),
+            (ObjectId(11), ids(&[1, 4])),
+        ]);
+        assert_eq!(head_to_head, vec![vec![ObjectId(10), ObjectId(11)]]);
+    }
+
+    #[test]
+    fn chain_merge_order_returns_separate_chains() {
+        let chains = chain_merge_order(&[
+            (ObjectId(10), ids(&[1, 2])),
+            (ObjectId(11), ids(&[2, 3])),
+            (ObjectId(12), ids(&[4, 5])),
+            (ObjectId(13), ids(&[5, 6])),
+        ]);
+        assert_eq!(
+            chains,
+            vec![vec![ObjectId(10), ObjectId(11)], vec![ObjectId(12), ObjectId(13)],]
+        );
+    }
+
+    #[test]
+    fn chain_merge_order_skips_cycle_branch_and_closed_ways() {
+        // 环：1-2-3-1，边数 = 顶点数，不成链。
+        assert!(
+            chain_merge_order(&[
+                (ObjectId(10), ids(&[1, 2])),
+                (ObjectId(11), ids(&[2, 3])),
+                (ObjectId(12), ids(&[3, 1])),
+            ])
+            .is_empty()
+        );
+        // 分叉：节点 2 接三条路径。
+        assert!(
+            chain_merge_order(&[
+                (ObjectId(10), ids(&[1, 2])),
+                (ObjectId(11), ids(&[2, 3])),
+                (ObjectId(12), ids(&[2, 4])),
+            ])
+            .is_empty()
+        );
+        // 闭合路径与互不相邻的路径都不参与合并。
+        assert!(
+            chain_merge_order(&[
+                (ObjectId(10), ids(&[1, 2, 1])),
+                (ObjectId(11), ids(&[1, 2])),
+                (ObjectId(12), ids(&[3, 4])),
+            ])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn merge_chain_ways_merges_three_ways_in_one_undo() {
+        let mut editor = Editor::new(DataSet::new());
+        let nodes: Vec<ObjectId> = (0..7)
+            .map(|i| add_node(&mut editor, 0.0, i as f64 * 0.001))
+            .collect();
+        let first = add_way(&mut editor, nodes[0..3].to_vec());
+        let middle = add_way(&mut editor, nodes[2..5].to_vec());
+        let last = add_way(&mut editor, nodes[4..7].to_vec());
+        let mut ctl = EditController::new(ToolKind::Select);
+        let undo_before = editor.history().undo_len();
+
+        let outcome = ctl.merge_chain_ways(&mut editor, &[last, first, middle]);
+        assert_eq!(outcome, Outcome::Edited("合并路径".into()));
+        assert_eq!(editor.history().undo_len(), undo_before + 1);
+        // 链从端点出发合并，保留的路径 ID 取决于起点方向；节点数必须等于各路径去重后的总数。
+        let visible = visible_way_ids(&editor);
+        assert_eq!(visible.len(), 1);
+        let merged = way_nodes(&editor, visible[0]);
+        assert_eq!(merged.len(), nodes.len());
+        let mut reversed = nodes.clone();
+        reversed.reverse();
+        assert!(merged == nodes || merged == reversed, "合并顺序应为正向或反向");
+
+        // 一条撤销回退整批合并。
+        assert!(editor.undo().unwrap());
+        assert_eq!(way_nodes(&editor, first), nodes[0..3].to_vec());
+        assert_eq!(way_nodes(&editor, middle), nodes[2..5].to_vec());
+        assert_eq!(way_nodes(&editor, last), nodes[4..7].to_vec());
+        assert_eq!(visible_way_ids(&editor).len(), 3);
+    }
+
+    #[test]
+    fn merge_chain_ways_handles_reversed_direction() {
+        let mut editor = Editor::new(DataSet::new());
+        let a = add_node(&mut editor, 47.0, 8.0);
+        let b = add_node(&mut editor, 47.0, 8.001);
+        let c = add_node(&mut editor, 47.0, 8.002);
+        let d = add_node(&mut editor, 47.0, 8.003);
+        // A = 1→2→3；B = 1→4（B 首 = A 首），合并需自动把 B 反转接到 A 前面。
+        let way_a = add_way(&mut editor, vec![a, b, c]);
+        let way_b = add_way(&mut editor, vec![a, d]);
+        let mut ctl = EditController::new(ToolKind::Select);
+
+        let outcome = ctl.merge_chain_ways(&mut editor, &[way_a, way_b]);
+        assert_eq!(outcome, Outcome::Edited("合并路径".into()));
+        let visible = visible_way_ids(&editor);
+        assert_eq!(visible.len(), 1);
+        let merged = way_nodes(&editor, visible[0]);
+        assert_eq!(merged.len(), 4);
+        // 自动处理方向后必须首尾相接（正向或反向均可）。
+        assert!(
+            merged == vec![c, b, a, d] || merged == vec![d, a, b, c],
+            "反向接入的路径应被自动翻转后合并：{merged:?}"
+        );
+    }
+
+    #[test]
+    fn merge_chain_ways_rejects_non_chain_selection() {
+        // 互不相邻：不产生任何命令。
+        let mut editor = Editor::new(DataSet::new());
+        let a = add_node(&mut editor, 0.0, 0.0);
+        let b = add_node(&mut editor, 0.0, 0.001);
+        let c = add_node(&mut editor, 0.0, 0.002);
+        let d = add_node(&mut editor, 0.0, 0.003);
+        let way_a = add_way(&mut editor, vec![a, b]);
+        let way_b = add_way(&mut editor, vec![c, d]);
+        let mut ctl = EditController::new(ToolKind::Select);
+        let undo_before = editor.history().undo_len();
+        assert!(matches!(
+            ctl.merge_chain_ways(&mut editor, &[way_a, way_b]),
+            Outcome::Message(_)
+        ));
+        assert_eq!(editor.history().undo_len(), undo_before);
+        assert_eq!(visible_way_ids(&editor).len(), 2);
+
+        // 成环：整条分量跳过。
+        let mut editor = Editor::new(DataSet::new());
+        let p1 = add_node(&mut editor, 0.0, 0.0);
+        let p2 = add_node(&mut editor, 0.0, 0.001);
+        let p3 = add_node(&mut editor, 0.0, 0.002);
+        let w1 = add_way(&mut editor, vec![p1, p2]);
+        let w2 = add_way(&mut editor, vec![p2, p3]);
+        let w3 = add_way(&mut editor, vec![p3, p1]);
+        let mut ctl = EditController::new(ToolKind::Select);
+        assert!(matches!(
+            ctl.merge_chain_ways(&mut editor, &[w1, w2, w3]),
+            Outcome::Message(_)
+        ));
+        assert_eq!(visible_way_ids(&editor).len(), 3);
+
+        // 分叉：节点 p2 处三条路径相接。
+        let mut editor = Editor::new(DataSet::new());
+        let q1 = add_node(&mut editor, 0.0, 0.0);
+        let q2 = add_node(&mut editor, 0.0, 0.001);
+        let q3 = add_node(&mut editor, 0.0, 0.002);
+        let q4 = add_node(&mut editor, 0.0, 0.003);
+        let x1 = add_way(&mut editor, vec![q1, q2]);
+        let x2 = add_way(&mut editor, vec![q2, q3]);
+        let x3 = add_way(&mut editor, vec![q2, q4]);
+        let mut ctl = EditController::new(ToolKind::Select);
+        assert!(matches!(
+            ctl.merge_chain_ways(&mut editor, &[x1, x2, x3]),
+            Outcome::Message(_)
+        ));
+        assert_eq!(visible_way_ids(&editor).len(), 3);
+    }
+
+    #[test]
+    fn split_ways_at_node_splits_internal_node() {
+        let mut editor = Editor::new(DataSet::new());
+        let nodes: Vec<ObjectId> = (0..4)
+            .map(|i| add_node(&mut editor, 0.0, i as f64 * 0.001))
+            .collect();
+        let way = add_way(&mut editor, nodes.clone());
+        let mut ctl = EditController::new(ToolKind::Select);
+        let undo_before = editor.history().undo_len();
+
+        let outcome = ctl.split_ways_at_node(&mut editor, nodes[1]);
+        assert_eq!(outcome, Outcome::Edited("分割路径".into()));
+        assert_eq!(editor.history().undo_len(), undo_before + 1);
+        // 原路径保留前半段，新路径复制后半段。
+        assert_eq!(way_nodes(&editor, way), nodes[0..2].to_vec());
+        let visible = visible_way_ids(&editor);
+        assert_eq!(visible.len(), 2);
+        let new_way = *visible.iter().find(|id| **id != way).unwrap();
+        assert_eq!(way_nodes(&editor, new_way), nodes[1..4].to_vec());
+
+        // 一次撤销恢复原路径并移除新路径。
+        assert!(editor.undo().unwrap());
+        assert_eq!(visible_way_ids(&editor), vec![way]);
+        assert_eq!(way_nodes(&editor, way), nodes);
+    }
+
+    #[test]
+    fn split_ways_at_node_ignores_endpoints_and_missing_nodes() {
+        let mut editor = Editor::new(DataSet::new());
+        let nodes: Vec<ObjectId> = (0..3)
+            .map(|i| add_node(&mut editor, 0.0, i as f64 * 0.001))
+            .collect();
+        let way = add_way(&mut editor, nodes.clone());
+        let mut ctl = EditController::new(ToolKind::Select);
+        let undo_before = editor.history().undo_len();
+
+        assert!(matches!(
+            ctl.split_ways_at_node(&mut editor, nodes[0]),
+            Outcome::Message(_)
+        ));
+        assert!(matches!(
+            ctl.split_ways_at_node(&mut editor, nodes[2]),
+            Outcome::Message(_)
+        ));
+        assert!(matches!(
+            ctl.split_ways_at_node(&mut editor, ObjectId(999)),
+            Outcome::Message(_)
+        ));
+        assert_eq!(editor.history().undo_len(), undo_before);
+        assert_eq!(visible_way_ids(&editor), vec![way]);
+        assert_eq!(way_nodes(&editor, way), nodes);
+    }
+
+    #[test]
+    fn split_ways_at_node_splits_all_ways_in_one_batch() {
+        let mut editor = Editor::new(DataSet::new());
+        let a = add_node(&mut editor, 0.0, 0.0);
+        let shared = add_node(&mut editor, 0.0, 0.001);
+        let c = add_node(&mut editor, 0.0, 0.002);
+        let d = add_node(&mut editor, 0.0, 0.003);
+        let e = add_node(&mut editor, 0.0, 0.004);
+        let way_a = add_way(&mut editor, vec![a, shared, c]);
+        let way_b = add_way(&mut editor, vec![d, shared, e]);
+        let mut ctl = EditController::new(ToolKind::Select);
+        let undo_before = editor.history().undo_len();
+
+        let outcome = ctl.split_ways_at_node(&mut editor, shared);
+        assert_eq!(outcome, Outcome::Edited("分割路径".into()));
+        // 两条路径各分一段，一次批处理只占一条历史。
+        assert_eq!(editor.history().undo_len(), undo_before + 1);
+        assert_eq!(visible_way_ids(&editor).len(), 4);
+        assert_eq!(way_nodes(&editor, way_a), vec![a, shared]);
+        assert_eq!(way_nodes(&editor, way_b), vec![d, shared]);
+
+        assert!(editor.undo().unwrap());
+        assert_eq!(visible_way_ids(&editor).len(), 2);
+        assert_eq!(way_nodes(&editor, way_a), vec![a, shared, c]);
+        assert_eq!(way_nodes(&editor, way_b), vec![d, shared, e]);
     }
 }

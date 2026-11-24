@@ -183,12 +183,14 @@ pub fn right_side_panel(
 
             // ---- 标签 / 成员（各自独立 ScrollArea，避免滚轮绑在一起）----
             section_header(ui, ph::TAG, t("panel.tags"), |_| {});
-            if let Some((kind, id)) = selection {
+            if !selection_list.is_empty() {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
-                    sync_tags_editor(data, kind, id, tags_editor);
-                    preset_combo(ui, tags_editor, data, kind, id);
-                    if let Some(tags) = tags_editor.show(ui) {
-                        actions.apply_tags = Some(tags);
+                    sync_tags_editor(data, selection_list, tags_editor);
+                    if let Some((kind, id)) = selection {
+                        preset_combo(ui, tags_editor, data, kind, id);
+                    }
+                    if let Some(edit) = tags_editor.show(ui) {
+                        actions.tag_edit = Some(edit);
                     }
                     if merge_available
                         && ui
@@ -198,7 +200,9 @@ pub fn right_side_panel(
                         actions.merge_ways = true;
                     }
                 });
-                membership_block(ui, actions, data, referrers, kind, id);
+                if let Some((kind, id)) = selection {
+                    membership_block(ui, actions, data, referrers, kind, id);
+                }
             }
 
             // ---- 选择：为空则留空 ----
@@ -344,8 +348,22 @@ pub fn right_side_panel(
         });
 }
 
-/// 把选中对象的标签同步到标签编辑器（目标变化时重载）。
-fn sync_tags_editor(data: &DataSet, kind: ObjectKind, id: ObjectId, editor: &mut TagsEditor) {
+/// 用选中对象集合（单选即自身）的标签并集同步标签编辑器。
+fn sync_tags_editor(data: &DataSet, targets: &[(ObjectKind, ObjectId)], editor: &mut TagsEditor) {
+    let version = data.version();
+    if !editor.needs_sync(targets, version) {
+        return;
+    }
+    let lists: Vec<Vec<(String, String)>> = targets
+        .iter()
+        .map(|(kind, id)| object_tags(data, *kind, *id))
+        .collect();
+    let rows = super::tag_rows_from(&lists);
+    editor.sync(targets, version, &rows);
+}
+
+/// 读取一个对象的标签（字符串对）；对象不存在时为空。
+fn object_tags(data: &DataSet, kind: ObjectKind, id: ObjectId) -> Vec<(String, String)> {
     let pairs: &[(neo_core::Sym, neo_core::Sym)] = match kind {
         ObjectKind::Node => data
             .node_handle(id)
@@ -364,11 +382,10 @@ fn sync_tags_editor(data: &DataSet, kind: ObjectKind, id: ObjectId, editor: &mut
             .unwrap_or(&[]),
         ObjectKind::Changeset => &[],
     };
-    let tags: Vec<(String, String)> = pairs
+    pairs
         .iter()
         .map(|(key, value)| (data.resolve(*key).to_owned(), data.resolve(*value).to_owned()))
-        .collect();
-    editor.sync(kind, id, &tags);
+        .collect()
 }
 
 /// 标签栏里的成员：该要素属于哪些关系，以及它在其中的角色。

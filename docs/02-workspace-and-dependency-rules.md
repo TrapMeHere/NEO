@@ -28,7 +28,7 @@ neo/
 │  │                          #    CSR Referrers、ChangeTrack、BitSet 脏位图、DataSet
 │  ├─ neo-query/              # L4 只读出口：MapQuery + MapSnapshot + SnapshotCell（arc-swap）
 │  ├─ neo-geo/                # L3 WebMercator f64 米 / Camera / rstar 0.14 / 几何 / 拾取（只读 store）
-│  ├─ neo-style/              # L4 MapCSS / Presets / Filters
+│  ├─ neo-style/              # L4 MapCSS / Presets
 │  ├─ neo-io/                 # L2 PBF / XML / osmChange 0.6（osmpbf 只读；写侧自研 encoder）
 │  ├─ neo-persist/            # L2 SQLite WAL / command journal / autosave / 崩溃恢复
 │  ├─ neo-scene/              # L5 可见集 / LOD / SceneFrame / MapVertex（无 GPU 句柄）

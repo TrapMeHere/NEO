@@ -27,7 +27,7 @@
 | 9 | [08 IO：PBF/XML/osmChange](./08-io-pbf-xml-osc.md) | 导入管线、格式细节、写侧方案 | 数据开发者 |
 | 10 | [09 OSM API 与同步](./09-osm-api-and-sync.md) | API 0.6、changeset、diff 上传 | 同步开发者 |
 | 11 | [10 持久化与恢复](./10-persistence-and-recovery.md) | SQLite WAL、journal、autosave | 基础设施 |
-| 12 | [11 样式、预设与 MapCSS](./11-style-presets-mapcss.md) | MapCSS 兼容、Presets、过滤器 | 样式/UI |
+| 12 | [11 样式、预设与 MapCSS](./11-style-presets-mapcss.md) | MapCSS 兼容、Presets | 样式/UI |
 | 13 | [12 校验器](./12-validation.md) | 规则模型、增量校验、上传 gate | 数据质量 |
 | 14 | [13 JOSM 功能对照](./13-josm-parity.md) | parity 矩阵、完成判据、易漏行为 | 产品/所有人 |
 | 15 | [14 性能与验证](./14-performance-and-verification.md) | 指标、基准方法、实测基线 | 所有人 |
