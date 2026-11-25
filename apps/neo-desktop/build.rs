@@ -1,11 +1,11 @@
-//! Windows 资源：给可执行文件嵌入应用图标与版本信息。
+//! Windows resources: embed the application icon and version info into the executable.
 //!
-//! 旧依赖 `winres` 有两处问题：
-//! 1. 把 `rc.exe` 产出的 `.res` 当成 `.lib` 写盘，链接器无法使用；
-//! 2. 本包同时有 lib + bin 时，`rustc-link-lib` 不一定进最终 exe。
+//! The old `winres` dependency had two problems:
+//! 1. It wrote the `.res` produced by `rc.exe` to disk as a `.lib`, which the linker cannot use;
+//! 2. When this package has both a lib and a bin, `rustc-link-lib` does not necessarily reach the final exe.
 //!
-//! 这里直接跑 Windows SDK 的 `rc.exe`，再用 `rustc-link-arg-bins`
-//! 把 `.res` 交给最终二进制的链接步骤。
+//! Here we run the Windows SDK's `rc.exe` directly, then use `rustc-link-arg-bins`
+//! to hand the `.res` to the final binary's link step.
 
 fn main() {
     #[cfg(windows)]
@@ -88,7 +88,7 @@ END
             panic!("rc.exe did not write {}", res_path.display());
         }
 
-        // 只链进 bin，避免无效地塞进 rlib。MSVC link.exe 直接接受 .res。
+        // Link only into the bin, avoiding uselessly stuffing it into the rlib. MSVC link.exe accepts .res directly.
         println!("cargo:rustc-link-arg-bins={}", res_path.display());
     }
 

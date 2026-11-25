@@ -8,7 +8,7 @@ updates:
       time: "04:00"
       timezone: "Asia/Shanghai"
     open-pull-requests-limit: 5
-    # GUI/GPU 钉版见 ADR-0011；zip 主版本 API 不兼容，勿自动跨大版本。
+    # GUI/GPU pins: see ADR-0011; zip's major versions break API compatibility, so never auto-bump across majors.
     ignore:
       - dependency-name: "egui*"
       - dependency-name: "eframe*"

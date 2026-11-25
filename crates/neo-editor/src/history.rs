@@ -1,25 +1,25 @@
-//! Undo/Redo 历史。
+//! Undo/Redo history.
 //!
-//! 一个条目可以是单命令或命令批（例如"画一个节点 + 连成 way"是一个原子操作）。
-//! 同类相邻命令可合并（拖动连续 MoveNode → 1 条历史，G3 验收项）。
+//! An entry can be a single command or a command batch (e.g. "draw a node + connect it into a way" is one atomic operation).
+//! Adjacent commands of the same kind can merge (a continuous MoveNode drag -> 1 history entry, G3 acceptance item).
 //!
-//! 脏标记用「已应用状态 id」与「上次保存时的 id」比较：撤销回到保存点
-//! （含撤销到空历史）后不再显示未保存；仅有 redo 栈时也不算脏。
+//! The dirty flag compares the "applied state id" with the "id at last save": after undoing back to the save point
+//! (including undoing to empty history) no unsaved marker is shown; a redo stack alone does not count as dirty.
 
 use crate::command::{Command, CommandKind};
 use crate::editor::EditContext;
 use crate::journal::JournalCommand;
 
-/// 一条历史记录。
+/// A history entry.
 pub enum HistoryEntry {
-    /// 单命令。
+    /// A single command.
     Single(Box<dyn Command>),
-    /// 原子命令批（undo 逆序）。
+    /// An atomic command batch (undone in reverse order).
     Batch(Vec<Box<dyn Command>>),
 }
 
 impl HistoryEntry {
-    /// 标签。
+    /// Label.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Single(c) => c.label(),
@@ -35,19 +35,19 @@ impl HistoryEntry {
     }
 }
 
-/// 撤销/重做栈。
+/// Undo/redo stacks.
 pub struct History {
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
-    /// 与 `undo` 平行：每条入栈后对应的已应用状态 id。
+    /// Parallel to `undo`: the applied state id corresponding to each pushed entry.
     undo_state_ids: Vec<u64>,
-    /// 与 `redo` 平行：该条目曾对应的已应用状态 id（redo 时写回）。
+    /// Parallel to `redo`: the applied state id the entry used to have (written back on redo).
     redo_state_ids: Vec<u64>,
-    /// 当前已应用状态 id（空历史为 0）。
+    /// Current applied state id (0 for empty history).
     current_id: u64,
-    /// 下一个状态 id。
+    /// Next state id.
     next_id: u64,
-    /// 上次 `clear_dirty` 时的状态 id。
+    /// State id at the last `clear_dirty`.
     clean_id: u64,
     limit: usize,
 }
@@ -59,7 +59,7 @@ impl Default for History {
 }
 
 impl History {
-    /// 新建（默认上限 512 条）。
+    /// New (default limit 512 entries).
     pub fn new() -> Self {
         Self {
             undo: Vec::new(),
@@ -73,7 +73,7 @@ impl History {
         }
     }
 
-    /// 设置内存上限（条目数）。
+    /// Set the memory limit (number of entries).
     pub fn with_limit(limit: usize) -> Self {
         Self {
             limit: limit.max(16),
@@ -81,27 +81,27 @@ impl History {
         }
     }
 
-    /// 可撤销条数。
+    /// Number of undoable entries.
     pub fn undo_len(&self) -> usize {
         self.undo.len()
     }
 
-    /// 撤销栈标签（最近的可撤销操作在前），用于命令历史面板。
+    /// Undo stack labels (most recent undoable operation first), used by the command history panel.
     pub fn labels(&self) -> Vec<&'static str> {
         self.undo.iter().rev().map(HistoryEntry::label).collect()
     }
 
-    /// 可重做条数。
+    /// Number of redoable entries.
     pub fn redo_len(&self) -> usize {
         self.redo.len()
     }
 
-    /// 是否有未保存修改（当前已应用状态 ≠ 上次保存点）。
+    /// Whether there are unsaved changes (current applied state != last save point).
     pub fn is_dirty(&self) -> bool {
         self.current_id != self.clean_id
     }
 
-    /// 清除脏标记（保存/上传后调用）：把当前状态标为已保存。
+    /// Clear the dirty flag (called after save/upload): mark the current state as saved.
     pub fn clear_dirty(&mut self) {
         self.clean_id = self.current_id;
     }
@@ -112,7 +112,7 @@ impl History {
         self.current_id
     }
 
-    /// 压入单命令；与栈顶同类可合并时合并。
+    /// Push a single command; merge with the top entry when the kinds are mergeable.
     pub fn push(&mut self, cmd: Box<dyn Command>) {
         self.redo.clear();
         self.redo_state_ids.clear();
@@ -134,7 +134,7 @@ impl History {
         self.trim();
     }
 
-    /// 压入命令批（作为一条历史）。
+    /// Push a command batch (as one history entry).
     pub fn push_batch(&mut self, cmds: Vec<Box<dyn Command>>) {
         if cmds.is_empty() {
             return;
@@ -156,10 +156,10 @@ impl History {
         }
     }
 
-    /// 当前已应用历史的 journal 记录（按应用顺序）。
+    /// Journal records of the currently applied history (in apply order).
     ///
-    /// 用于 undo/redo 后的 journal 重建：`undo` 栈里的命令顺序重放即可得到
-    /// 当前数据状态（redo 栈里的命令视为未应用）。
+    /// Used to rebuild the journal after undo/redo: replaying the commands in the `undo` stack in order yields
+    /// the current data state (commands in the redo stack are treated as not applied).
     pub fn records(&self) -> Vec<JournalCommand> {
         let mut out = Vec::new();
         for entry in &self.undo {
@@ -173,7 +173,7 @@ impl History {
         out
     }
 
-    /// undo 一步：返回被撤销条目的标签。
+    /// Undo one step: returns the label of the undone entry.
     pub fn undo(
         &mut self,
         ctx: &mut EditContext<'_>,
@@ -188,7 +188,7 @@ impl History {
             HistoryEntry::Batch(cmds) => {
                 for index in (0..cmds.len()).rev() {
                     if let Err(err) = cmds[index].undo(ctx) {
-                        // 回滚已经撤销的步骤（按 undo 的相反顺序 apply），保持"失败即无副作用"。
+                        // Roll back the steps that were already undone (apply in the reverse order of undo) so "failure means no side effects" holds.
                         for cmd in &mut cmds[index + 1..] {
                             let _ = cmd.apply(ctx);
                         }
@@ -206,7 +206,7 @@ impl History {
         Ok(Some(label))
     }
 
-    /// redo 一步。
+    /// Redo one step.
     pub fn redo(
         &mut self,
         ctx: &mut EditContext<'_>,
@@ -238,7 +238,7 @@ impl History {
         Ok(Some(label))
     }
 
-    /// 清空（新打开文件时）。
+    /// Clear (when opening a new file).
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
@@ -249,7 +249,7 @@ impl History {
         self.clean_id = 0;
     }
 
-    /// 估算内存（条目数 × 粗估）。
+    /// Estimate memory (entry count x rough estimate).
     pub fn mem_bytes(&self) -> usize {
         (self.undo.len() + self.redo.len()) * core::mem::size_of::<usize>() * 16
     }

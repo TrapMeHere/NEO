@@ -1,4 +1,4 @@
-//! 把插件命令翻译成 `neo-editor` 事务。插件没有第二条写路径。
+//! Translates plugin commands into `neo-editor` transactions. Plugins have no second write path.
 
 use neo_core::{LatLon, ObjectKind};
 use neo_editor::{AddNode, AddWay, Editor};
@@ -6,7 +6,7 @@ use neo_editor::{AddNode, AddWay, Editor};
 use crate::PluginError;
 use crate::gate::PendingCommand;
 
-/// 执行一条已通过权限检查的命令。
+/// Executes a command that has already passed permission checks.
 pub fn apply_command(editor: &mut Editor, cmd: &PendingCommand) -> Result<(), PluginError> {
     let value: serde_json::Value = serde_json::from_str(&cmd.args_json)
         .map_err(|err| PluginError::Manifest(format!("command json: {err}")))?;
@@ -70,8 +70,8 @@ fn lat_lon(value: &serde_json::Value) -> Result<(f64, f64), PluginError> {
         .get("lon")
         .and_then(|v| v.as_f64())
         .ok_or_else(|| PluginError::Manifest("lon".into()))?;
-    // NaN 会被 `as i32` 静默变成 0（几内亚湾），超范围值会被饱和；
-    // 插件是外部输入，必须在进入 DataSet 前拒绝。
+    // NaN would silently become 0 via `as i32` (Gulf of Guinea), and out-of-range values would saturate;
+    // plugins are external input and must be rejected before entering the DataSet.
     neo_core::LatLon::try_from_degrees(lat, lon)
         .ok_or_else(|| PluginError::Manifest(format!("invalid coordinates {lat},{lon}")))?;
     Ok((lat, lon))
@@ -86,7 +86,7 @@ fn tags_of(value: Option<&serde_json::Value>) -> Vec<(String, String)> {
         .collect()
 }
 
-/// 读出 way 的标签文本，测试和 CLI 用。
+/// Reads out a way's tag text, for tests and the CLI.
 pub fn way_tags(editor: &Editor) -> Vec<(String, String)> {
     editor
         .data()
@@ -102,7 +102,7 @@ pub fn way_tags(editor: &Editor) -> Vec<(String, String)> {
         .collect()
 }
 
-/// 数据集里可见 way 的种类计数，避免测试依赖私有字段。
+/// Counts visible way kinds in the dataset so tests don't depend on private fields.
 pub fn object_kind_name(kind: ObjectKind) -> &'static str {
     match kind {
         ObjectKind::Node => "node",

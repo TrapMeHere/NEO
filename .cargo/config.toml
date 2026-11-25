@@ -3,5 +3,5 @@ retry = 3
 
 [build]
 incremental = true
-# 构建缓存在 out/cargo，不放在仓库根目录，也不使用 target 这个名字。
+# Build cache lives in out/cargo, not in the repo root, and never uses the name target.
 target-dir = "out/cargo"

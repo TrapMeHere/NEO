@@ -1,16 +1,16 @@
-//! # NEO 性能验证原型
+//! # NEO performance verification prototype
 //!
-//! 目的（见 docs/14 与 ADR-0001 的 V 项）：在投入完整 JOSM 移植前，用**真实代码**
-//! 测量关键路径，而不是靠纸面承诺。四个子命令：
+//! Purpose (see docs/14 and item V of ADR-0001): before committing to a full JOSM port, measure the
+//! critical paths with **real code** instead of paper promises. Four subcommands:
 //!
 //! ```text
-//! neo-prototype import  --pbf <file>              # 导入 + 索引，报告吞吐/内存
-//! neo-prototype render  --pbf <file> [--synth N]  # 离屏 GPU 渲染 -> PNG（验证 wgpu 管线）
-//! neo-prototype bench   --pbf <file> [--synth N]  # 查询/场景/局部更新/GPU 帧 的 P50/P95
-//! neo-prototype gpu-info                          # 适配器信息
+//! neo-prototype import  --pbf <file>              # import + index, report throughput/memory
+//! neo-prototype render  --pbf <file> [--synth N]  # offscreen GPU render -> PNG (validates the wgpu pipeline)
+//! neo-prototype bench   --pbf <file> [--synth N]  # P50/P95 for queries/scenes/partial updates/GPU frames
+//! neo-prototype gpu-info                          # adapter info
 //! ```
 //!
-//! 输出既打印到 stdout，也写 `out/prototype-report.md`（可直接作为 Gate 报告素材）。
+//! Output is printed to stdout and also written to `out/prototype-report.md` (usable directly as Gate report material).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -37,7 +37,7 @@ USAGE:
   neo-prototype bench   --synth <n> [--iterations 30]
   neo-prototype pbf-roundtrip --pbf <in.osm.pbf> [--out out/roundtrip.pbf]
 neo-prototype pbf-roundtrip --synth <n> [--out out/roundtrip.pbf]
-neo-prototype compare-import --pbf <in.osm.pbf>   # 顺序 vs 并行解码
+neo-prototype compare-import --pbf <in.osm.pbf>   # sequential vs parallel decoding
   neo-prototype gpu-info
 ";
 
@@ -69,7 +69,7 @@ fn main() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// CLI 解析（够用即可，不引 clap）
+// CLI parsing (good enough; no clap dependency)
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -118,7 +118,7 @@ fn parse_opts(args: &[String]) -> Result<Opts> {
 }
 
 // ---------------------------------------------------------------------------
-// 数据装载
+// Data loading
 // ---------------------------------------------------------------------------
 
 struct Loaded {
@@ -401,7 +401,7 @@ fn run_bench(args: &[String]) -> Result<()> {
         bail!("dataset has no nodes");
     }
 
-    // --- 1. ID 查找 ---
+    // --- 1. ID lookup ---
     let mut lookup = Samples::new("id lookup", "ns/op");
     for _ in 0..200_000 {
         let id = node_ids[rng.next_usize(node_ids.len())];
@@ -411,7 +411,7 @@ fn run_bench(args: &[String]) -> Result<()> {
         std::hint::black_box(found);
     }
 
-    // --- 2. 空间查询（视口 bbox） ---
+    // --- 2. Spatial query (viewport bbox) ---
     let mut bbox = Samples::new("bbox query (1200x800 @ z16)", "µs/op");
     let mut bbox_hits = 0usize;
     for _ in 0..2000 {
@@ -425,7 +425,7 @@ fn run_bench(args: &[String]) -> Result<()> {
         bbox_hits += hits.len();
     }
 
-    // --- 3. 场景构建 ---
+    // --- 3. Scene build ---
     let builder = SceneBuilder::with_dataset(&mut loaded.data);
     let center = bounds.center();
     let mut scene_camera = Camera::new(center, 16.0, [1600, 1000]);
@@ -449,7 +449,7 @@ fn run_bench(args: &[String]) -> Result<()> {
         std::hint::black_box(frame.total_vertices());
     }
 
-    // 编辑尺度的视口（z16 局部）：交互时的真实重建成本。
+    // Editing-scale viewport (z16 local): the real rebuild cost during interaction.
     let mut scene_build_z16 = Samples::new("scene build (z16 viewport)", "ms/frame");
     let mut scene_stats_z16 = String::new();
     let scene16_camera = Camera::new(bounds.center(), 16.0, [1600, 1000]);
@@ -467,7 +467,7 @@ fn run_bench(args: &[String]) -> Result<()> {
         std::hint::black_box(frame.total_vertices());
     }
 
-    // --- 4. 局部更新：移动节点 + 重建关联 way 的 bbox/索引 ---
+    // --- 4. Incremental update: move a node + rebuild the bbox/index of associated ways ---
     let mut incremental = Samples::new("move node + rebuild parent ways", "µs/op");
     let mut update_count = 0usize;
     for _ in 0..iterations.max(200) {
@@ -494,7 +494,7 @@ fn run_bench(args: &[String]) -> Result<()> {
         update_count += 1;
     }
 
-    // --- 5. 命中测试 ---
+    // --- 5. Hit testing ---
     let tester = HitTester::new(&loaded.data, &loaded.index);
     let mut pick = Samples::new("pick (node/way hover)", "µs/op");
     for _ in 0..2000 {
@@ -505,7 +505,7 @@ fn run_bench(args: &[String]) -> Result<()> {
         std::hint::black_box(hit.is_some());
     }
 
-    // --- 6. GPU 帧（若可用） ---
+    // --- 6. GPU frame (if available) ---
     let mut gpu = Samples::new("gpu frame (encode+submit+wait)", "ms/frame");
 
     let mut gpu_desc = String::from("unavailable");
@@ -536,7 +536,7 @@ fn run_bench(args: &[String]) -> Result<()> {
         }
     };
 
-    // --- 报告 ---
+    // --- Report ---
     let mut md = String::new();
     md.push_str("# NEO prototype benchmark report\n\n");
     md.push_str(&format!("- dataset: `{}`\n", loaded.label));
@@ -585,7 +585,7 @@ fn run_bench(args: &[String]) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// pbf-roundtrip：PBF 写 encoder 的端到端验证
+// pbf-roundtrip: end-to-end validation of the PBF write encoder
 // ---------------------------------------------------------------------------
 
 fn run_pbf_roundtrip(args: &[String]) -> Result<()> {
@@ -741,13 +741,13 @@ impl Rng {
     }
 }
 
-/// 让编译器不要优化掉计时循环。
+/// Keeps the compiler from optimizing away the timing loop.
 #[allow(dead_code)]
 fn black_box<T>(v: T) -> T {
     std::hint::black_box(v)
 }
 
-/// 标准库 Duration 的便捷格式化。
+/// Convenience formatting for the standard library's Duration.
 #[allow(dead_code)]
 fn fmt_duration(d: Duration) -> String {
     format!("{:.3}ms", d.as_secs_f64() * 1000.0)

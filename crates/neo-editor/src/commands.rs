@@ -1,4 +1,4 @@
-//! 具体命令实现。
+//! Concrete command implementations.
 
 use std::any::Any;
 
@@ -9,14 +9,14 @@ use crate::command::{Command, CommandError, CommandKind};
 use crate::editor::EditContext;
 use crate::journal::JournalCommand;
 
-/// 关系成员的可序列化描述（编辑命令与 UI 共用）。
+/// Serializable description of a relation member (shared by edit commands and the UI).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelationMemberSpec {
-    /// 成员类型。
+    /// Member kind.
     pub kind: ObjectKind,
-    /// 成员对象 ID。
+    /// Member object ID.
     pub id: ObjectId,
-    /// 角色（空串表示无角色）。
+    /// Role (empty string means no role).
     pub role: String,
 }
 
@@ -63,19 +63,19 @@ fn kind_from_byte(byte: u8) -> Option<ObjectKind> {
     }
 }
 
-/// 添加节点。
+/// Add a node.
 pub struct AddNode {
-    /// 期望 ID（None 表示自动分配负数本地 ID）。
+    /// Expected ID (None means an automatically assigned negative local ID).
     pub id: Option<ObjectId>,
-    /// 位置。
+    /// Position.
     pub pos: LatLon,
-    /// 标签。
+    /// Tags.
     pub tags: Vec<(String, String)>,
     applied: Option<ObjectId>,
 }
 
 impl AddNode {
-    /// 构造。
+    /// Construct.
     pub fn new(pos: LatLon, tags: Vec<(String, String)>) -> Self {
         Self {
             id: None,
@@ -91,7 +91,7 @@ impl Command for AddNode {
         CommandKind::AddNode
     }
     fn label(&self) -> &'static str {
-        "添加节点"
+        "Add node"
     }
     fn apply(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError> {
         let id = self
@@ -110,8 +110,8 @@ impl Command for AddNode {
     }
     fn record(&self) -> JournalCommand {
         JournalCommand::AddNode {
-            // 必须记录**实际分配**的 ID：记录 0 会让重放重新分配 ID，
-            // 后续引用该节点的 AddWay/SetWayNodes 全部悬空。
+            // The **actually assigned** ID must be recorded: recording 0 makes replay allocate a new ID,
+            // and later AddWay/SetWayNodes that reference this node dangle.
             id: self.applied.or(self.id).unwrap_or(ObjectId::NONE).0,
             lat: self.pos.lat.units(),
             lon: self.pos.lon.units(),
@@ -123,19 +123,19 @@ impl Command for AddNode {
     }
 }
 
-/// 添加路径。
+/// Add a way.
 pub struct AddWay {
-    /// 期望 ID。
+    /// Expected ID.
     pub id: Option<ObjectId>,
-    /// 节点 ID 序列。
+    /// Node ID sequence.
     pub nodes: Vec<ObjectId>,
-    /// 标签。
+    /// Tags.
     pub tags: Vec<(String, String)>,
     applied: Option<ObjectId>,
 }
 
 impl AddWay {
-    /// 构造。
+    /// Construct.
     pub fn new(nodes: Vec<ObjectId>, tags: Vec<(String, String)>) -> Self {
         Self {
             id: None,
@@ -151,7 +151,7 @@ impl Command for AddWay {
         CommandKind::AddWay
     }
     fn label(&self) -> &'static str {
-        "添加路径"
+        "Add way"
     }
     fn precheck(&self, _data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         if self.nodes.len() < 2 {
@@ -186,20 +186,20 @@ impl Command for AddWay {
     }
 }
 
-/// 移动节点。
+/// Move a node.
 pub struct MoveNode {
-    /// 节点 ID。
+    /// Node ID.
     pub id: ObjectId,
-    /// 原位置。
+    /// Original position.
     pub from: LatLon,
-    /// 新位置。
+    /// New position.
     pub to: LatLon,
     undo_pos: Option<LatLon>,
     undo_state: Option<neo_osm::ChangeState>,
 }
 
 impl MoveNode {
-    /// 构造。
+    /// Construct.
     pub fn new(id: ObjectId, from: LatLon, to: LatLon) -> Self {
         Self {
             id,
@@ -216,7 +216,7 @@ impl Command for MoveNode {
         CommandKind::MoveNode
     }
     fn label(&self) -> &'static str {
-        "移动节点"
+        "Move node"
     }
     fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         if data.node_handle(self.id).is_none() {
@@ -234,7 +234,7 @@ impl Command for MoveNode {
             ctx.data
                 .set_change_state(ObjectKind::Node, self.id, neo_osm::ChangeState::Modified);
         }
-        // undo 必须回到构造时记录的起点：拖动预览可能已经改过 DataSet。
+        // undo must return to the origin recorded at construction time: a drag preview may already have changed the DataSet.
         self.undo_pos = Some(self.from);
         self.undo_state = Some(state);
         Ok(())
@@ -271,20 +271,20 @@ impl Command for MoveNode {
     }
 }
 
-/// 修改标签。
+/// Modify tags.
 pub struct SetTags {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 对象 ID。
+    /// Object ID.
     pub id: ObjectId,
-    /// 新标签。
+    /// New tags.
     pub new: Vec<(String, String)>,
     undo_old: Option<Vec<(String, String)>>,
     undo_state: Option<neo_osm::ChangeState>,
 }
 
 impl SetTags {
-    /// 构造。
+    /// Construct.
     pub fn new(kind: ObjectKind, id: ObjectId, new: Vec<(String, String)>) -> Self {
         Self {
             kind,
@@ -301,7 +301,7 @@ impl Command for SetTags {
         CommandKind::SetTags
     }
     fn label(&self) -> &'static str {
-        "修改标签"
+        "Set tags"
     }
     fn apply(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError> {
         let old = ctx.tags_of(self.kind, self.id)?;
@@ -346,18 +346,18 @@ impl Command for SetTags {
     }
 }
 
-/// 修改路径的节点序列。
+/// Modify a way's node sequence.
 pub struct SetWayNodes {
-    /// Way ID。
+    /// Way ID.
     pub way: ObjectId,
-    /// 新节点序列。
+    /// New node sequence.
     pub new: Vec<ObjectId>,
     undo_old: Option<Vec<ObjectId>>,
     undo_state: Option<neo_osm::ChangeState>,
 }
 
 impl SetWayNodes {
-    /// 构造。
+    /// Construct.
     pub fn new(way: ObjectId, new: Vec<ObjectId>) -> Self {
         Self {
             way,
@@ -373,7 +373,7 @@ impl Command for SetWayNodes {
         CommandKind::SetWayNodes
     }
     fn label(&self) -> &'static str {
-        "修改路径节点"
+        "Set way nodes"
     }
     fn apply(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError> {
         let old = ctx.way_node_ids(self.way)?;
@@ -407,19 +407,19 @@ impl Command for SetWayNodes {
     }
 }
 
-/// 新增关系。
+/// Add a relation.
 pub struct AddRelation {
-    /// 期望 ID（None 自动分配）。
+    /// Expected ID (None means auto-assign).
     pub id: Option<ObjectId>,
-    /// 成员。
+    /// Members.
     pub members: Vec<RelationMemberSpec>,
-    /// 标签。
+    /// Tags.
     pub tags: Vec<(String, String)>,
     applied: Option<ObjectId>,
 }
 
 impl AddRelation {
-    /// 构造。
+    /// Construct.
     pub fn new(members: Vec<RelationMemberSpec>, tags: Vec<(String, String)>) -> Self {
         Self {
             id: None,
@@ -435,7 +435,7 @@ impl Command for AddRelation {
         CommandKind::AddRelation
     }
     fn label(&self) -> &'static str {
-        "添加关系"
+        "Add relation"
     }
     fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         for member in &self.members {
@@ -481,18 +481,18 @@ impl Command for AddRelation {
     }
 }
 
-/// 替换关系成员（增删/改角色/排序统一走这一条命令）。
+/// Replace relation members (add/remove/change role/reorder all go through this one command).
 pub struct SetRelationMembers {
-    /// Relation ID。
+    /// Relation ID.
     pub relation: ObjectId,
-    /// 新成员列表（顺序即语义）。
+    /// New member list (order is semantic).
     pub members: Vec<RelationMemberSpec>,
     undo_old: Option<Vec<RelationMemberSpec>>,
     undo_state: Option<neo_osm::ChangeState>,
 }
 
 impl SetRelationMembers {
-    /// 构造。
+    /// Construct.
     pub fn new(relation: ObjectId, members: Vec<RelationMemberSpec>) -> Self {
         Self {
             relation,
@@ -508,10 +508,10 @@ impl Command for SetRelationMembers {
         CommandKind::SetRelationMembers
     }
     fn label(&self) -> &'static str {
-        "修改关系成员"
+        "Set relation members"
     }
     fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
-        // 成员必须存在；关系成员还不能形成环（OSM 服务端会 412，本地先拦）。
+        // Members must exist; relation members must also not form a cycle (the OSM server would return 412, so block locally first).
         for member in &self.members {
             let exists = match member.kind {
                 ObjectKind::Node => data.node_handle(member.id).is_some(),
@@ -572,17 +572,17 @@ impl Command for SetRelationMembers {
     }
 }
 
-/// 删除对象（保守语义：仍被引用则拒绝）。
+/// Delete an object (conservative semantics: reject if still referenced).
 pub struct DeleteObject {
-    /// 种类。
+    /// Kind.
     pub kind: ObjectKind,
-    /// ID。
+    /// ID.
     pub id: ObjectId,
     undo_state: Option<(neo_osm::ChangeState, bool)>,
 }
 
 impl DeleteObject {
-    /// 构造。
+    /// Construct.
     pub fn new(kind: ObjectKind, id: ObjectId) -> Self {
         Self {
             kind,
@@ -597,7 +597,7 @@ impl Command for DeleteObject {
         CommandKind::Delete
     }
     fn label(&self) -> &'static str {
-        "删除对象"
+        "Delete object"
     }
     fn precheck(&self, data: &DataSet, referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         if data.change_state(self.kind, self.id) == neo_osm::ChangeState::Deleted {
@@ -686,7 +686,7 @@ impl Command for DeleteObject {
     }
 }
 
-/// 从 journal 记录重建命令（用于 replay；不需要 undo 信息）。
+/// Rebuild a command from a journal record (for replay; undo information is not needed).
 pub fn from_journal(record: &JournalCommand) -> Option<Box<dyn Command>> {
     let cmd: Box<dyn Command> = match record {
         JournalCommand::AddNode { id, lat, lon, tags } => {
@@ -786,9 +786,9 @@ pub fn from_journal(record: &JournalCommand) -> Option<Box<dyn Command>> {
     Some(cmd)
 }
 
-/// 从 `start` 沿关系成员向下能否到达 `target`（用于成环检测）。
+/// Whether `target` is reachable from `start` downward through relation members (used for cycle detection).
 ///
-/// 带 visited 集合：即使数据集里已经存在环（历史数据/插件写入）也不会死循环。
+/// Carries a visited set: even if the dataset already contains a cycle (legacy data/plugin writes), it will not loop forever.
 fn relation_reaches(data: &DataSet, start: ObjectId, target: ObjectId) -> bool {
     let mut stack = vec![start];
     let mut seen: std::collections::BTreeSet<ObjectId> = std::collections::BTreeSet::new();

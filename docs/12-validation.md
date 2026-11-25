@@ -1,75 +1,87 @@
-# 12 · 验证器架构与规则体系（Validation）
+# 12 · Validator Architecture and Rule System (Validation)
 
-**摘要**：NEO 的验证器不是"移植 JOSM 的 40 个 Java Test 类"，而是一个**以对象脏集（dirty set）为输入、以可撤销修复命令为输出的并行规则引擎**。三类消费者共用一套规则描述：内置 Rust 规则（需要空间索引与跨对象图）、`*.validator.mapcss` 兼容层（社区可写的声明式规则）、上传前的服务器能力预检。`ValidationReport` 是 UI 面板、上传 gate 与 golden 测试的唯一事实来源；每条自动修复都必须表达为 `neo-editor` 的 `EditCommand` 批次，从而天然可撤销。规则 P0/P1/P2 划分与 JOSM 的 12 个核心 `.validator.mapcss` + 40 个 Java 测试并集对齐（§3.2–3.3）。行为契约见 [13](./13-josm-parity.md)，撤销模型见 [06](./06-editing-core-and-undo.md)，性能数字一律【待实测，见 docs/14-performance-and-verification.md】。
+**Summary**: NEO's validator is not "a port of JOSM's 40 Java test classes" but a **parallel rule engine that takes an object dirty set as input and produces undoable fix commands as output**. Three kinds of consumers share one rule description: built-in Rust rules (needing a spatial index and cross-object graph), the `*.validator.mapcss` compatibility layer (declarative rules the community can write), and the server-capability pre-check before upload. `ValidationReport` is the single source of truth for the UI panel, the upload gate, and golden tests; every automatic fix must be expressed as a batch of `neo-editor` `EditCommand`s, and is therefore undoable by construction. The P0/P1/P2 split of rules is aligned with the union of JOSM's 12 core `.validator.mapcss` files and 40 Java tests (§3.2–3.3). For behavioral contracts see [13](./13-josm-parity.md), for the undo model see [06](./06-editing-core-and-undo.md), and all performance numbers are [pending measurement, see docs/14-performance-and-verification.md].
 
-## 0 阶段 4 已实现（v0.1.0）
+## 0 Built-in rules (current implementation, v0.1.0)
 
-`neo-validate` 当前 12 条规则（JOSM 风格语义，行为对齐而非拷贝代码）：
+`neo-validate` currently has 24 rules (9 Error, 14 Warning, 1 Info; JOSM-style semantics, behavior aligned without copying code):
 
-| 规则 id | 级别 | 说明 |
+| Rule id | Severity | Description |
 |---|---|---|
-| `way_too_short` | Error | way 少于 2 节点 |
-| `way_duplicate_node` | Warning | 相邻重复节点 |
-| `way_untagged` | Warning | way 无标签 |
-| `building_not_closed` | Error | building way 未闭合 |
-| `duplicate_way` | Warning | 两条 way 节点序列相同 |
-| `relation_empty` | Warning | relation 无标签 |
-| `relation_no_members` | Error | relation 无成员 |
-| `untagged_node` | Info | 孤立且无标签的节点 |
-| `duplicate_node` | Warning | 坐标完全相同的节点 |
+| `way_too_short` | Error | way has fewer than 2 nodes |
+| `way_duplicate_node` | Warning | adjacent duplicate nodes |
+| `way_untagged` | Warning | way has no tags |
+| `building_not_closed` | Error | building way is not closed |
+| `duplicate_way` | Warning | two ways with the same node sequence |
+| `relation_empty` | Warning | relation has no tags |
+| `relation_no_members` | Error | relation has no members |
+| `untagged_node` | Info | isolated node with no tags |
+| `duplicate_node` | Warning | nodes at exactly the same coordinates |
 | `suspicious_tag_combination` | Warning | highway+building / natural=water+building / highway+railway |
-| `multipolygon_bad_role` | Warning | multipolygon 成员角色非 outer/inner/空 |
-| `self_intersecting_way` | Error | way 自相交（≤2048 节点 O(n²)） |
+| `multipolygon_bad_role` | Warning | multipolygon member role is not outer/inner/empty |
+| `self_intersecting_way` | Error | way self-intersects (≤2048 nodes, O(n²)) |
+| `way_too_long` | Error | way exceeds the OSM API's 2000-node limit |
+| `closed_way_too_few_nodes` | Error | closed way has fewer than 4 nodes (cannot form an area) |
+| `relation_type_missing` | Warning | relation has members but no `type` tag |
+| `duplicate_relation_member` | Warning | relation references the same member twice |
+| `invalid_layer_tag` | Warning | `layer` tag is not an integer |
+| `area_not_closed` | Error | way with `area=yes` is not closed |
+| `non_adjacent_duplicate_node` | Warning | the same node is referenced twice at non-adjacent positions |
+| `oneway_invalid` | Warning | invalid `oneway` value |
+| `empty_name` | Warning | `name` is empty |
+| `layer_out_of_range` | Warning | `layer` outside the reasonable range (\|layer\| > 5) |
+| `multipolygon_no_outer` | Error | multipolygon has no outer member |
+| `multipolygon_outer_not_closed` | Error | multipolygon's outer way is not closed |
 
-未实现（阶段 4 后续）：almost-junction、crossing ways、地址/名称 tag 规则、MapCSS validator、
-上传前 gate、增量校验（按 dirty/bbox）。参考 JOSM Validator 的规则语义与测试数据，
-不复制其 GPL 代码。
+Not implemented yet: almost-junction, crossing ways, address/name tag rules, the MapCSS validator,
+the pre-upload gate, incremental validation (by dirty set/bbox). Reference JOSM Validator's rule semantics and test data
+without copying its GPL code.
 
-## 1 目标与范围
+## 1 Goals and Scope
 
-**在范围内**
+**In scope**
 
-| 项 | 要求 |
+| Item | Requirement |
 |---|---|
-| 规则执行 | 1M–10M 对象下，编辑后增量验证只重算受影响的 规则×目标，不重启全量扫描 |
-| 规则来源 | 内置 Rust 规则 + 未修改的 JOSM core `.validator.mapcss`（12 个文件）子集兼容 |
-| 报告 | 结构化、可定位（对象+子元素）、可去重、可抑制、可导出 |
-| 修复 | 每条 fixable issue 生成一个或多个 `EditCommand`，合并为单次撤销步骤 |
-| 上传 gate | error 阻断、warning 需确认；顺序与 JOSM 的 upload hook 链一致 |
-| 抑制 | 按 规则×对象 / 规则×类 / 数据集 三级持久化，跨会话与 autosave 恢复 |
+| rule execution | at 1M–10M objects, incremental validation after an edit recomputes only the affected rule×target, without restarting a full scan |
+| rule sources | built-in Rust rules + subset compatibility with unmodified JOSM core `.validator.mapcss` (12 files) |
+| report | structured, localizable (object + sub-element), deduplicable, suppressible, exportable |
+| fixes | each fixable issue produces one or more `EditCommand`s, merged into a single undo step |
+| upload gate | errors block, warnings require confirmation; the order matches JOSM's upload hook chain |
+| suppression | persisted at three levels — rule×object / rule×class / dataset — surviving sessions and autosave recovery |
 
-**不在范围内**：JOSM Java 测试的代码搬迁（`data/validation/tests/*.java` 是 GPL-2.0+，只能作行为清单阅读，见 [17](./17-licensing-and-governance.md) §2.2）；服务端校验与 Osmose/KeepRight 规则合并（只消费可离线判定的部分）；完整 MapCSS 渲染级联（那是 `neo-style`）；"零误报"——目标是**同一输入产生同一结论集合**。
+**Out of scope**: porting JOSM Java test code (`data/validation/tests/*.java` is GPL-2.0+, readable only as a behavior inventory, see [17](./17-licensing-and-governance.md) §2.2); merging server-side validation and Osmose/KeepRight rules (consuming only what can be decided offline); the full MapCSS render cascade (that is `neo-style`); "zero false positives" — the goal is **the same input producing the same conclusion set**.
 
-范围边界上的两个判断：① **不追求规则数量对等，追求结论对等**——用 12 个核心 mapcss 的 `assertMatch`/`assertNoMatch` 当可执行兼容断言（它们是数据，不是代码），比"实现了 N 条规则"可验证得多；② **误报率是产品指标**——抑制不是补丁而是核心功能，用户一旦关掉验证器，parity 在实践中就失效。
+Two judgements at the scope boundary: ① **aim for conclusion parity, not rule-count parity** — using the `assertMatch`/`assertNoMatch` of the 12 core mapcss files as executable compatibility assertions (they are data, not code) is far more verifiable than "implemented N rules"; ② **the false-positive rate is a product metric** — suppression is a core feature, not a patch, because once users turn the validator off, parity fails in practice.
 
-## 2 设计
+## 2 Design
 
-### 2.1 数据流
+### 2.1 Data Flow
 
 ```
-用户编辑 ─► neo-editor: EditTx ─► Journal(ObjectId+version) ─► Snapshot v(n)（arc-swap 发布）
+user edit ─► neo-editor: EditTx ─► Journal(ObjectId+version) ─► Snapshot v(n) (arc-swap publish)
                                      │
                                      ▼
-   RuleScheduler（UI 线程，O(脏集)）：①依赖展开 object→(rule,target) ②目标展开 node→way→rel(≤2 跳)
-                                      ③空间展开 旧/新坐标 bbox⊕radius → rstar 邻域 ④预算判定（脏>30%→全量）
+   RuleScheduler (UI thread, O(dirty set)): ① dependency expansion object→(rule,target) ② target expansion node→way→rel (≤2 hops)
+                                      ③ spatial expansion old/new coordinate bbox⊕radius → rstar neighborhood ④ budget decision (dirty > 30% → full)
                                      ▼
-   neo-validate::Engine（rayon par_iter，只读 &Snapshot）：每线程 IssueBuf → 排序 → reduce → 去重 → ReportStore
+   neo-validate::Engine (rayon par_iter, read-only &Snapshot): per-thread IssueBuf → sort → reduce → dedup → ReportStore
                                      ▼
-   ValidatorDialog（过滤/定位/修复） · 上传 gate（block/warn） · golden 测试 · 抑制持久化(neo-persist)
+   ValidatorDialog (filter/locate/fix) · upload gate (block/warn) · golden tests · suppression persistence (neo-persist)
 ```
 
-### 2.2 规则 trait 与调度单元
+### 2.2 Rule Trait and Scheduling Unit
 
-规则是**纯函数 + 显式依赖声明**：`deps()` 是增量正确性的唯一依据，未声明依赖却读取别处数据是评审红线。
+Rules are **pure functions + explicit dependency declarations**: `deps()` is the sole basis for incremental correctness, and reading data elsewhere without declaring the dependency is a review red line.
 
 ```rust
 pub trait ValidationRule: Send + Sync {
-    fn id(&self) -> RuleId;                 // 稳定 ID，进 suppression 与 golden，发布后不得改名
+    fn id(&self) -> RuleId;                 // stable ID, used in suppression and goldens, must not be renamed after release
     fn scope(&self) -> Scope;               // Object | Reference | Global
-    fn deps(&self) -> Deps;                 // 决定脏集如何展开、规则能否并行
+    fn deps(&self) -> Deps;                 // determines how the dirty set expands and whether rules can run in parallel
     fn default_severity(&self) -> Severity; // Error | Warning | Other
     fn check(&self, cx: &RuleCtx<'_>, target: Target, out: &mut IssueBuf);
-    fn prepare(&self, cx: &RuleCtx<'_>) -> Option<Box<dyn RuleIndex>> { None } // 两阶段：重复检测/海岸线
+    fn prepare(&self, cx: &RuleCtx<'_>) -> Option<Box<dyn RuleIndex>> { None } // two-phase: duplicate detection/coastline
     fn fix(&self, cx: &RuleCtx<'_>, issue: &Issue) -> Option<FixPlan> { None }
 }
 
@@ -78,266 +90,266 @@ pub struct Deps { pub kind: DepKind, pub radius_m: f64, pub tag_keys: &'static [
 // DepKind: None | NodesOfWay | MembersOfRelation | Closure | Neighborhood
 
 pub struct RuleCtx<'a> {
-    pub snapshot: &'a Snapshot,               // 只读，INV-2
-    pub geo: &'a GeoIndex,                    // rstar 0.14 空间索引（neo-geo）
-    pub presets: &'a PresetIndex,             // 预编译 match 表达式
-    pub tags: &'a TagRuleIndex,               // mapcss 兼容层的选择器索引
-    pub territory: Option<&'a TerritoryIndex>,// [inside("XX")] 依赖的边界
+    pub snapshot: &'a Snapshot,               // read-only, INV-2
+    pub geo: &'a GeoIndex,                    // rstar 0.14 spatial index (neo-geo)
+    pub presets: &'a PresetIndex,             // precompiled match expressions
+    pub tags: &'a TagRuleIndex,               // selector index of the mapcss compatibility layer
+    pub territory: Option<&'a TerritoryIndex>,// boundaries depended on by [inside("XX")]
     pub config: &'a ValidatorConfig,
 }
 ```
 
-`RuleId` 与 `Issue.code` 分离：前者标识实现（可为 mapcss 文件+行号），后者是用户可见稳定短码（`self_intersection`），用于抑制与文档映射。
+`RuleId` and `Issue.code` are separate: the former identifies the implementation (possibly a mapcss file + line number), the latter is a stable, user-visible short code (`self_intersection`) used for suppression and documentation mapping.
 
-### 2.3 四类规则与执行顺序
+### 2.3 Four Rule Categories and Execution Order
 
-顺序由**代价与依赖**决定，不由严重级决定：
+The order is determined by **cost and dependencies**, not by severity:
 
-| 阶段 | 分类 | 典型规则 | 复杂度 | 增量友好度 |
+| Stage | Category | Typical rules | Complexity | Incremental friendliness |
 |---|---|---|---|---|
-| P1 | 单对象几何 | 自交、重复节点、退化 way、area 语义 | O(n) | 高（只依赖自身） |
-| P2 | 单对象 tag | 互斥、废弃、数值、必填 | O(tags) | 高 |
-| P3 | 引用（1 跳） | way→nodes、relation→members | O(成员数) | 中（成员变更需传播） |
-| P4 | 闭包/全局 | multipolygon 环、重复检测、海岸线 | O(闭包)/O(n) | 低（需索引失效） |
-| P5 | 空间邻域 | 交叉无节点、悬空端点、重叠 way | O(k·log n) | 中（要查旧/新位置） |
-| P6 | 上传预检 | 服务器能力、changeset 上限 | O(上传集) | 不需要（每次上传重算） |
+| P1 | single-object geometry | self-intersection, duplicate nodes, degenerate ways, area semantics | O(n) | high (depends only on itself) |
+| P2 | single-object tags | mutual exclusion, deprecated, numeric, required | O(tags) | high |
+| P3 | references (1 hop) | way→nodes, relation→members | O(member count) | medium (member changes must propagate) |
+| P4 | closure/global | multipolygon rings, duplicate detection, coastline | O(closure)/O(n) | low (requires index invalidation) |
+| P5 | spatial neighborhood | crossing without shared node, dangling endpoints, overlapping ways | O(k·log n) | medium (must query old/new positions) |
+| P6 | pre-upload check | server capabilities, changeset limits | O(upload set) | none needed (recomputed per upload) |
 
-同阶段内按 `RuleId` 字典序执行以保证输出确定性（golden 要求）；跨阶段不并行（P4 索引构建需要 P1–P3 结束后的一致性视图）。
+Within a stage, execution follows `RuleId` lexicographic order to guarantee deterministic output (a golden requirement); stages do not run in parallel (P4 index construction needs a consistent view after P1–P3 finish).
 
-### 2.4 增量验证：反向依赖索引
+### 2.4 Incremental Validation: Reverse Dependency Index
 
 ```
-dirty(v) = {node:42, way:17}                     ← Journal 事务对象集
- ├ 直接目标：node:42 → [T03(邻域), K15]；way:17 → [T01,T02,G04,K02]
- ├ 引用传播：node:42 ∈ way:17, way:31 → 目标 += way:17,31；way:17 ∈ rel:9 → 目标 += rel:9
- └ 空间传播：bbox(old ∪ new) ⊕ radius → rstar 查询 → way:88, node:99 → 邻域规则 T11/T09/T10
+dirty(v) = {node:42, way:17}                     ← the Journal transaction's object set
+ ├ direct targets: node:42 → [T03(neighborhood), K15]; way:17 → [T01,T02,G04,K02]
+ ├ reference propagation: node:42 ∈ way:17, way:31 → targets += way:17,31; way:17 ∈ rel:9 → targets += rel:9
+ └ spatial propagation: bbox(old ∪ new) ⊕ radius → rstar query → way:88, node:99 → neighborhood rules T11/T09/T10
 ```
 
-1. **传播跳数有限**：`node→way→relation` 默认 2 跳；更远的（relation 的成员 relation）归 `Scope::Global` 按 P4 重算，避免传播爆炸。
-2. **空间传播用旧/新坐标并集**：只查新位置会漏掉"移走后留下的空隙"（相邻 way 原本连通，结点移走后变悬空）。
-3. **降级而非卡死**：脏目标比例 > 阈值（默认 30%）或单次 pass 预计 > 50 ms 即切全量，记 `ValidationStats::degraded`；全量耗时【待实测，见 docs/14-performance-and-verification.md】。
+1. **Bounded propagation hops**: `node→way→relation` defaults to 2 hops; anything further (a relation that is a member of a relation) falls into `Scope::Global` and is recomputed as P4, avoiding propagation explosions.
+2. **Spatial propagation uses the union of old/new coordinates**: querying only new positions would miss "the gap left behind after moving away" (adjacent ways were connected before, and become dangling after the node moves).
+3. **Degrade rather than stall**: when the dirty-target ratio exceeds a threshold (default 30%) or a single pass is expected to exceed 50 ms, switch to a full pass and record `ValidationStats::degraded`; full-pass time [pending measurement, see docs/14-performance-and-verification.md].
 
-防抖：拖动以 120–200 ms 窗口合并脏集，拖动过程中不重建报告，只在事务边界（松手）后触发。
+Debounce: dragging coalesces the dirty set in a 120–200 ms window; the report is not rebuilt during the drag, only at transaction boundaries (mouse release).
 
-### 2.5 抑制（suppression）持久化
+### 2.5 Suppression Persistence
 
-JOSM 是"per-test ignore list"，其 preference key 未核实（> 待验证，见 [`.research/josm-inventory.md`](../.research/josm-inventory.md) Appendix B.4）。NEO 不复刻其存储格式，只复刻用户可见语义，并额外解决"抑制后数据变了仍静默"：
+JOSM uses a "per-test ignore list" whose preference key has not been verified (> to verify, see [`.research/josm-inventory.md`](../.research/josm-inventory.md) Appendix B.4). NEO does not replicate its storage format, only its user-visible semantics, and additionally solves "still silent after the data changed":
 
 ```rust
 pub struct SuppressionKey { pub rule: RuleId, pub target: ObjectKey, pub digest: u64, pub scope: SuppressScope }
-// digest = 相关 tag 子集(Deps.tag_keys) + 几何类(闭合/节点数/方向)；不含坐标与时间戳
+// digest = relevant tag subset (Deps.tag_keys) + geometric class (closed/node count/direction); excludes coordinates and timestamps
 ```
 
-| 属性 | 语义 | 理由 |
+| Attribute | Semantics | Rationale |
 |---|---|---|
-| `digest` | 只哈希声明的 key 与几何类 | 拖节点不应让抑制失效，改 tag 应当失效 |
-| `Object` | 仅这一条 | "这个我知道"（≈ ignore for now） |
-| `Class` | 该规则对该对象类型全部静默 | "我不关心 `created_by` 的 deprecated" |
-| `Dataset` | 该规则本数据集全静默（导入遗留数据） | 但报告头部须显示"已抑制 N 条" |
-| 存储 | `neo-persist` SQLite `validation_suppression(dataset_fp, rule, type, id, digest, scope, created_at)` | 与 autosave 同库同事务域 |
-| 可观测 | 报告含全量 issue，抑制只在**呈现与 gate** 层过滤 | 避免"抑制导致漏看 error" |
+| `digest` | hashes only the declared keys and the geometric class | dragging a node should not invalidate suppression, but changing a tag should |
+| `Object` | just this one issue | "I know about this one" (≈ ignore for now) |
+| `Class` | silence this rule for all objects of that type | "I don't care about deprecated `created_by`" |
+| `Dataset` | silence this rule for the whole dataset (imported legacy data) | but the report header must show "N suppressed" |
+| storage | `neo-persist` SQLite `validation_suppression(dataset_fp, rule, type, id, digest, scope, created_at)` | same DB and transaction domain as autosave |
+| observability | the report contains all issues; suppression filters only at the **presentation and gate** layers | avoids "suppression hides an error" |
 
-导出/导入为 JSON（`neo-io::issues`）便于换机与回归复现；**不写入 `.jos`**（会话文件不承载治理状态）。
+Export/import as JSON (`neo-io::issues`) for moving between machines and reproducing regressions; **not written into `.jos`** (session files do not carry governance state).
 
-### 2.6 报告模型、定位与自动修复
+### 2.6 Report Model, Localization, and Automatic Fixes
 
 ```rust
 pub struct ValidationReport {
-    pub generation: u64,                    // = Snapshot.version，UI 据此判断是否过期
-    pub stats: ValidationStats,             // 规则数/目标数/耗时/是否降级/已抑制数
-    pub issues: Arc<[Issue]>,               // 稳定排序：severity desc, code, objects
+    pub generation: u64,                    // = Snapshot.version; the UI uses it to decide staleness
+    pub stats: ValidationStats,             // rule count/target count/elapsed/degraded/suppressed
+    pub issues: Arc<[Issue]>,               // stable order: severity desc, code, objects
     pub by_object: HashMap<ObjectKey, SmallVec<[IssueIdx; 4]>>,
     pub counts: Counts,                     // { error, warning, other, suppressed }
 }
 pub struct Issue {
     pub rule: RuleId, pub code: &'static str, pub severity: Severity,
-    pub objects: SmallVec<[ObjectKey; 4]>,  // 首个为主要对象
+    pub objects: SmallVec<[ObjectKey; 4]>,  // the first one is the primary object
     pub locate: Locate,                     // Node | WaySegment(u32) | Member(u32)
     pub message: String, pub fixable: bool,
 }
 pub struct FixPlan { pub steps: Vec<Box<dyn EditCommand>>, pub label: String }
 ```
 
-定位（`Locate`）是跳转的前提：`Zoom to problem` 要把 `WaySegment(3)` 变成视口中心与高亮段，`Member(7)` 要选中 Relations 面板第 8 行——只给 object id 无法实现"下一个问题"（`6` 跳转、`8`/`9` 前后切换，见 [13](./13-josm-parity.md) §3.1）。
+Localization (`Locate`) is the prerequisite for navigation: `Zoom to problem` must turn `WaySegment(3)` into a viewport center and a highlighted segment, and `Member(7)` must select row 8 of the Relations panel — an object id alone cannot implement "next problem" (`6` to jump, `8`/`9` to step back and forth, see [13](./13-josm-parity.md) §3.1).
 
-| 修复约束 | 内容 |
+| Fix constraint | Content |
 |---|---|
-| 单步撤销 | `Editor::execute_batch(steps)` 产生一个用户可见撤销步骤；撤销后数据逐字段等于修复前 |
-| 幂等 | 修复后立即重跑同规则于同目标，不得再产出同一 `code`（`FIX-IDEMPOTENT` 不变量） |
-| 预览 | UI 先在克隆的 `DataSetMut` 上 `dry_run` 展示 diff，再提交 |
-| 批量 | "修复全部同类"= 多目标 FixPlan 的确定性合并（按 object id 排序） |
-| 禁止 | 修复不得创建新对象种类（如自动建 relation），这类只给建议文本 |
+| single-step undo | `Editor::execute_batch(steps)` produces one user-visible undo step; after undo the data equals the pre-fix state field by field |
+| idempotent | rerunning the same rule on the same target immediately after a fix must not produce the same `code` again (`FIX-IDEMPOTENT` invariant) |
+| preview | the UI first `dry_run`s on a cloned `DataSetMut` to show the diff, then commits |
+| batch | "fix all of this kind" = deterministic merge of FixPlans across targets (ordered by object id) |
+| forbidden | a fix must not create new kinds of objects (e.g. auto-creating a relation); such cases only get suggestion text |
 
-### 2.7 上传前验证 gate
+### 2.7 Pre-Upload Validation Gate
 
-对应 JOSM 的 hook 链（`ApiPreconditionChecker → DiscardTags → FixData → ValidateUpload → RelationUploadOrder`）：
+Corresponding to JOSM's hook chain (`ApiPreconditionChecker → DiscardTags → FixData → ValidateUpload → RelationUploadOrder`):
 
 ```
-① 能力预检(S04)：way 节点 ≤2000、relation 成员 ≤32000、changeset 元素 ≤10000、bbox ≤0.25°² → 不满足即 error，不发请求
-② 丢弃 tag（DiscardTags 语义）：created_by 等，只影响发出的 OSC，不改本地数据
-③ FixData 语义：占位符 id 补齐、空 way 移除
-④ 验证 gate：作用域 = 上传集及其 1 跳邻居（不是全数据集）→ error 阻断；warning 弹确认框（记住本次选择）
-⑤ relation 上传顺序（neo-api 负责，非验证）→ ⑥ POST /api/0.6/changeset/#id/upload
+① capability pre-check (S04): way nodes ≤2000, relation members ≤32000, changeset elements ≤10000, bbox ≤0.25°² → if unmet, error and send no request
+② discard tags (DiscardTags semantics): created_by etc., affecting only the OSC sent, not local data
+③ FixData semantics: fill placeholder ids, remove empty ways
+④ validation gate: scope = the upload set and its 1-hop neighbors (not the whole dataset) → errors block; warnings raise a confirmation dialog (remembering this choice)
+⑤ relation upload order (neo-api's responsibility, not validation) → ⑥ POST /api/0.6/changeset/#id/upload
 ```
 
-gate 只验**上传集**是刻意的：全数据集 error 不应阻止局部上传，否则 10M 对象下永远无法上传。但"上传集会引入的新错误"必须算——删除某 way 后其父 relation 变空（P3/P4 对上传集闭包重算）。
+It is deliberate that the gate validates only the **upload set**: a whole-dataset error should not block a local upload, otherwise uploading with 10M objects would never be possible. But "new errors the upload set would introduce" must be counted — deleting a way can leave its parent relation empty (P3/P4 recompute the closure of the upload set).
 
-## 3 关键接口与矩阵
+## 3 Key Interfaces and Matrices
 
-### 3.1 MapCSS 兼容子集 vs 原生 Rust 规则
+### 3.1 MapCSS Compatible Subset vs Native Rust Rules
 
-| 语句 / 选择器 | NEO 支持 | 说明 |
+| Statement / selector | NEO support | Notes |
 |---|---|---|
-| `throwError`/`throwWarning`/`throwOther` | ✅ | 每选择器恰好一个，多则解析报错 |
-| `fixAdd:"k=v"`/`fixRemove:"k"`/`fixChangeKey:"old=>new"`/`fixDeleteObject:this` | ✅ | 映射 `ChangePropertyCommand`/`DeleteCommand`（需查引用） |
-| `suggestAlternative`/`group` | ✅ | group 影响面板分组，不影响 gate |
-| `assertMatch`/`assertNoMatch` | ✅ 作为测试 | 解析为 golden 断言语料，`cargo test -p neo-validate` 执行 |
-| 占位符 `{0.tag}` `{i.key}` `{i.value}` | ✅ | 含"伪类计入序号"语义（`:unconnected`=0、`:in-downloaded-area`=1） |
-| 类型选择器 `node/way/relation/area/*` | ✅ | `area` 保留 JOSM"含未闭合 way"的反直觉语义 |
-| 条件 `= != < > <= >= ^= $= *= ~= =~ !~` | ✅ | `~=` 分号列表成员、正则 `/…/` |
-| 集合/空间 `∈ ⊆ ⊇ ⊈ ⊉ ⧉` / `[inside("FR")]` / `outside(...)` | ✅（`⧉` 需 `layer`；领土需 `boundaries.osm`） | 领土索引缺失 → 该类规则整体 skip 并记日志 |
-| 伪类 `:closed :new :tagged :unconnected :connection` 等 | ⚠️ 子集 | `:clockwise/:anticlockwise/:open_end` P1；`:area-style` 不适用 |
-| 子选择器 `relation[type=route] >[role="link"] way` | ✅ P1 | 需成员图求值 |
-| `@supports (min-josm-version:N)` | ⚠️ 映射为 NEO 版本门 | `@media` 已废弃，不实现 |
-| `eval()`/任意表达式、`setting()`、`prop("_match")` | ❌ | 避免嵌入表达式求值器 |
+| `throwError`/`throwWarning`/`throwOther` | ✅ | exactly one per selector; more is a parse error |
+| `fixAdd:"k=v"`/`fixRemove:"k"`/`fixChangeKey:"old=>new"`/`fixDeleteObject:this` | ✅ | mapped to `ChangePropertyCommand`/`DeleteCommand` (reference check needed) |
+| `suggestAlternative`/`group` | ✅ | group affects panel grouping, not the gate |
+| `assertMatch`/`assertNoMatch` | ✅ as tests | parsed into golden assertion corpora, executed by `cargo test -p neo-validate` |
+| placeholders `{0.tag}` `{i.key}` `{i.value}` | ✅ | includes "pseudo-classes count in the ordinal" semantics (`:unconnected`=0, `:in-downloaded-area`=1) |
+| type selectors `node/way/relation/area/*` | ✅ | `area` keeps JOSM's counter-intuitive "includes unclosed ways" semantics |
+| conditions `= != < > <= >= ^= $= *= ~= =~ !~` | ✅ | `~=` semicolon list membership, regex `/…/` |
+| set/spatial `∈ ⊆ ⊇ ⊈ ⊉ ⧉` / `[inside("FR")]` / `outside(...)` | ✅ (`⧉` needs `layer`; territory needs `boundaries.osm`) | missing territory index → the whole class of rules is skipped and logged |
+| pseudo-classes `:closed :new :tagged :unconnected :connection` etc. | ⚠️ subset | `:clockwise/:anticlockwise/:open_end` P1; `:area-style` not applicable |
+| child selectors `relation[type=route] >[role="link"] way` | ✅ P1 | requires member-graph evaluation |
+| `@supports (min-josm-version:N)` | ⚠️ mapped to an NEO version gate | `@media` is deprecated and not implemented |
+| `eval()`/arbitrary expressions, `setting()`, `prop("_match")` | ❌ | avoids embedding an expression evaluator |
 
-**分工原则**："单对象 tag 组合即可判定"的一律走 mapcss（社区可维护、可热重载、可来自 wiki 的 `Rules/*`）；需要空间索引、图遍历、闭包分析或跨对象状态的一律用 Rust 规则。二者产出同一 `Issue` 类型，UI 不区分来源。
+**Division principle**: anything decidable from "a single object's tag combination" goes through mapcss (community-maintainable, hot-reloadable, can come from the wiki's `Rules/*`); anything needing a spatial index, graph traversal, closure analysis, or cross-object state uses a Rust rule. Both produce the same `Issue` type, and the UI does not distinguish the source.
 
-### 3.2 拓扑与几何规则清单（NEO 规则 ID）
+### 3.2 Topology and Geometry Rule Inventory (NEO rule IDs)
 
-级别：`E`=Error（阻断上传）· `W`=Warning（需确认）· `O`=Other（仅列出）。优先级为交付顺序，非严重级。
+Severity: `E`=Error (blocks upload) · `W`=Warning (requires confirmation) · `O`=Other (list only). Priority is delivery order, not severity.
 
-| ID | 检测 | JOSM 对应 | 级别 | 增量范围 | 修复 | P |
+| ID | Detection | JOSM counterpart | Severity | Incremental scope | Fix | P |
 |---|---|---|---|---|---|---|
-| VAL-T01 | way 自交 | `SelfIntersectingWay`/geometry | E | 单 way | 提示在交点分割（两步） | P0 |
-| VAL-T02 | way 内重复节点 | `DuplicatedWayNodes` | E | 单 way | 去重节点，保留 tag | P0 |
-| VAL-T03 | 同坐标重复节点 | `DuplicateNode` | W | 邻域 ~1e-7° | 合并节点并重定向引用 | P1 |
-| VAL-T04 | area 未闭合 | `UnclosedWays`/geometry | W | 单 way | 追加首节点闭合 | P0 |
-| VAL-T05 | 完全重复 way/relation | `DuplicateWay`/`DuplicateRelation` | W | 全量哈希桶 | 合并或删除其一 | P1 |
-| VAL-T06 | relation 成员缺失/未加载 | `RelationChecker` | E | 单 relation+成员 | 触发"下载不完整成员" | P0 |
-| VAL-T07 | 成员重复/角色非法 | relation.mapcss/`RelationChecker` | W | 单 relation | 去重成员 | P1 |
-| VAL-T08 | multipolygon 环不闭合或嵌套错 | `MultipolygonTest`/`CycleDetector` | E | relation 闭包 | 重建成员顺序 | P0 |
-| VAL-T09 | 悬空端点 | `UnconnectedWays`/`:unconnected` | W | 邻域 | 无（仅提示连接） | P1 |
-| VAL-T10 | way 重叠 | `OverlappingWays` | W | 邻域 | 无 | P2 |
-| VAL-T11 | 交叉但无共享节点 | `CrossingWays` | W | 邻域 | 在交点插入共享节点 | P0 |
-| VAL-T12 | 海岸线不连续 | `Coastlines` | E | 全量有序链 | 无 | P1 |
-| VAL-T13 | way 接入 area 内部 | `WayConnectedToArea` | W | 邻域 | 无 | P2 |
-| VAL-G01 | 尖角 | `SharpAngles` | W | 单 way | 无 | P2 |
-| VAL-G02 | 超长线段 | `LongSegment` | W | 单 way | 无 | P2 |
-| VAL-G03 | 建筑非直角 | `RightAngleBuildingTest` | W | 单 way | 局部 orthogonalize | P1 |
-| VAL-G04 | area 语义与闭合/方向矛盾（`area=no`、闭合但线性） | geometry.mapcss | W | 单 way | 增删 `area` tag | P0 |
-| VAL-G05 | 退化几何（<2 节点、零长 way） | —（JOSM 分散） | E | 单 way | 删除 | P0 |
-| VAL-G06 | 坐标越出下载 bbox | `:in-downloaded-area` | W | 单对象 | 无 | P1 |
-| VAL-G07 | 环方向（outer/inner）反向 | `:clockwise` 系 | W | relation 闭包 | 反转 way | P1 |
+| VAL-T01 | way self-intersection | `SelfIntersectingWay`/geometry | E | single way | suggest splitting at the intersection (two steps) | P0 |
+| VAL-T02 | duplicate nodes within a way | `DuplicatedWayNodes` | E | single way | deduplicate nodes, keep tags | P0 |
+| VAL-T03 | duplicate nodes at the same coordinates | `DuplicateNode` | W | neighborhood ~1e-7° | merge nodes and redirect references | P1 |
+| VAL-T04 | area not closed | `UnclosedWays`/geometry | W | single way | append the first node to close it | P0 |
+| VAL-T05 | fully duplicate way/relation | `DuplicateWay`/`DuplicateRelation` | W | full hash buckets | merge or delete one | P1 |
+| VAL-T06 | relation member missing/not loaded | `RelationChecker` | E | single relation+members | trigger "download incomplete members" | P0 |
+| VAL-T07 | duplicate members / illegal role | relation.mapcss/`RelationChecker` | W | single relation | deduplicate members | P1 |
+| VAL-T08 | multipolygon ring unclosed or wrongly nested | `MultipolygonTest`/`CycleDetector` | E | relation closure | rebuild member order | P0 |
+| VAL-T09 | dangling endpoints | `UnconnectedWays`/`:unconnected` | W | neighborhood | none (hint to connect only) | P1 |
+| VAL-T10 | overlapping ways | `OverlappingWays` | W | neighborhood | none | P2 |
+| VAL-T11 | crossing without a shared node | `CrossingWays` | W | neighborhood | insert a shared node at the intersection | P0 |
+| VAL-T12 | discontinuous coastline | `Coastlines` | E | full ordered chains | none | P1 |
+| VAL-T13 | way connecting into the interior of an area | `WayConnectedToArea` | W | neighborhood | none | P2 |
+| VAL-G01 | sharp angles | `SharpAngles` | W | single way | none | P2 |
+| VAL-G02 | overly long segments | `LongSegment` | W | single way | none | P2 |
+| VAL-G03 | building not right-angled | `RightAngleBuildingTest` | W | single way | local orthogonalize | P1 |
+| VAL-G04 | area semantics contradict closure/direction (`area=no`, closed but linear) | geometry.mapcss | W | single way | add/remove the `area` tag | P0 |
+| VAL-G05 | degenerate geometry (<2 nodes, zero-length way) | — (scattered in JOSM) | E | single way | delete | P0 |
+| VAL-G06 | coordinates outside the downloaded bbox | `:in-downloaded-area` | W | single object | none | P1 |
+| VAL-G07 | ring direction (outer/inner) reversed | `:clockwise` family | W | relation closure | reverse the way | P1 |
 
-### 3.3 tag 与语义规则清单
+### 3.3 Tag and Semantic Rule Inventory
 
-| ID | 检测 | JOSM 对应 | 级别 | 增量范围 | 修复 | P |
+| ID | Detection | JOSM counterpart | Severity | Incremental scope | Fix | P |
 |---|---|---|---|---|---|---|
-| VAL-K01 | presets 必填 key 缺失 | `TagChecker`/unnecessary | W | 单对象+presets | 无（打开 preset） | P0 |
-| VAL-K02 | 互斥 tag 组合 | `combinations.mapcss` | E | 单对象 | 移除一侧 | P0 |
-| VAL-K03 | 废弃 tag | `deprecated.mapcss` | W | 单对象 | `fixChangeKey`/`fixAdd` | P0 |
-| VAL-K04 | 数值/单位格式 | `numeric.mapcss` | W | 单对象 | 归一化（`50 km/h`→`50`） | P1 |
-| VAL-K05 | 分号多值重复/空段 | `multiple.mapcss` | W | 单对象 | 去重 | P1 |
-| VAL-K06 | 冗余/隐含 tag | `unnecessary.mapcss` | O | 单对象 | 删除 | P2 |
-| VAL-K07 | wikipedia/wikidata 链接格式 | `wikipedia.mapcss` | W | 单对象 | 补语言前缀 | P1 |
-| VAL-K08 | 地址不完整（housenumber/street 互依） | `addresses.mapcss` | W | 单对象 | 无 | P0 |
-| VAL-K09 | `conditional:*` 语法 | `ConditionalKeys` | O | 单对象 | 无 | P2 |
-| VAL-K10 | `opening_hours` 语法 | `OpeningHourTest` | O | 单对象 | 无 | P2 |
-| VAL-K11 | lanes/`turn:lanes` 数量一致 | `Lanes`/highway.mapcss | W | 单 way | 无 | P2 |
-| VAL-K12 | name 与 `name:xx` 不一致、相似名 | `NameMismatch`/`SimilarNamedWays` | O | 邻域 | 无 | P2 |
-| VAL-K13 | religion/denomination 组合 | `religion.mapcss` | O | 单对象 | 无 | P2 |
-| VAL-K14 | 国家特定规则 `inside("XX")` | `territories.mapcss` | W | 单对象+领土 | 视规则 | P1 |
-| VAL-K15 | 未打 tag 的节点 | `UntaggedNode` | W | 单对象 | 删除 | P0 |
-| VAL-S01 | highway+building 等语义冲突 | `combinations.mapcss` | E | 单对象 | 无 | P0 |
-| VAL-S02 | 转弯限制结构 | `TurnrestrictionTest` | E | 单 relation | 无 | P1 |
-| VAL-S03 | 公交线路 schema v2 | `PublicTransportRouteTest`/pt_assistant | W | 单 relation | 无 | P1 |
-| VAL-S04 | 上传前服务器能力预检 | `ApiCapabilitiesTest` | E | 上传集 | 无（阻断） | P0 |
-| VAL-S05 | 方向性 tag 与 way 方向不一致 | `ReverseWayTagCorrector` 语义 | W | 单 way | 翻转方向性 tag | P1 |
-| VAL-S06 | route 成员顺序异常 | `WronglyOrderedWays` | W | 单 relation | 重排成员 | P2 |
-| VAL-S07 | 电力线跨接 | `PowerLines` | W | 邻域 | 无 | P2 |
-| VAL-S08 | 栏杆/入口组合 | `BarriersEntrances` | W | 邻域 | 无 | P2 |
+| VAL-K01 | required preset key missing | `TagChecker`/unnecessary | W | single object+presets | none (open the preset) | P0 |
+| VAL-K02 | mutually exclusive tag combination | `combinations.mapcss` | E | single object | remove one side | P0 |
+| VAL-K03 | deprecated tag | `deprecated.mapcss` | W | single object | `fixChangeKey`/`fixAdd` | P0 |
+| VAL-K04 | numeric/unit format | `numeric.mapcss` | W | single object | normalize (`50 km/h`→`50`) | P1 |
+| VAL-K05 | duplicate values/empty segments in semicolon lists | `multiple.mapcss` | W | single object | deduplicate | P1 |
+| VAL-K06 | redundant/implied tags | `unnecessary.mapcss` | O | single object | delete | P2 |
+| VAL-K07 | wikipedia/wikidata link format | `wikipedia.mapcss` | W | single object | add the language prefix | P1 |
+| VAL-K08 | incomplete address (housenumber/street interdependence) | `addresses.mapcss` | W | single object | none | P0 |
+| VAL-K09 | `conditional:*` syntax | `ConditionalKeys` | O | single object | none | P2 |
+| VAL-K10 | `opening_hours` syntax | `OpeningHourTest` | O | single object | none | P2 |
+| VAL-K11 | lanes/`turn:lanes` count consistency | `Lanes`/highway.mapcss | W | single way | none | P2 |
+| VAL-K12 | name inconsistent with `name:xx`, similar names | `NameMismatch`/`SimilarNamedWays` | O | neighborhood | none | P2 |
+| VAL-K13 | religion/denomination combination | `religion.mapcss` | O | single object | none | P2 |
+| VAL-K14 | country-specific rules `inside("XX")` | `territories.mapcss` | W | single object+territory | depends on the rule | P1 |
+| VAL-K15 | untagged node | `UntaggedNode` | W | single object | delete | P0 |
+| VAL-S01 | semantic conflicts such as highway+building | `combinations.mapcss` | E | single object | none | P0 |
+| VAL-S02 | turn-restriction structure | `TurnrestrictionTest` | E | single relation | none | P1 |
+| VAL-S03 | public transport route schema v2 | `PublicTransportRouteTest`/pt_assistant | W | single relation | none | P1 |
+| VAL-S04 | pre-upload server capability check | `ApiCapabilitiesTest` | E | upload set | none (blocks) | P0 |
+| VAL-S05 | directional tags inconsistent with way direction | `ReverseWayTagCorrector` semantics | W | single way | flip the directional tag | P1 |
+| VAL-S06 | abnormal route member order | `WronglyOrderedWays` | W | single relation | reorder members | P2 |
+| VAL-S07 | power-line crossing | `PowerLines` | W | neighborhood | none | P2 |
+| VAL-S08 | barrier/entrance combination | `BarriersEntrances` | W | neighborhood | none | P2 |
 
-P0 小计 **15 条**：T01/T02/T04/T06/T08/T11、G04/G05、K01/K02/K03/K08/K15、S01/S04——"关闭验证器就无法安全上传"的最小集；其余 25 条为体验与社区一致性。
+P0 totals **15 rules**: T01/T02/T04/T06/T08/T11, G04/G05, K01/K02/K03/K08/K15, S01/S04 — the minimal set for which "turning the validator off means you cannot upload safely"; the other 28 are for experience and community consistency.
 
-## 4 流程与时序
+## 4 Flow and Timing
 
-### 4.1 拖动 → 增量验证（帧内不阻塞）
+### 4.1 Drag → Incremental Validation (non-blocking within a frame)
 
 ```
 UI         Journal      Scheduler                        rayon pool        ReportStore
-│ 拖动节点   │            │                                 │                  │
+│ drag node  │            │                                 │                  │
 ├──────────►│ txn(Move)  │                                 │                  │
-│           ├ dirty={node42}（120ms 防抖）                  │                  │
-│           ├───────────►│ 依赖展开 → target={node42,way17,way31,rel9,nbhd}
-│           │            ├────────────────────────────────►│ par_iter(规则×目标)
+│           ├ dirty={node42} (120ms debounce)               │                  │
+│           ├───────────►│ dependency expansion → target={node42,way17,way31,rel9,nbhd}
+│           │            ├────────────────────────────────►│ par_iter(rule×target)
 │           │            │                                 │ IssueBuf→reduce→sort
 │           │            ├─────────────────────────────────┼─────────────────►│ v(n)
-│◄──────────┴────────────┤ 报告就绪(generation)             │                  │
-│ ValidatorDialog 仅重绘差异行                                              │
+│◄──────────┴────────────┤ report ready(generation)         │                  │
+│ ValidatorDialog repaints only changed rows                                  │
 ```
 
-无脏集时不调度（`dirty.is_empty()` 直接返回），这是空闲态零开销的保证。
+When there is no dirty set nothing is scheduled (early return on `dirty.is_empty()`), which guarantees zero overhead when idle.
 
-### 4.2 修复与撤销
-
-```
-用户点"修复" → rule.fix(cx,issue) → FixPlan{steps}
-  → Editor::execute_batch(steps)（单事务、单撤销步骤）→ journal 记录（可 autosave/恢复）
-  → publish Snapshot(v+1) → Scheduler(dirty=被触达对象) → 报告刷新
-  → Ctrl+Z → 数据逐字段回到修复前 → 原 issue 重现
-```
-
-### 4.3 上传 gate 判定
+### 4.2 Fix and Undo
 
 ```
-upload() ─► ①能力预检 ─┬ fail → 阻断，报 S04，不建 changeset
-                       └ ok ─► ④gate(上传集闭包) ─┬ error>0 → 阻断（可跳转/修复）
-                                                   ├ warning>0 → 确认框（默认取消）
-                                                   └ clean → ⑤顺序化 ─► ⑥POST
+user clicks "fix" → rule.fix(cx,issue) → FixPlan{steps}
+  → Editor::execute_batch(steps) (single transaction, single undo step) → journal record (autosave/recovery capable)
+  → publish Snapshot(v+1) → Scheduler(dirty = touched objects) → report refresh
+  → Ctrl+Z → data returns field by field to the pre-fix state → the original issue reappears
 ```
 
-## 5 权衡与替代方案
+### 4.3 Upload Gate Decision
 
-| 决策 | 选择 | 被否决项 | 理由与代价 |
+```
+upload() ─► ① capability pre-check ─┬ fail → block, report S04, do not create a changeset
+                                    └ ok ─► ④ gate(upload-set closure) ─┬ error>0 → block (can jump/fix)
+                                                                        ├ warning>0 → confirmation dialog (cancel by default)
+                                                                        └ clean → ⑤ order ─► ⑥ POST
+```
+
+## 5 Trade-offs and Alternatives
+
+| Decision | Choice | Rejected option | Rationale and cost |
 |---|---|---|---|
-| 规则语言 | Rust trait + mapcss 兼容层双轨 | 只做 mapcss（像 JOSM 尽量下推） | 空间/图类规则在 mapcss 里无法表达（JOSM 也只能用 Java 写）；代价是两套测试与文档 |
-| 增量模型 | 反向依赖索引 + 空间传播 | 每次全量（简单、永远正确） | 10M 下全量不可接受；代价是索引失效 bug 表现为"漏报"，故必须有 `--full` 与 nightly 全量对拍 |
-| 抑制粒度 | 带 `digest` 的三级抑制 | 照抄 per-test ignore list | JOSM 语义细节未核实，且"抑制后数据变了仍静默"是真实痛点；代价是 digest 必须严格限定在 `tag_keys` |
-| gate 作用域 | 上传集闭包 | 全数据集 | 否则大范围 error 永久阻塞局部上传；代价是既有错误改由状态栏常驻计数提醒 |
-| 修复执行 | 生成 EditCommand 走 Editor | 直接改 store（快） | 绕过 INV-5 就失去撤销与 journal；代价是批量修复要构造大量命令对象（用对象池缓解） |
-| 规则来源 | 内置 Rust + 运行时可加载 mapcss | 编译期烘焙全部规则 | 规则是**资源**，涉及 GPL/wiki 许可隔离，必须运行时可替换（[17](./17-licensing-and-governance.md) §2.3） |
+| rule language | two tracks: Rust traits + mapcss compatibility layer | mapcss only (push as much down as JOSM does) | spatial/graph rules cannot be expressed in mapcss (JOSM also has to write them in Java); the cost is two test suites and two sets of docs |
+| incremental model | reverse dependency index + spatial propagation | full pass every time (simple, always correct) | a full pass at 10M is unacceptable; the cost is that index-invalidation bugs manifest as "missed reports", so `--full` and nightly full comparisons are mandatory |
+| suppression granularity | three levels with `digest` | copy the per-test ignore list | JOSM's semantic details are unverified, and "still silent after data changes" is a real pain point; the cost is that digest must be strictly limited to `tag_keys` |
+| gate scope | upload-set closure | whole dataset | otherwise a wide-area error permanently blocks local uploads; the cost is that pre-existing errors are surfaced via a persistent status-bar counter |
+| fix execution | generate EditCommands through the Editor | modify the store directly (fast) | bypassing INV-5 loses undo and the journal; the cost is that batch fixes construct many command objects (mitigated with an object pool) |
+| rule sources | built-in Rust + runtime-loadable mapcss | bake all rules in at compile time | rules are **assets**, with GPL/wiki licensing isolation, and must be replaceable at runtime ([17](./17-licensing-and-governance.md) §2.3) |
 
-## 6 风险
+## 6 Risks
 
-| # | 风险 | 影响 | 缓解 |
+| # | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R1 | 增量依赖漏声明 → 静默漏报 | 上传后才发现问题（最坏情形） | `deps()` 必填 + "故意改 tag/坐标必须触发重算"的变异测试 + nightly 全量对拍 |
-| R2 | mapcss 兼容层语义偏差（伪类序号、`area` 选择器） | 同一规则不同结论 | 用 12 个核心文件的 assert 做语料；差异进已知偏差表而非"修 bug" |
-| R3 | 抑制隐藏 error | 数据损坏 | 抑制只在呈现层过滤，报告保留全量；gate 永远看未抑制 issue |
-| R4 | 规则热重载期报告不一致 | UI 闪烁、误点修复 | 重载生成新 `generation`，旧报告只读；重载失败保留上一版 |
-| R5 | territories 依赖 `boundaries.osm`（GPL/ODbL 混合） | 许可与体积 | 走运行时资产目录且可缺失；缺失记 skip 而非报错（[17](./17-licensing-and-governance.md) §2.3） |
-| R6 | 全量 pass 在 10M 上超帧预算 | 卡顿 | 全量只在 idle/上传前/显式请求时后台执行，进度可取消 |
+| R1 | missing incremental dependency declaration → silently missed reports | problems discovered only after upload (worst case) | mandatory `deps()` + mutation tests asserting "deliberately changing a tag/coordinate must trigger recomputation" + nightly full comparison |
+| R2 | mapcss compatibility-layer semantic deviations (pseudo-class ordinals, `area` selector) | different conclusions for the same rule | use the asserts of the 12 core files as a corpus; record deviations in the known-deviations table rather than "fixing bugs" |
+| R3 | suppression hiding errors | data damage | suppression filters only at the presentation layer; the report retains everything; the gate always looks at unsuppressed issues |
+| R4 | inconsistent reports during rule hot reload | UI flicker, mistaken fix clicks | reload produces a new `generation` and old reports become read-only; a failed reload keeps the previous version |
+| R5 | territories depend on `boundaries.osm` (mixed GPL/ODbL) | licensing and size | go through the runtime asset directory and allow absence; absence is recorded as skip rather than error ([17](./17-licensing-and-governance.md) §2.3) |
+| R6 | a full pass exceeds the frame budget at 10M | stutter | full passes run in the background only when idle/before upload/on explicit request, with cancellable progress |
 
-## 7 验收标准
+## 7 Acceptance Criteria
 
-1. **结论对等**：12 个核心 `.validator.mapcss` 中所有 `assertMatch`/`assertNoMatch` 全部通过，差异登记进已知偏差表且每条有理由。
-2. **增量正确性**：1M 对象数据集上随机 10k 次编辑，逐步增量验证的 issue 集合与"每次全量"结果完全相等（按 `(code,对象集)` 归一化比较），0 差异。
-3. **确定性**：同一 `Snapshot.version` 上两次验证报告字节级相等（含排序），并发度 1 与 8 时亦相等。
-4. **可撤销**：每类 fixable 规则 `修复→撤销` 后数据集逐字段等于修复前，撤销栈深度 +1 而非 +N。
-5. **幂等**：修复后重跑同规则不再产出同一 `code`（属性测试 10^4 例）。
-6. **抑制**：重启后仍生效；修改被抑制对象的相关 tag 后抑制自动失效并重新告警。
-7. **gate**：含 error 的上传不产生任何 HTTP write 请求（mock API 断言零请求）；仅 warning 时需显式确认。
-8. **性能**：单节点拖动到报告刷新 p95 【待实测，见 docs/14-performance-and-verification.md】；10M 对象空闲态 CPU < 0.5%（无脏集不调度）。
+1. **Conclusion parity**: all `assertMatch`/`assertNoMatch` in the 12 core `.validator.mapcss` files pass, and deviations are registered in the known-deviations table with a reason for each.
+2. **Incremental correctness**: on a 1M-object dataset, 10k random edits, where the issue set of step-by-step incremental validation is exactly equal to "full validation every time" (compared by normalized `(code, object set)`), with 0 differences.
+3. **Determinism**: two validation reports on the same `Snapshot.version` are byte-identical (including ordering), and identical at concurrency 1 and 8.
+4. **Undoable**: for every fixable rule class, the dataset after `fix→undo` equals the pre-fix state field by field, and the undo stack depth increases by 1, not +N.
+5. **Idempotent**: rerunning the same rule after a fix no longer produces the same `code` (property test with 10^4 cases).
+6. **Suppression**: still effective after a restart; modifying relevant tags of a suppressed object invalidates the suppression automatically and raises the warning again.
+7. **Gate**: an upload containing errors issues no HTTP write request at all (mock API asserts zero requests); warnings alone require explicit confirmation.
+8. **Performance**: p95 from a single-node drag to report refresh [pending measurement, see docs/14-performance-and-verification.md]; idle CPU at 10M objects < 0.5% (nothing scheduled without a dirty set).
 
-## 8 参考
+## 8 References
 
-- JOSM 验证器 MapCSS 规则语法：https://josm.openstreetmap.de/wiki/Help/Validator/MapCSSTagChecker
-- 社区规则集索引（`Rules/*`，首选分发渠道）：https://josm.openstreetmap.de/wiki/Rules
-- MapCSS 实现与运算符全集（`∈ ⊆ ⧉`、伪类、`::layer`）：https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation
-- JOSM 验证器偏好（抑制细节）：https://josm.openstreetmap.de/wiki/Help/Preferences/Validator
-  > 待验证：抑制/忽略列表的 preference key 与持久化语义，一手资料未复核。
-- OSM API v0.6 能力上限（waynodes/relationmembers/changeset）：https://wiki.openstreetmap.org/wiki/API_v0.6
-- 冲突对话框与上传 hook（409 语义）：https://josm.openstreetmap.de/wiki/Help/Dialog/Conflict
-- `rstar` 0.14（R\* 树邻域查询）与 `rayon`（`par_iter`/`fold`/`reduce`）：https://docs.rs/rstar/0.14.0/rstar/ · https://docs.rs/rayon/latest/rayon/
-- 一手事实基础（12 个核心规则文件、40 个测试类、hook 链）：[`.research/josm-inventory.md`](../.research/josm-inventory.md)
+- JOSM validator MapCSS rule syntax: https://josm.openstreetmap.de/wiki/Help/Validator/MapCSSTagChecker
+- Community rule-set index (`Rules/*`, the preferred distribution channel): https://josm.openstreetmap.de/wiki/Rules
+- MapCSS implementation and the full operator set (`∈ ⊆ ⧉`, pseudo-classes, `::layer`): https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation
+- JOSM validator preferences (suppression details): https://josm.openstreetmap.de/wiki/Help/Preferences/Validator
+  > To verify: the preference key and persistence semantics of the suppression/ignore list; primary sources have not been re-checked.
+- OSM API v0.6 capability limits (waynodes/relationmembers/changeset): https://wiki.openstreetmap.org/wiki/API_v0.6
+- Conflict dialog and upload hooks (409 semantics): https://josm.openstreetmap.de/wiki/Help/Dialog/Conflict
+- `rstar` 0.14 (R\* tree neighborhood queries) and `rayon` (`par_iter`/`fold`/`reduce`): https://docs.rs/rstar/0.14.0/rstar/ · https://docs.rs/rayon/latest/rayon/
+- Primary factual basis (12 core rule files, 40 test classes, hook chain): [`.research/josm-inventory.md`](../.research/josm-inventory.md)

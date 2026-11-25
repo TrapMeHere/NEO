@@ -1,6 +1,6 @@
-//! wasmtime 50 宿主。插件是 core module，导入 `neo` 里的数字 ABI（WIT host-api 的数值镜像）。
+//! wasmtime 50 host. Plugins are core modules importing the numeric ABI in `neo` (the numeric mirror of the WIT host-api).
 //!
-//! 不链接 WASI。fuel 杀掉死循环，`StoreLimits` 挡住线性内存扩张，一个实例 trap 不会关掉其他实例。
+//! No WASI is linked. fuel kills infinite loops, `StoreLimits` blocks linear memory growth, and one instance trapping does not take down the others.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -14,16 +14,16 @@ use crate::guests::builtin_plugins;
 use crate::manifest::parse_manifest;
 use crate::package::content_signature;
 
-/// 宿主配置。
+/// Host configuration.
 #[derive(Clone, Debug)]
 pub struct PluginHostConfig {
-    /// 每次 `on_load` / `on_event` 的 fuel。
+    /// fuel for each `on_load` / `on_event`.
     pub fuel_per_event: u64,
-    /// 线性内存上限（字节）。
+    /// Linear memory limit (bytes).
     pub memory_limit_bytes: usize,
-    /// 每个事件最多入队多少条命令。
+    /// Maximum number of commands queued per event.
     pub commands_per_event: u32,
-    /// 允许未签名插件。界面必须显示风险标记（[`LoadedPlugin::unsigned_dev`]）。
+    /// Allows unsigned plugins. The UI must show a risk marker ([`LoadedPlugin::unsigned_dev`]).
     pub developer_mode: bool,
 }
 
@@ -52,31 +52,31 @@ struct LoadedPlugin {
     instance: Instance,
 }
 
-/// 已加载插件的公开摘要。
+/// Public summary of a loaded plugin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadedPluginInfo {
-    /// 插件 id。
+    /// Plugin id.
     pub id: String,
-    /// 显示名。
+    /// Display name.
     pub name: String,
-    /// 开发者模式里的未签名包。
+    /// Unsigned package in developer mode.
     pub unsigned_dev: bool,
-    /// 已因 trap 停用。
+    /// Disabled due to a trap.
     pub disabled: bool,
 }
 
-/// 一次派发的结果。某个插件 trap 不会让函数本身失败。
+/// Result of one dispatch. One plugin trapping does not make the function itself fail.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DispatchReport {
-    /// 正常返回的插件。
+    /// Plugins that returned normally.
     pub ran: Vec<String>,
-    /// trap 的插件和原因。
+    /// Trapped plugins and the reason.
     pub trapped: Vec<(String, String)>,
-    /// 未订阅该主题或已停用。
+    /// Not subscribed to the topic or already disabled.
     pub skipped: Vec<String>,
 }
 
-/// 插件宿主。
+/// Plugin host.
 pub struct PluginHost {
     engine: Engine,
     linker: Linker<HostState>,
@@ -86,13 +86,13 @@ pub struct PluginHost {
 }
 
 impl PluginHost {
-    /// 创建引擎。fuel 与 epoch 都打开；本实现用 fuel 做确定性的超时。
+    /// Creates the engine. Both fuel and epoch are enabled; this implementation uses fuel for deterministic timeouts.
     pub fn new(cfg: PluginHostConfig) -> Result<Self, PluginError> {
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
         config.epoch_interruption(true);
-        // 关闭多内存：StoreLimits 的 memory_size 是"每个内存"的限额，允许
-        // 多内存会让插件用 N 个 64MiB 内存绕过总内存上限。
+        // Multiple memories are disabled: StoreLimits' memory_size is a per-memory limit, so allowing
+        // multiple memories would let a plugin bypass the total memory cap with N 64MiB memories.
         config.wasm_multi_memory(false);
         let engine = Engine::new(&config).map_err(|err| PluginError::Trapped(err.to_string()))?;
         let mut linker = Linker::new(&engine);
@@ -106,7 +106,7 @@ impl PluginHost {
         })
     }
 
-    /// 编译并加载 WAT/WASM 文本。`granted` 是用户点过的授权，会和清单求交。
+    /// Compiles and loads WAT/WASM text. `granted` is what the user authorized and is intersected with the manifest.
     pub fn load_wat(
         &mut self,
         manifest_toml: &str,
@@ -116,7 +116,7 @@ impl PluginHost {
         self.load_entry(manifest_toml, wat.as_bytes(), granted)
     }
 
-    /// 编译并加载 `.wasm`/`.wat` 字节（`.neopkg` 入口使用）。
+    /// Compiles and loads `.wasm`/`.wat` bytes (used by the `.neopkg` entry).
     pub fn load_binary(
         &mut self,
         manifest_toml: &str,
@@ -190,7 +190,7 @@ impl PluginHost {
         Ok(id)
     }
 
-    /// 向所有订阅了 `topic` 的插件派发。一个插件 trap 只停用它自己。
+    /// Dispatches to every plugin subscribed to `topic`. A plugin trap only disables that plugin.
     pub fn dispatch(&mut self, topic: &str, _payload_json: &str) -> DispatchReport {
         let mut report = DispatchReport::default();
         let fuel = self.cfg.fuel_per_event;
@@ -250,7 +250,7 @@ impl PluginHost {
         report
     }
 
-    /// 取走全部已入队命令。
+    /// Takes all queued commands.
     pub fn drain_commands(&mut self) -> Vec<PendingCommand> {
         let mut out = Vec::new();
         for plugin in &mut self.plugins {
@@ -259,7 +259,7 @@ impl PluginHost {
         out
     }
 
-    /// 全部面板。
+    /// All panels.
     pub fn panels(&self) -> Vec<PanelDescriptor> {
         self.plugins
             .iter()
@@ -267,7 +267,7 @@ impl PluginHost {
             .collect()
     }
 
-    /// 已加载插件。
+    /// Loaded plugins.
     pub fn plugins(&self) -> Vec<LoadedPluginInfo> {
         self.plugins
             .iter()
@@ -280,19 +280,19 @@ impl PluginHost {
             .collect()
     }
 
-    /// 某个插件的线性内存字节数。
+    /// Linear memory bytes of one plugin.
     pub fn memory_size(&mut self, id: &str) -> Option<usize> {
         let plugin = self.plugins.iter_mut().find(|plugin| plugin.id == id)?;
         let memory = plugin.instance.get_memory(&mut plugin.store, "memory")?;
         Some(memory.data_size(&plugin.store))
     }
 
-    /// 放行的 HTTP 次数。被拒绝的请求不加。
+    /// Number of allowed HTTP requests. Denied requests are not counted.
     pub fn http_hits(&self) -> u32 {
         self.http_hits.load(Ordering::Relaxed)
     }
 
-    /// 全部放行的 URL。
+    /// All allowed URLs.
     pub fn http_log(&self) -> Vec<String> {
         self.plugins
             .iter()
@@ -427,7 +427,7 @@ fn read_guest(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Result<
     String::from_utf8(buf).map_err(|_| 3)
 }
 
-/// 跑三个内置插件并返回人读得懂的结果。CLI 用。
+/// Runs the three built-in plugins and returns a human-readable result. Used by the CLI.
 pub fn run_builtin_demo() -> Result<String, PluginError> {
     let cfg = PluginHostConfig {
         developer_mode: true,

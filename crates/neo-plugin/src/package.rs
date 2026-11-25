@@ -1,8 +1,8 @@
-//! `.neopkg`（zip）检查：路径穿越、清单、SHA-256 签名。
+//! `.neopkg` (zip) checks: path traversal, manifest, SHA-256 signature.
 //!
-//! 签名是清单去掉 `signature` 行之后与入口字节拼在一起的 SHA-256。
-//! 正式分发的 Ed25519 验签可以替换 [`content_signature`] 的调用点；
-//! 未签名包只在开发者模式加载，并且会被标成风险。
+//! The signature is the SHA-256 of the manifest with the `signature` line removed, concatenated with the entry bytes.
+//! Proper Ed25519 verification for official distribution can replace the call site of [`content_signature`];
+//! unsigned packages are only loaded in developer mode and are flagged as risky.
 
 use std::io::{Cursor, Read, Write};
 
@@ -13,20 +13,20 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use crate::PluginError;
 use crate::manifest::{PluginManifest, parse_manifest};
 
-/// 通过检查的包。
+/// A package that passed the checks.
 #[derive(Clone, Debug)]
 pub struct OpenedPackage {
-    /// 清单。
+    /// Manifest.
     pub manifest: PluginManifest,
-    /// 原始清单文本。
+    /// Raw manifest text.
     pub manifest_text: String,
-    /// 入口字节（wat 或 wasm）。
+    /// Entry bytes (wat or wasm).
     pub entry: Vec<u8>,
-    /// 开发者模式下加载的未签名包。
+    /// An unsigned package loaded in developer mode.
     pub unsigned_dev: bool,
 }
 
-/// 计算清单与入口的签名。
+/// Computes the signature of the manifest and entry.
 pub fn content_signature(manifest_text: &str, entry: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(canonical_manifest(manifest_text).as_bytes());
@@ -35,7 +35,7 @@ pub fn content_signature(manifest_text: &str, entry: &[u8]) -> String {
     hex(&hasher.finalize())
 }
 
-/// 打开内存中的 zip。
+/// Opens an in-memory zip.
 pub fn open_package(bytes: &[u8], developer_mode: bool) -> Result<OpenedPackage, PluginError> {
     const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
     const MAX_ENTRIES: usize = 4096;
@@ -101,7 +101,7 @@ pub fn open_package(bytes: &[u8], developer_mode: bool) -> Result<OpenedPackage,
     })
 }
 
-/// 给测试打包。`signature` 为空时不签名。
+/// Packs for tests. No signature is added when `signature` is empty.
 pub fn pack_neopkg(manifest_text: &str, entry_name: &str, entry: &[u8]) -> Result<Vec<u8>, PluginError> {
     let mut cursor = Cursor::new(Vec::new());
     {

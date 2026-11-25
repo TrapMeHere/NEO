@@ -1,8 +1,8 @@
-//! [`MapGpu`]：把 [`MapPipeline`] + [`GpuScene`] 组合成可直接嵌入 egui paint callback 的对象。
+//! [`MapGpu`]: combines [`MapPipeline`] + [`GpuScene`] into an object that can be embedded directly in an egui paint callback.
 //!
-//! 这一层**不依赖 egui**：应用层在自己的 `CallbackTrait` 实现里持有 `MapGpu`，
-//! `prepare` 时上传/更新 uniform，`paint` 时发 draw call。这样渲染后端保持 UI 无关，
-//! 同时 egui 集成代码只有 ~30 行（见 `apps/neo-desktop`）。
+//! This layer **does not depend on egui**: the application layer holds `MapGpu` inside its own `CallbackTrait` implementation,
+//! uploads/updates the uniform in `prepare`, and issues draw calls in `paint`. This keeps the render backend UI-agnostic,
+//! while the egui integration code is only ~30 lines (see `apps/neo-desktop`).
 
 use neo_geo::{Camera, WorldPoint};
 use neo_scene::SceneFrame;
@@ -10,16 +10,16 @@ use neo_scene::SceneFrame;
 use crate::pipeline::MapPipeline;
 use crate::scene_gpu::{GpuScene, UploadStats};
 
-/// 可嵌入 egui paint callback 的地图 GPU 资源。
+/// Map GPU resources that can be embedded in an egui paint callback.
 pub struct MapGpu {
-    /// 管线（含 camera uniform）。
+    /// Pipeline (including the camera uniform).
     pub pipeline: MapPipeline,
-    /// 几何缓存。
+    /// Geometry cache.
     pub scene: GpuScene,
 }
 
 impl MapGpu {
-    /// 创建。`color_format`/`sample_count` 必须与目标 render pass 完全一致。
+    /// Create. `color_format`/`sample_count` must exactly match the target render pass.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat, sample_count: u32) -> Self {
         Self {
             pipeline: MapPipeline::new(device, color_format, sample_count),
@@ -27,7 +27,7 @@ impl MapGpu {
         }
     }
 
-    /// 每帧调用：必要时上传几何，并写 32 字节相机 uniform。
+    /// Called every frame: upload geometry when necessary and write the 32-byte camera uniform.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -52,18 +52,18 @@ impl MapGpu {
         stats
     }
 
-    /// 在 render pass 中绘制（按批次顺序：fill → stroke → point）。
+    /// Draw inside the render pass (in batch order: fill → stroke → point).
     pub fn paint(&self, pass: &mut wgpu::RenderPass<'_>) {
         self.pipeline.bind(pass);
         self.scene.draw(pass);
     }
 
-    /// 最近一次上传统计。
+    /// Most recent upload stats.
     pub fn upload_stats(&self) -> UploadStats {
         self.scene.stats
     }
 
-    /// 当前批次原点。
+    /// Current batch origin.
     pub fn origin(&self) -> Option<WorldPoint> {
         self.scene.origin
     }

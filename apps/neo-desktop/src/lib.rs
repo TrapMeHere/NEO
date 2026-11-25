@@ -1,3 +1,3 @@
-//! neo-desktop 库入口（供单元测试与复用）。
+//! neo-desktop library entry point (used by unit tests and for reuse).
 //!
-//! 可执行入口仍是 `main.rs`。
+//! The executable entry point is still `main.rs`.

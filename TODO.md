@@ -1,454 +1,454 @@
-# NEO 开发进度台账
+# NEO Development Progress Ledger
 
-> 这个文件是**给项目负责人看的实时看板**：当前阶段、已完成/进行中/未开始、验收状态、下一步动作。
-> 规则：每轮开发结束前更新本文件 + `git commit`；状态标记：`[x]` 完成、`[~]` 进行中、`[ ]` 未开始、`[!]` 阻塞。
-> 架构契约见 [docs/README.md](docs/README.md)，路线图与 Gate 见 [docs/16-roadmap-and-risks.md](docs/16-roadmap-and-risks.md)。
+> This file is the **live board for the project lead**: current phase, done/in-progress/not-started, acceptance status, next actions.
+> Rule: update this file + `git commit` before ending each round; status markers: `[x]` done, `[~]` in progress, `[ ]` not started, `[!]` blocked.
+> Architecture contracts: [docs/README.md](docs/README.md); roadmap and gates: [docs/16-roadmap-and-risks.md](docs/16-roadmap-and-risks.md).
 
-## 0 总览
+## 0 Overview
 
-| 项 | 状态 |
+| Item | Status |
 |---|---|
-| 当前阶段 | **阶段 5–6 已落地代码，Gate 未全过**。G5 = Conditional Go（插件隔离通过，三平台安装包未冷启动）。阶段 6 不是 RC。详见 [gate-5](docs/prototypes/gate-5-ecosystem.md)、[gate-6](docs/prototypes/gate-6-performance.md) |
-| 上一次 Gate | G5 = **Conditional Go**；阶段 6 = **未达 RC**。G1 的三平台与 10 分钟稳定性仍未补 |
-| 目标 Gate | 补 G5(d) 三平台安装包冷启动；在新的流式路径上重测 10M 与 1 小时会话 |
-| 代码规模 | Rust ~19k 行（97 个源文件） |
-| 测试 | **master 已恢复回归测试**（core/store/editor/io/persist/style/ui 共 40+ 项）；2026-11-21 体检修复后 `cargo test --workspace` 通过 |
-| JOSM parity P0 | 52 条中 **~20 条达成/部分达成**；2026-11-21 补了关系成员编辑/框选/复制粘贴/查找/命令历史/GPX/简化/粘合。真实差距见 [docs/feature-parity.md](docs/feature-parity.md) |
+| Current phase | **Phases 5–6 are implemented in code; gates are not all passed**. G5 = Conditional Go (plugin isolation passed; three-platform installer cold start not done). Phase 6 is not RC. See [gate-5](docs/prototypes/gate-5-ecosystem.md), [gate-6](docs/prototypes/gate-6-performance.md) |
+| Last gate | G5 = **Conditional Go**; Phase 6 = **not RC**. G1's three-platform check and 10-minute stability are still outstanding |
+| Target gate | Finish G5(d) three-platform installer cold start; re-measure 10M and the 1-hour session on the new streaming path |
+| Code size | Rust ~19k lines (97 source files) |
+| Tests | **master has restored regression tests** (core/store/editor/io/persist/style/ui, 40+ items); after the 2026-11-21 health-check fixes `cargo test --workspace` passes |
+| JOSM parity P0 | **~20 of 52 achieved/partially achieved**; 2026-11-21 added relation member editing/box select/copy-paste/find/command history/GPX/simplify/glue. Real gaps in [docs/feature-parity.md](docs/feature-parity.md) |
 
-## 1 本轮（阶段 2 → 3）任务看板
+## 1 This round (Phase 2 → 3) task board
 
-### 1.1 阶段 2 · OSM 数据核心（G2）
+### 1.1 Phase 2 · OSM data core (G2)
 
-| # | 任务 | 状态 | 对应 crate | 验收 |
+| # | Task | Status | Crate | Acceptance |
 |---|---|---|---|---|
-| 2.1 | OSM XML 0.6 读取（node/way/relation/tag/nd/member、负 id、action/visible） | [x] | `neo-io/xml.rs` | 单测 + Monaco/Bremen XML 往返 |
-| 2.2 | OSM XML 写出（server-conformant / JOSM-conformant 两种模式） | [x] | `neo-io/xml.rs` | 往返语义等价测试 |
-| 2.3 | osmChange 0.6 读取（create/modify/delete、if-unused、负 id 占位） | [x] | `neo-io/osc.rs` | create/modify/delete 解析 + apply |
-| 2.4 | PBF 写 encoder（varint + zlib，osmpbf 只读的补充） | [x] | `neo-io/pbf_write.rs` | 写→osmpbf 读回语义一致 |
-| 2.5 | 引用完整性检查（悬空 node/member，显式 incomplete） | [x] | `neo-store` / `neo-io` | 报告 0 错误或列出 incomplete |
-| 2.6 | 导入可取消、失败不留半成品（构建完成再替换） | [x] | `neo-io` | 取消测试 + 原子性测试 |
-| 2.7 | 10M PBF 写→读对拍（计数/完整性，真机实测） | [x] | `neo-prototype` | 基线记录进 docs/14 |
-| 2.8 | 并行 PBF 解码（blob 级 rayon，Bremen 1.29× / Monaco 1.11×，目标 3× 未达成） | [x] | `neo-io` | 吞吐对比（目标 3×） |
-| 2.9 | `.jos` 会话读写（XML；`.joz` = zip 容器） | [x] | `neo-io`/`neo-persist` | 往返测试 |
-| 2.10 | GPX 读写（P1） | [x] | `neo-io` | 往返单测（阶段 5 补上） |
+| 2.1 | OSM XML 0.6 read (node/way/relation/tag/nd/member, negative ids, action/visible) | [x] | `neo-io/xml.rs` | Unit tests + Monaco/Bremen XML round-trip |
+| 2.2 | OSM XML write (server-conformant / JOSM-conformant modes) | [x] | `neo-io/xml.rs` | Round-trip semantic equivalence tests |
+| 2.3 | osmChange 0.6 read (create/modify/delete, if-unused, negative-id placeholders) | [x] | `neo-io/osc.rs` | create/modify/delete parse + apply |
+| 2.4 | PBF write encoder (varint + zlib, complementing read-only osmpbf) | [x] | `neo-io/pbf_write.rs` | write → read back through osmpbf with identical semantics |
+| 2.5 | Referential integrity checks (dangling node/member, explicit incomplete) | [x] | `neo-store` / `neo-io` | 0 errors reported or incomplete listed |
+| 2.6 | Cancellable import, no half-built state on failure (replace after the build completes) | [x] | `neo-io` | Cancellation tests + atomicity tests |
+| 2.7 | 10M PBF write→read comparison (counts/integrity, measured on real hardware) | [x] | `neo-prototype` | Baseline recorded in docs/14 |
+| 2.8 | Parallel PBF decode (blob-level rayon; Bremen 1.29× / Monaco 1.11×, 3× target not met) | [x] | `neo-io` | Throughput comparison (3× target) |
+| 2.9 | `.jos` session read/write (XML; `.joz` = zip container) | [x] | `neo-io`/`neo-persist` | Round-trip tests |
+| 2.10 | GPX read/write (P1) | [x] | `neo-io` | Round-trip unit tests (added in Phase 5) |
 
-### 1.2 阶段 3 · 基础编辑（G3）
+### 1.2 Phase 3 · Basic editing (G3)
 
-| # | 任务 | 状态 | 对应 crate | 验收 |
+| # | Task | Status | Crate | Acceptance |
 |---|---|---|---|---|
-| 3.1 | Editor 提交管线（precheck → apply → undo 记录 → dirty → 版本递增） | [x] | `neo-editor` | 单测 |
-| 3.2 | EditTx/Transaction 原子性（失败回滚，零副作用） | [x] | `neo-editor` | 属性测试 |
-| 3.3 | History（undo/redo、拖动合并、内存上限） | [x] | `neo-editor` | `undo∘redo = id` 测试 |
-| 3.4 | Selection（节点/way/relation 集合、toggle/clear） | [x] | `neo-editor` | 单测 |
-| 3.5 | Journal（JSONL 帧、TxBegin/Commit、replay 丢弃半事务） | [x] | `neo-editor` | 截断文件 replay 测试 |
-| 3.6 | 基础命令：AddNode/AddWay/MoveNode/SetTags/Delete | [x] | `neo-editor/commands.rs` | 每命令 apply+undo 单测 |
-| 3.7 | 几何命令：SplitWay/MergeWay/ReverseWay（含 direction tag 修正） | [x] | `neo-editor/commands.rs` | 语义单测 |
-| 3.8 | 编辑后索引/脏集合同步（移动节点 → 父 way bbox/索引） | [x] | `neo-editor` | 增量测试 |
-| 3.9 | 工具集：选择/绘制/删除（工具状态机 → 命令） | [x] | `neo-tools` | 单测 |
-| 3.10 | 标签编辑面板（增删改 tag → SetTags 命令） | [x] | `neo-ui` | 手工验证 |
-| 3.11 | 桌面端集成：模式切换、快捷键、拖拽移动、撤销/重做、保存、journal 恢复 | [x] | `apps/neo-desktop` | 手工冒烟 |
-| 3.12 | 一键拖动 = 1 条历史（预览不入历史，释放时单命令） | [x] | `neo-editor`/`neo-desktop` | 单测 + 手工 |
-| 3.13 | 保存/导出：OSM XML / osmChange（PBF 导出在 2.4 完成后接入） | [x] | `neo-io` | 保存后重开一致 |
-| 3.14 | 自动化验收脚本（随机编辑+undo/redo 一致性、事务失败零副作用、OSC 写→读→写语义等价） | [x] | `crates/neo-editor/tests/`、`crates/neo-io/tests/` | CI 可跑 |
+| 3.1 | Editor commit pipeline (precheck → apply → undo record → dirty → version bump) | [x] | `neo-editor` | Unit tests |
+| 3.2 | EditTx/Transaction atomicity (rollback on failure, zero side effects) | [x] | `neo-editor` | Property tests |
+| 3.3 | History (undo/redo, drag coalescing, memory limit) | [x] | `neo-editor` | `undo∘redo = id` tests |
+| 3.4 | Selection (node/way/relation sets, toggle/clear) | [x] | `neo-editor` | Unit tests |
+| 3.5 | Journal (JSONL frames, TxBegin/Commit, replay drops half transactions) | [x] | `neo-editor` | Truncated-file replay tests |
+| 3.6 | Basic commands: AddNode/AddWay/MoveNode/SetTags/Delete | [x] | `neo-editor/commands.rs` | apply+undo unit tests per command |
+| 3.7 | Geometry commands: SplitWay/MergeWay/ReverseWay (incl. direction tag fixup) | [x] | `neo-editor/commands.rs` | Semantic unit tests |
+| 3.8 | Index/dirty-set sync after edits (move node → parent way bbox/index) | [x] | `neo-editor` | Incremental tests |
+| 3.9 | Tool set: select/draw/delete (tool state machine → commands) | [x] | `neo-tools` | Unit tests |
+| 3.10 | Tag editing panel (add/remove/change tag → SetTags command) | [x] | `neo-ui` | Manual verification |
+| 3.11 | Desktop integration: mode switching, shortcuts, drag-move, undo/redo, save, journal recovery | [x] | `apps/neo-desktop` | Manual smoke |
+| 3.12 | One drag = 1 history entry (preview not in history; single command on release) | [x] | `neo-editor`/`neo-desktop` | Unit tests + manual |
+| 3.13 | Save/export: OSM XML / osmChange (PBF export wired in after 2.4) | [x] | `neo-io` | Reopen after save is consistent |
+| 3.14 | Automated acceptance scripts (random edits + undo/redo consistency, zero side effects on transaction failure, OSC write→read→write semantic equivalence) | [x] | `crates/neo-editor/tests/`, `crates/neo-io/tests/` | Runnable in CI |
 
-### 1.3 已知缺口（本轮不覆盖，登记）
+### 1.3 Known gaps (not covered this round, logged)
 
-- [ ] 关系编辑（relation 成员增删排序）、multipolygon 组装与校验
-- [ ] 冲突解决（MergeCase 六类）、上传 409 处理 → 阶段 4
-- [ ] MapCSS/Presets 真实样式 → 阶段 4
-- [ ] 校验器 43 条规则 → 阶段 4
-- [ ] SQLite 持久化 / autosave 正式实现 → 阶段 4（本轮 Journal 用 JSONL 文件）
-- [ ] PBF 并行解码与写侧性能优化
-- [ ] 三平台 CI、Windows 安装包/签名、DX12 后端实测
-- [ ] 10 分钟稳定性冒烟
+- [ ] Relation editing (add/remove/reorder relation members), multipolygon assembly and validation
+- [ ] Conflict resolution (six MergeCase kinds), upload 409 handling → Phase 4
+- [ ] MapCSS/Presets real styling → Phase 4
+- [ ] Validator 43 rules → Phase 4
+- [ ] SQLite persistence / proper autosave → Phase 4 (this round's Journal uses JSONL files)
+- [ ] PBF parallel decode and write-side performance optimization
+- [ ] Three-platform CI, Windows installer/signing, DX12 backend measurement
+- [ ] 10-minute stability smoke
 
-## 2 当前实现清单（代码地图）
+## 2 Current implementation inventory (code map)
 
-| crate | 状态 | 主要文件 |
+| crate | Status | Main files |
 |---|---|---|
-| `neo-core` | ✅ 完成 | ids/handle/units/sym/meta/error/stats |
-| `neo-osm` | ✅ 完成 | tags/element/change |
-| `neo-store` | ✅ 完成（缺 compact/COW） | node/way/relation/tag arena/indexes/bitset/dataset |
-| `neo-geo` | ✅ 完成（缺多投影/关系 bbox） | world/camera/spatial/geometry/picking/world_cache |
-| `neo-io` | 🚧 本轮 | pbf(读)/xml(本轮)/osc(本轮)/synth |
-| `neo-editor` | 🚧 本轮 | command/tx/history/selection/journal/commands |
-| `neo-tools` | 🚧 本轮 | select/draw/delete 控制器 |
-| `neo-ui` | 🚧 本轮 | 工具栏/图层/属性 + 标签编辑器 |
-| `neo-scene` / `neo-render` | ✅ 阶段 1 | 批次/管线/离屏渲染/MapGpu |
-| `neo-query` | ✅ 只读查询 | MapQuery/Snapshot |
-| `neo-api` / `neo-persist` / `neo-validate` / `neo-plugin` | ✅ 已实现（2026-11 体检确认，不再“3 行占位”） | 见各 crate |
-| `apps/neo-desktop` | 🚧 本轮 | 编辑集成 |
-| `apps/neo-prototype` | ✅ | 导入/渲染/基准 |
+| `neo-core` | ✅ done | ids/handle/units/sym/meta/error/stats |
+| `neo-osm` | ✅ done | tags/element/change |
+| `neo-store` | ✅ done (missing compact/COW) | node/way/relation/tag arena/indexes/bitset/dataset |
+| `neo-geo` | ✅ done (missing multi-projection/relation bbox) | world/camera/spatial/geometry/picking/world_cache |
+| `neo-io` | 🚧 this round | pbf (read)/xml (this round)/osc (this round)/synth |
+| `neo-editor` | 🚧 this round | command/tx/history/selection/journal/commands |
+| `neo-tools` | 🚧 this round | select/draw/delete controllers |
+| `neo-ui` | 🚧 this round | toolbar/layers/properties + tag editor |
+| `neo-scene` / `neo-render` | ✅ Phase 1 | batches/pipelines/offscreen render/MapGpu |
+| `neo-query` | ✅ read-only queries | MapQuery/Snapshot |
+| `neo-api` / `neo-persist` / `neo-validate` / `neo-plugin` | ✅ implemented (confirmed by the 2026-11 health check; no longer "3-line placeholders") | see each crate |
+| `apps/neo-desktop` | 🚧 this round | editing integration |
+| `apps/neo-prototype` | ✅ | import/render/benchmark |
 
-## 3 验证方法（每轮结束必跑）
+## 3 Verification method (run at the end of every round)
 
 ```powershell
 cargo check --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-# 其余检查脚本见 README “开发”段
+# Other check scripts: see the README "Development" section
 ```
 
-## 4 风险与决策记录（本轮）
+## 4 Risks and decisions (this round)
 
-| 决策 | 理由 |
+| Decision | Rationale |
 |---|---|
-| Journal 用 JSONL（serde_json）而非 rkyv | 可读、可截断恢复、无需 unsafe；性能足够（编辑频率低） |
-| 删除对象保留在 store 中并标记 `ChangeState::Deleted` | 上传 diff/撤销/保存 round-trip 都需要"被删对象仍可见于变更集" |
-| 关系编辑/冲突解决推迟到阶段 4 | G3 只要求"自用可编辑"，G4 才要求上传闭环 |
-| 工具状态机放 `neo-tools` 而非 desktop | 可单测、可被未来 CLI/脚本复用 |
+| Journal uses JSONL (serde_json) rather than rkyv | Human-readable, truncation-recoverable, no unsafe; fast enough (editing is infrequent) |
+| Deleted objects stay in the store marked `ChangeState::Deleted` | Upload diff/undo/save round-trip all need "deleted objects remain visible in the changeset" |
+| Relation editing/conflict resolution deferred to Phase 4 | G3 only requires "editable for our own use"; only G4 requires the upload loop |
+| Tool state machine lives in `neo-tools` rather than desktop | Unit-testable and reusable by a future CLI/scripts |
 
-## 5 下一步（下一轮）
+## 5 Next steps (next round)
 
-1. 完成 2.1/2.2 XML 往返 + 2.3 osmChange 读取
-2. 完成 3.1–3.7 命令与 History/Journal 测试
-3. 桌面端端到端：绘制一条 way → 改 tag → 拖动节点 → undo/redo → 保存 XML → 重开一致
-4. 跑 G2/G3 自动化验收脚本并回填本文件
+1. Finish 2.1/2.2 XML round-trip + 2.3 osmChange read
+2. Finish 3.1–3.7 commands and the History/Journal tests
+3. Desktop end-to-end: draw a way → change a tag → drag a node → undo/redo → save XML → reopen with an identical result
+4. Run the G2/G3 automated acceptance scripts and backfill this file
 
 ---
 
-最后更新：2026-11-16 · 维护者：NEO Lead Agent
+Last updated: 2026-11-16 · Maintainer: NEO Lead Agent
 
 
-## 6 变更日志（新→旧）
+## 6 Changelog (new → old)
 
-### 2026-11-16 · 阶段 5–6
+### 2026-11-16 · Phases 5–6
 
-- [x] `neo-plugin`：wasmtime 50 宿主、三个插件语义、能力求交、fuel / 64 MiB 上限。`cargo test -p neo-plugin --features wasm-plugins` 11 项通过
-- [x] GPX 读写、MapCSS 警告与样式声明编辑、TMS/WMS/offset、预设分组覆盖表（22 组计数都大于 0）
-- [x] CLI、桌面生态窗口、三平台打包脚本（脚本未执行）
-- [x] 流式 LOD、有界瓦片缓存、并行场景构建、坐标差分 varint、indirect draw + GPU 清零实例数（64×64 三角形像素一致，随后全黑）
-- [x] 预设改为 npm：`@openstreetmap/id-tagging-schema` 7.3.0（1678 条）与 `name-suggestion-index` 8.0.20261101（40778 条品牌建议）。生成到 `assets/presets/`，运行时加载，不进 exe
-- [x] 字体外置到 `assets/fonts/`；`cargo bloat` 基线见 `docs/prototypes/binary-size-baseline.md`
-- [ ] 未做：三平台安装包冷启动、10M 新路径、1 小时会话、Ed25519、release 剖析
+- [x] `neo-plugin`: wasmtime 50 host, three plugin semantics, capability intersection, fuel / 64 MiB limits. `cargo test -p neo-plugin --features wasm-plugins` passes 11 items
+- [x] GPX read/write, MapCSS warnings and style declaration editing, TMS/WMS/offset, preset group override table (measured count > 0 for all 22 groups)
+- [x] CLI, desktop ecosystem window, three-platform packaging scripts (scripts not executed)
+- [x] Streaming LOD, bounded tile cache, parallel scene build, coordinate delta varint, indirect draw + GPU instance-count clearing (64×64 triangles pixel-identical, then all black)
+- [x] Presets switched to npm: `@openstreetmap/id-tagging-schema` 7.3.0 (1678 entries) and `name-suggestion-index` 8.0.20261101 (40778 brand suggestions). Generated into `assets/presets/`, loaded at runtime, not baked into the exe
+- [x] Fonts externalized to `assets/fonts/`; `cargo bloat` baseline in `docs/prototypes/binary-size-baseline.md`
+- [ ] Not done: three-platform installer cold start, new 10M path, 1-hour session, Ed25519, release profiling
 
-### 2026-11-15 · 阶段 2/3 第一刀（进行中）
-- [x] `neo-io/xml.rs`：OSM XML 0.6 流式读取（node/way/relation/tag/nd/member、负 id、visible/action、实体解码）+ 两种写出模式（Server/JOSM-conformant），6 个单测（含往返语义等价）
-- [x] `neo-editor`：`Editor`/`EditContext` 单写者事务、`Command` 契约、`History`（命令批 + 拖动合并）、`Selection`、`Journal`（JSONL 帧 + `committed_prefix` + `recover` replay）
-- [x] `neo-editor/commands.rs`：AddNode / AddWay / MoveNode / SetTags / SetWayNodes / DeleteObject（引用检查），每命令 apply+undo；`undo∘redo = id`、事务失败零副作用、拖动合并、journal replay 均有测试
-- [x] `neo-store`：`set_change_state_visible`（删除对象保留在 store 中，供上传 diff/撤销）
-- [ ] 待下一轮：osmChange 读取、PBF 写 encoder、neo-tools 控制器、neo-ui 标签面板、desktop 编辑接线（画点/画线/拖动/撤销/保存）、G2/G3 验收脚本
-
-
-### 2026-11-15 · 阶段 2/3 第二刀（本轮）
-- [x] `neo-io/osc_read.rs`：osmChange 0.6 **读取与应用**（create/modify/delete、负 id、`visible`、缺失对象计数），3 个单测
-- [x] 修复 `neo-io/xml.rs` 的**坐标解析 bug**（XML/OSC 的 lat/lon 是十进制度，原实现按 1e-7 整数解析导致静默变 0）
-- [x] `neo-editor/commands_geom.rs`：SplitWay / MergeWay（四种方向自动归一）/ ReverseWay（`oneway=yes ↔ -1` 方向 tag 修正），6 个单测
-- [x] `neo-editor` 修复 **redo 的本地 ID 稳定性**（AddNode/AddWay 重做复用首次分配的 ID，否则 undo→redo 会换 ID）
-- [x] `neo-tools`：选择/绘制/删除工具状态机（吸附已有节点、逐点画 way、删除引用检查、拖动单历史），5 个单测
-- [x] `neo-ui`：**标签编辑面板**（增删改 tag → `apply_tags` 意图）、工具栏（工具切换/撤销/重做/打开 PBF+XML/保存 XML/导出 OSC/示例/完成线）、属性面板扩展（way 的分割/反转按钮）
-- [x] `apps/neo-desktop`：编辑闭环 —— Editor 集成、S/A/X 快捷键、Ctrl+Z/Y/S、Enter、Delete、**拖拽移动节点（预览不入历史，释放提交单条 MoveNode）**、标签编辑、保存 XML/导出 OSC、**journal 启动恢复 + 手动恢复按钮**
-- [x] G3 验收集成测试 `crates/neo-editor/tests/g3_acceptance.rs`：随机 1000 次编辑 + 随机 undo/redo 与"从头重放"状态一致；事务失败零副作用；journal 尾部半事务被丢弃
-- [x] 桌面冒烟：`neo-desktop.exe` 启动 10s 存活（加载 Monaco、创建 journal、wgpu 首帧）
-- [x] G2 验收补充：`crates/neo-io/tests/osc_roundtrip.rs`（写→读→再写，动作分组语义等价，含负 ID/删除对象）
-- [x] `neo-tools` 补 `merge_ways`（端点相邻自动归一 + 失败信息）
-### 2026-11-15 · 阶段 2 收尾（本轮）
-- [x] **PBF 写 encoder**（`neo-io/pbf_write.rs`）：protobuf wire 编码 + zlib、节点/Way/Relation、string table、sint64 delta refs；关键坑：`osmformat.Node.id` 是 **sint64(zigzag)**（Way/Relation.id 是 int64），写错会让读回 ID 变负、way 全部悬空
-- [x] **G2 验收**：`crates/neo-io/tests/pbf_roundtrip.rs`（写→osmpbf 读回：计数/坐标/way 顺序/relation 成员顺序与角色/tags/meta 全等）+ 压缩/非压缩/空数据集
-- [x] **引用完整性检查**（`neo-store/integrity.rs`）：way→node、relation→member 悬空检测 + 报告；2 个单测
-- [x] **导入取消语义**（`ImportOptions.cancel`，每 4096 元素检查一次，取消返回 `NeoError::Cancelled` 且无半成品）：`tests/import_cancel.rs` 2 个测试
-- [x] 桌面端「导出 PBF」、原型 `pbf-roundtrip` 子命令（写→重读→计数/完整性校验）
-- [ ] 待下一轮：10M 对拍（2.7）、并行 PBF 解码（2.8）、`.jos/.joz`（2.9）；关系编辑/多选/合并 UI
+### 2026-11-15 · Phases 2/3, first cut (in progress)
+- [x] `neo-io/xml.rs`: OSM XML 0.6 streaming read (node/way/relation/tag/nd/member, negative ids, visible/action, entity decoding) + two write modes (Server/JOSM-conformant), 6 unit tests (incl. round-trip semantic equivalence)
+- [x] `neo-editor`: single-writer `Editor`/`EditContext` transactions, `Command` contract, `History` (command batches + drag coalescing), `Selection`, `Journal` (JSONL frames + `committed_prefix` + `recover` replay)
+- [x] `neo-editor/commands.rs`: AddNode / AddWay / MoveNode / SetTags / SetWayNodes / DeleteObject (referential checks), apply+undo per command; tests for `undo∘redo = id`, zero side effects on transaction failure, drag coalescing, journal replay
+- [x] `neo-store`: `set_change_state_visible` (deleted objects stay in the store for upload diff/undo)
+- [ ] Next round: osmChange read, PBF write encoder, neo-tools controllers, neo-ui tag panel, desktop editing wiring (draw point/line/drag/undo/save), G2/G3 acceptance scripts
 
 
-### 2026-11-15 · 阶段 2 并行导入 + 10M 对拍（本轮）
-- [x] **并行 PBF 解码**（`neo-io/pbf_parallel.rs`）：BlobReader 顺序取 blob → rayon 并行 zlib+protobuf 解码为 Raw DTO → 单线程按 Node→Way→Relation 装配；支持取消与引用策略
-- [x] 真机基准（release，i5-12400F / RTX 3070 / Windows 11）：
-  - Bremen（1,668,778 N / 329,676 W / 5,053 R，20.3 MiB）：顺序 1.163s → 并行 **0.899s（1.29×）**
-  - Monaco：顺序 0.028s → 并行 0.026s（1.11×）
-  - 与顺序导入逐对象一致（计数/ID 集合/way 引用顺序/relation）；**目标 3× 未达成**，瓶颈是单线程装配（string interning + ID 索引插入），记录于 docs/14
-- [x] **10M 合成数据 PBF 写→读对拍**：10,001,406 节点 / 3,129,589 ways / 78,210 relations → 86.65 MiB PBF（2,904 blobs）→ 重读计数/节点引用/成员/tag 全部一致，`check_integrity` 0 issues，内存 1,532 MiB
-- [x] 原型新增 `compare-import`（顺序 vs 并行）与 `pbf-roundtrip --synth <n>` 子命令
-- [ ] 待下一轮：`.jos/.joz` 会话文件（2.9）、关系编辑/多选/框选、合并 UI 接线；并行装配（分区 DataSet）作为后续优化
+### 2026-11-15 · Phases 2/3, second cut (this round)
+- [x] `neo-io/osc_read.rs`: osmChange 0.6 **read and apply** (create/modify/delete, negative ids, `visible`, missing-object counts), 3 unit tests
+- [x] Fixed the **coordinate parsing bug** in `neo-io/xml.rs` (XML/OSC lat/lon are decimal degrees; the original implementation parsed them as 1e-7 integers, which silently became 0)
+- [x] `neo-editor/commands_geom.rs`: SplitWay / MergeWay (automatic normalization of four orientations) / ReverseWay (`oneway=yes ↔ -1` direction tag fixup), 6 unit tests
+- [x] `neo-editor` fixed **redo local-ID stability** (AddNode/AddWay redo reuses the ID assigned the first time; otherwise undo→redo changes the ID)
+- [x] `neo-tools`: select/draw/delete tool state machine (snap to existing nodes, draw a way point by point, delete referential checks, drag as a single history entry), 5 unit tests
+- [x] `neo-ui`: **tag editing panel** (add/remove/change tag → `apply_tags` intent), toolbar (tool switch/undo/redo/open PBF+XML/save XML/export OSC/sample data/finish line), property panel extensions (way split/reverse buttons)
+- [x] `apps/neo-desktop`: editing loop — Editor integration, S/A/X shortcuts, Ctrl+Z/Y/S, Enter, Delete, **drag-move nodes (preview not in history; release commits a single MoveNode)**, tag editing, save XML/export OSC, **journal recovery on startup + manual recovery button**
+- [x] G3 acceptance integration test `crates/neo-editor/tests/g3_acceptance.rs`: 1000 random edits + random undo/redo stay consistent with a "replay from scratch" state; zero side effects on transaction failure; trailing half transaction in the journal is dropped
+- [x] Desktop smoke: `neo-desktop.exe` survives 10s after launch (loads Monaco, creates journal, wgpu first frame)
+- [x] G2 acceptance addition: `crates/neo-io/tests/osc_roundtrip.rs` (write→read→write, action grouping semantically equivalent, incl. negative IDs/deleted objects)
+- [x] `neo-tools` gained `merge_ways` (automatic endpoint-adjacency normalization + failure message)
+### 2026-11-15 · Phase 2 wrap-up (this round)
+- [x] **PBF write encoder** (`neo-io/pbf_write.rs`): protobuf wire encoding + zlib, nodes/ways/relations, string table, sint64 delta refs; key pitfall: `osmformat.Node.id` is **sint64 (zigzag)** (Way/Relation.id is int64); a mistake makes read-back IDs negative and leaves every way dangling
+- [x] **G2 acceptance**: `crates/neo-io/tests/pbf_roundtrip.rs` (write→read back with osmpbf: counts/coordinates/way order/relation member order and roles/tags/meta all equal) + compressed/uncompressed/empty datasets
+- [x] **Referential integrity checks** (`neo-store/integrity.rs`): way→node, relation→member dangling detection + report; 2 unit tests
+- [x] **Import cancellation semantics** (`ImportOptions.cancel`, checked every 4096 elements; cancellation returns `NeoError::Cancelled` with no half-built state): 2 tests in `tests/import_cancel.rs`
+- [x] Desktop "Export PBF", prototype `pbf-roundtrip` subcommand (write→re-read→counts/integrity check)
+- [ ] Next round: 10M comparison (2.7), parallel PBF decode (2.8), `.jos/.joz` (2.9); relation editing/multi-select/merge UI
 
 
-### 2026-11-15 · 会话文件 + 多选/关系编辑（阶段 2/3 收口）
-- [x] **`.jos` / `.joz` 会话**（`neo-persist/session.rs`）：JOSM 会话 XML（viewport/layer 引用/active-layer/selection），`.joz` 为 ZIP（session.jos + 嵌入图层数据，读取时解压并改写路径）；**容忍未知插件图层段/属性**；3 个单测（往返/未知段/zip 嵌入解压）
-- [x] 桌面端「保存会话 / 打开会话」（`.jos` 与 `.joz` 自动按扩展名选择；恢复相机视口与选择集）
-- [x] **多选**：Shift+点击追加选择；批量删除（逐个命令，失败不中断并报告成功数）
-- [x] **合并 UI**：选中两条端点相邻 way 后出现「合并选中的两条 way」按钮（`MergeWay`）
-- [x] **关系编辑基础**：属性面板显示 relation 成员数/版本/tags 可编辑，删除关系走 `DeleteObject`（引用检查）
-- [x] 测试：`shift_click_extends_selection`、session 3 项；全仓 111 测试通过
-- [ ] 后续（阶段 4+，非本目标）：GPX、校验器、MapCSS、预设、上传/冲突、SQLite autosave、框选、way 节点批量拖拽
+### 2026-11-15 · Phase 2 parallel import + 10M comparison (this round)
+- [x] **Parallel PBF decode** (`neo-io/pbf_parallel.rs`): BlobReader reads blobs sequentially → rayon decodes zlib+protobuf in parallel into Raw DTOs → a single thread assembles Node→Way→Relation; supports cancellation and reference policy
+- [x] Real-hardware benchmark (release, i5-12400F / RTX 3070 / Windows 11):
+  - Bremen (1,668,778 N / 329,676 W / 5,053 R, 20.3 MiB): sequential 1.163s → parallel **0.899s (1.29×)**
+  - Monaco: sequential 0.028s → parallel 0.026s (1.11×)
+  - Object-by-object identical to sequential import (counts/ID sets/way reference order/relations); **3× target not met**, the bottleneck is single-thread assembly (string interning + ID index insertion), recorded in docs/14
+- [x] **10M synthetic PBF write→read comparison**: 10,001,406 nodes / 3,129,589 ways / 78,210 relations → 86.65 MiB PBF (2,904 blobs) → re-read counts/node references/members/tags all consistent, `check_integrity` 0 issues, memory 1,532 MiB
+- [x] Prototype gained `compare-import` (sequential vs parallel) and `pbf-roundtrip --synth <n>` subcommands
+- [ ] Next round: `.jos/.joz` session files (2.9), relation editing/multi-select/box select, merge UI wiring; parallel assembly (partitioned DataSet) as a follow-up optimization
 
 
-### 2026-11-15 · UI 模拟手测（截图验证 + 4 个真实缺陷修复）
-用 PowerShell + Win32 模拟输入（`scripts/ui_check.ps1`）对 release 版桌面程序做端到端 UI 检查，截图存 `out/ui-check/`。
-**发现并修复的缺陷**：
-- [x] **中文全部显示为方块（tofu）**：egui 默认字体不含 CJK → 启动时加载系统字体（`simhei.ttf` 等），中英文混排正常
-- [x] **操作反馈不可见**：`status` 消息从未进入工具栏/左面板 → `status_line()` 追加最近动作（"已撤销/已重做/已放置起点…"）
-- [x] **UI 滞后一步**：动作在面板绘制后才执行且未请求重绘 → 撤销/重做后界面要等下个输入才刷新；已 `request_repaint()`
-- [x] **初始视图被稀疏越界 way 拉到 z11**（Monaco 只有 0.5° 内的道路密集区 + 少量跨境线）→ 改 2%~98% 分位点拟合，初始 z15.1
-**验证通过的交互**（截图证据）：启动加载 Monaco（41844/6281/222）、绘制工具 A+点击建 way+Enter 结束、Ctrl+Z×3 / Ctrl+Y×3 撤销重做计数与状态正确、S 选择节点后右侧属性+标签编辑面板、删除被 way 引用的节点会级联摘点（2 点 way 需二次确认后整条删除）、鼠标滚轮缩放（15.49→15.82→15.49）、工具栏「示例数据」按钮生效
-**未覆盖（需人工/GUI 自动化补）**：原生文件对话框（保存/打开 XML/OSC/PBF/会话）、Shift 多选与合并按钮、checkbox 点击（坐标未对准）
+### 2026-11-15 · Session files + multi-select/relation editing (Phase 2/3 close-out)
+- [x] **`.jos` / `.joz` sessions** (`neo-persist/session.rs`): JOSM session XML (viewport/layer refs/active-layer/selection); `.joz` is a ZIP (session.jos + embedded layer data; unzip on read and rewrite the paths); **tolerates unknown plugin layer sections/attributes**; 3 unit tests (round-trip/unknown section/zip embedded unzip)
+- [x] Desktop "Save session / Open session" (`.jos` vs `.joz` chosen by extension; restores the camera viewport and selection)
+- [x] **Multi-select**: Shift+click extends the selection; batch delete (one command each; failures do not abort and the success count is reported)
+- [x] **Merge UI**: with two endpoint-adjacent ways selected, a "Merge the two selected ways" button appears (`MergeWay`)
+- [x] **Basic relation editing**: property panel shows relation member count/version/tags editable; deleting a relation goes through `DeleteObject` (referential checks)
+- [x] Tests: `shift_click_extends_selection`, 3 session items; 111 tests pass repo-wide
+- [ ] Follow-up (Phase 4+, not this goal): GPX, validator, MapCSS, presets, upload/conflicts, SQLite autosave, box select, way node batch drag
 
 
-### 2026-11-15 · 渲染卡顿修复（50× 减少重建/上传）
-**用户反馈**：拖动/缩放时"渲染太慢"。用 `scripts/ui_check.ps1` + `NEO_PERF_LOG` 打点实测（`out/ui-check/perf-*.log`）：
+### 2026-11-15 · Mock UI manual testing (screenshot verification + 4 real bug fixes)
+End-to-end UI checks on the release desktop build using PowerShell + Win32 simulated input (`scripts/ui_check.ps1`); screenshots saved under `out/ui-check/`.
+**Bugs found and fixed**:
+- [x] **All Chinese rendered as tofu boxes**: egui's default font lacks CJK → load system fonts (`simhei.ttf` etc.) at startup; mixed Chinese/English now renders correctly
+- [x] **Operation feedback invisible**: `status` messages never reached the toolbar/left panel → `status_line()` appends the latest action ("undone/redone/start point placed…")
+- [x] **UI lagged one step behind**: actions executed after the panels were drawn and did not request a repaint → undo/redo only refreshed on the next input; added `request_repaint()`
+- [x] **Initial view pulled to z11 by sparse out-of-bounds ways** (Monaco only has a dense road area within 0.5° plus a few cross-border lines) → switched to a 2%–98% percentile fit, initial z15.1
+**Interactions verified** (screenshot evidence): startup loads Monaco (41844/6281/222), draw tool A + click to create a way + Enter to finish, Ctrl+Z×3 / Ctrl+Y×3 undo/redo counts and status correct, S selects a node then the right-side property + tag panel, deleting a node referenced by a way cascades node removal (2-node ways require a second confirm and then delete the whole way), mouse-wheel zoom (15.49→15.82→15.49), toolbar "Sample data" button works
+**Not covered (needs manual work/GUI automation)**: native file dialogs (save/open XML/OSC/PBF/session), Shift multi-select and the merge button, checkbox clicks (coordinates not aligned)
 
-| 场景（synth:200000，拖拽节点 ~1s） | 修复前 | 修复后 |
+
+### 2026-11-15 · Rendering stutter fix (50× fewer rebuilds/uploads)
+**User report**: "rendering too slow" while dragging/zooming. Measured with `scripts/ui_check.ps1` + `NEO_PERF_LOG` instrumentation (`out/ui-check/perf-*.log`):
+
+| Scenario (synth:200000, dragging a node ~1s) | Before | After |
 |---|---:|---:|
-| 场景重建次数（scene build） | 78 次（每帧一次，14–15 ms/次） | **2 次**（启动 + 释放提交，各 ~15 ms） |
-| GPU 全量上传次数（1.86 MB/次） | 78 次 | **2 次** |
-| 慢帧（>8 ms） | 全部帧 | **2 帧** |
+| Scene rebuilds (scene build) | 78 (once per frame, 14–15 ms each) | **2** (startup + release commit, ~15 ms each) |
+| Full GPU uploads (1.86 MB each) | 78 | **2** |
+| Slow frames (>8 ms) | all frames | **2 frames** |
 
-**根因**：拖动节点时 `preview_move_node()` 每个 mousemove 都写入 DataSet → `version` 递增 → `ensure_scene`
-整场重建 + `GpuScene` 全量重传（Monaco 3.9 MB / synth 200k 1.9 MB），即每帧 10–20 ms。
-**修复**：
-- 拖动预览与 DataSet 解耦：仅保存 `DragState.current`，用 egui 叠层画"邻居连线 + 橙色目标点"（`Editor::node_neighbors`）；
-- 释放鼠标时只执行一次 `MoveNode`（一次重建、一条历史）；
-- `MoveNode` 现在会把节点标记 `Modified`（修复"脏对象=0"、上传 diff 漏对象）；
-- 顺带修复：双击启动时 CWD 不是仓库根 → 找不到 Monaco 而回退 synth:200000；改成 exe 相对路径查找；
-- 新增 `NEO_SYNTH_N`（强制合成数据）与 `NEO_PERF_LOG`（应用内写性能日志，避免 shell 重定向卡死）；
-- `scripts/ui_check.ps1` 增加 drag / truepan / zoomloop 步骤与截图。
+**Root cause**: while dragging a node, `preview_move_node()` wrote to the DataSet on every mousemove → `version` was bumped → `ensure_scene`
+rebuilt the whole scene + `GpuScene` re-uploaded everything (Monaco 3.9 MB / synth 200k 1.9 MB), i.e. 10–20 ms per frame.
+**Fix**:
+- Decouple drag preview from the DataSet: keep only `DragState.current` and draw "neighbor links + orange target point" with an egui overlay (`Editor::node_neighbors`);
+- On mouse release execute `MoveNode` exactly once (one rebuild, one history entry);
+- `MoveNode` now marks the node `Modified` (fixes "dirty objects = 0" and the upload diff missing objects);
+- Also fixed: on double-click launch the CWD was not the repo root → Monaco was not found and it fell back to synth:200000; changed to an exe-relative path lookup;
+- Added `NEO_SYNTH_N` (force synthetic data) and `NEO_PERF_LOG` (in-app performance log, avoiding shell redirection hangs);
+- `scripts/ui_check.ps1` gained drag / truepan / zoomloop steps and screenshots.
 
-实测修复后 Monaco：整段"启动+拖拽+平移"仅 5 次重建/5 次上传、1 个慢帧（启动 8.6 ms）。
-
-
-### 2026-11-15 · 鼠标操作改为「左键选择/拖动元素，右键拖动背景」
-- 左键点击 = 选择；左键拖动节点 = 移动（松开提交 1 条历史）；左键拖空地 = 无操作（预留给后续框选）
-- 右键拖动 = 平移地图；滚轮 = 以鼠标位置缩放不变
-- 左侧快捷键面板与 README 同步更新
-- 自动化验证（scripts/ui_check.ps1）：drag（左键拖节点，撤销 1/脏对象 1）→ panright（右键拖动，视图平移且无编辑）→ emptyleft（左键拖空地，截图与平移后逐像素一致 = 无副作用）
+Measured after the fix on Monaco: the whole "startup + drag + pan" sequence has only 5 rebuilds/5 uploads and 1 slow frame (8.6 ms at startup).
 
 
-### 2026-11-15 · 节点渲染 LOD（去掉开关，按 zoom 分档 + 形状区分）
-- 移除工具栏「显示节点」复选框与 `SceneConfig.node_zoom_threshold`，节点显示改由 zoom 决定
-- `neo-scene`：`NODE_MIN_ZOOM=13`、`NODE_ALL_ZOOM=16`、`SHARED_NODE_MIN_WAYS=2`；
-  `SceneBuilder::build` 增加 `&Referrers` 参数（共享节点判定）
-- 形状：普通节点 = 小圆点（六边形近似）；共享节点在 z13–15 = 小圆点，z16+ = 小方框
-- 验证（Monaco，44 个字段全等测试 + 实测统计）：
-  - z12 `nodes=0`；z13/14/15 只画共享节点（实测均 9135 个）；z16 画全部可见节点（29107 个）
-  - 单测 `node_lod_follows_zoom` 校验三档计数与 Point 批次顶点数 = 共享×4 + 普通×7
-- 截图：`out/ui-check/21-z13-shared-nodes.png`（工具栏已无复选框）、`22-z16-all-nodes.png`
-- 新增 `NEO_START_ZOOM` 环境变量（截图/测试时指定初始 zoom）
+### 2026-11-15 · Mouse controls changed to "left button selects/drags elements, right button drags the background"
+- Left click = select; left-drag node = move (release commits 1 history entry); left-drag empty space = no-op (reserved for future box select)
+- Right-drag = pan the map; wheel = zoom at the mouse position without shifting
+- Left shortcut panel and README updated in sync
+- Automated verification (scripts/ui_check.ps1): drag (left-drag node, undo 1/dirty objects 1) → panright (right-drag, view pans with no edits) → emptyleft (left-drag empty space, screenshot pixel-identical to after the pan = no side effects)
 
 
-### 2026-11-15 · 修复「放大到 z19 再缩小后地图变空」
-- 根因：场景重建条件不含 zoom 变化 → 缩小后仍渲染高倍率时裁剪过的批次；且 GPU 上传 key 只有 (data version, origin)，
-  缩放重建不会重传
-- 修复：`ensure_scene` 在 `|Δzoom| > 0.5` 时重建；`GpuScene` 上传 key 增加 camera.zoom
-- 回归：`scripts/ui_check.ps1 zoomcycle`（z16→z19+→z13→z16），截图 23/24/25；全程仅 10 次重建/上传，最终画面正常
-- 相关文档：docs/14 §13.1
+### 2026-11-15 · Node rendering LOD (removed the toggle, now zoom tiers + shape distinction)
+- Removed the toolbar "Show nodes" checkbox and `SceneConfig.node_zoom_threshold`; node display is now decided by zoom
+- `neo-scene`: `NODE_MIN_ZOOM=13`, `NODE_ALL_ZOOM=16`, `SHARED_NODE_MIN_WAYS=2`;
+  `SceneBuilder::build` gained a `&Referrers` parameter (shared-node detection)
+- Shapes: regular node = small dot (hexagon approximation); shared nodes at z13–15 = small dot, z16+ = small square
+- Verified (Monaco, 44-field equality tests + measured statistics):
+  - z12 `nodes=0`; z13/14/15 draw only shared nodes (9135 each measured); z16 draws all visible nodes (29107)
+  - Unit test `node_lod_follows_zoom` checks the three tiers' counts and the Point batch vertex count = shared×4 + regular×7
+- Screenshots: `out/ui-check/21-z13-shared-nodes.png` (toolbar no longer has the checkbox), `22-z16-all-nodes.png`
+- Added the `NEO_START_ZOOM` environment variable (initial zoom for screenshots/tests)
 
 
-### 2026-11-15 · 节点 LOD 阈值调整（z16 及以下不显示）
-- `NODE_MIN_ZOOM` 13 → **17**；`NODE_ALL_ZOOM` 16 → **19**
-- 新规则：z≤16 不显示节点；z17–18 只显示共享节点（小圆点）；z19+ 显示全部节点
-  （共享节点 = 小方框，普通节点 = 小圆点）
-- 同步更新单测 `node_lod_follows_zoom` 与 docs/05 节点 LOD 表格
+### 2026-11-15 · Fixed "map goes blank after zooming to z19 and back out"
+- Root cause: the scene rebuild condition did not include zoom changes → after zooming out it still rendered batches clipped at the high zoom; and the GPU upload key was only (data version, origin),
+  so a rebuild caused by zoom did not re-upload
+- Fix: `ensure_scene` rebuilds when `|Δzoom| > 0.5`; `GpuScene` upload key gained camera.zoom
+- Regression: `scripts/ui_check.ps1 zoomcycle` (z16→z19+→z13→z16), screenshots 23/24/25; only 10 rebuilds/uploads throughout, final image correct
+- Related docs: docs/14 §13.1
 
 
-### 2026-11-15 · 选中红色高亮 + 选中后直接拖动
-- 选中元素绘制红色高亮（节点 = 红圈；way = 红色折线边框），完全不重建场景（egui 叠层）
-- **选中后无需长按**：左键在任意位置（含空白处）拖拽即移动选中的节点/way（way = 整体平移其全部节点）；
-  拖动中橙色预览，松开时 `execute_batch` 一次提交 = **1 条历史 + 1 次重建**
-- 未选中时：左键拖节点 = 移动该节点；左键拖空白 = 无操作（留给框选）；右键拖动 = 平移地图
-- `neo-tools::move_nodes_batch` + 单测（批量移动后 undo 一次全部复位）
-- UI 自动化验证：`28-select-node`（红圈）、`29b-drag-from-empty`（选中节点后从海面拖动仍移动选中节点）、
-  `35-select-way-hook`（way 红色边框 + 属性面板 1302 节点）、`36-drag-way-hook`（拖动整体平移 1302 节点，撤销 1）
-- 新增测试钩子 `NEO_TEST_SELECT=way`（选中视口内节点最多的 way，便于自动化验证）
+### 2026-11-15 · Node LOD threshold adjustment (not shown at z16 and below)
+- `NODE_MIN_ZOOM` 13 → **17**; `NODE_ALL_ZOOM` 16 → **19**
+- New rule: nodes hidden at z≤16; z17–18 only shared nodes (small dots); z19+ all nodes
+  (shared nodes = small squares, regular nodes = small dots)
+- Updated the `node_lod_follows_zoom` unit test and the docs/05 node LOD table in sync
 
 
-### 2026-11-15 · 不可见节点禁止选中/拖动（拾取与渲染共用 LOD 规则）
-- 抽出 `neo_scene::node_visible_at(zoom, way_ref_count)`（z<17 不可见；17–18 仅共享节点；≥19 全部），
-  `SceneBuilder` 与桌面拾取逻辑共用，避免"看得见/点得到"不一致
-- `pick_at` 过滤不可见节点：节点被隐藏时点击不会选中它（光标下的 way 仍可被选中）
-- 缩放后自动清理已隐藏的节点选择（`prune_hidden_node_selection`；way/relation 选择保留），红色高亮同步消失
-- 单测 `node_visibility_rule_boundaries`（16.99/17/18.5/19 边界）
-- 自动化验证：
-  - z19：`41a-node-selected-z19`（node 21911894 选中，红圈）
-  - 缩放到 z18 后：`41b-node-selection-pruned`（该节点变为不可见 → 选择被清理，右侧显示未选择）
-  - z16：`37-z16-pick`（点击原节点位置不再选中节点）
-- 测试钩子补充 `NEO_TEST_SELECT=node`（选中视口内第一个可拾取节点）
+### 2026-11-15 · Red selection highlight + drag directly after selecting
+- Selected elements draw a red highlight (node = red circle; way = red polyline outline), without rebuilding the scene at all (egui overlay)
+- **No long-press needed after selecting**: left-drag anywhere (including empty space) moves the selected node/way (way = translate all its nodes);
+  orange preview while dragging, and on release `execute_batch` commits once = **1 history entry + 1 rebuild**
+- With nothing selected: left-drag node = move that node; left-drag empty space = no-op (reserved for box select); right-drag = pan the map
+- `neo-tools::move_nodes_batch` + unit tests (one undo resets the whole batch move)
+- UI automation verification: `28-select-node` (red circle), `29b-drag-from-empty` (after selecting a node, dragging from the sea still moves the selected node),
+  `35-select-way-hook` (way red outline + property panel shows 1302 nodes), `36-drag-way-hook` (drag translates all 1302 nodes, undo 1)
+- Added test hook `NEO_TEST_SELECT=way` (selects the way with the most nodes in the viewport, for automation)
 
 
-### 2026-11-15 · 选中要素加"可拖动外边距"（16px）
-- 之前：选中后从任意位置拖拽都会移动（过于宽松，容易误拖）
-- 现在：拖动起点必须落在选中要素的**屏幕外边距 16px** 内（节点=点距离，way=折线线段距离）；
-  远离要素拖动不会移动；未选中节点时直接命中节点仍可拖动该节点
-- `app.rs` 新增 `selection_screen_distance` + `point_segment_distance`，鼠标附近才进入选中集合拖动
-- 帮助文案/README 同步
+### 2026-11-15 · Invisible nodes cannot be selected/dragged (picking shares the render LOD rules)
+- Extracted `neo_scene::node_visible_at(zoom, way_ref_count)` (invisible at z<17; 17–18 shared only; ≥19 all),
+  shared by `SceneBuilder` and desktop picking so "visible" and "clickable" cannot diverge
+- `pick_at` filters invisible nodes: clicking a hidden node does not select it (the way under the cursor is still selectable)
+- After zooming, hidden node selections are pruned automatically (`prune_hidden_node_selection`; way/relation selections kept) and the red highlight disappears in sync
+- Unit test `node_visibility_rule_boundaries` (boundaries 16.99/17/18.5/19)
+- Automation verification:
+  - z19: `41a-node-selected-z19` (node 21911894 selected, red circle)
+  - After zooming to z18: `41b-node-selection-pruned` (the node becomes invisible → selection pruned, right side shows nothing selected)
+  - z16: `37-z16-pick` (clicking the original node position no longer selects the node)
+- Test hook addition `NEO_TEST_SELECT=node` (selects the first pickable node in the viewport)
 
 
-### 2026-11-15 · 选中拖动外边距（16px）验证
-- 实测（`scripts/ui_check.ps1` + `NEO_TEST_SELECT=node` 选中 z19 节点）：
-  - 在节点附近（≤16px）按下拖动：`撤销 1`、`移动 1 个节点`、节点坐标更新 ✅
-  - 在远处（数百 px 外空白处）按下拖动：`撤销 0`、无任何移动/编辑 ✅
-- 关键修复：拖拽起点必须用 **按下原点**（`pointer.press_origin()`）而不是拖拽阈值触发时的当前指针位置，
-  否则指针已移动 ~18px 会误判超出 16px 外边距（首次实现曾导致"附近也拖不动"）。
+### 2026-11-15 · Selected features get a "draggable outer margin" (16px)
+- Before: after selecting, dragging from anywhere moved the feature (too loose, easy to mis-drag)
+- Now: the drag origin must fall within the selected feature's **16px screen outer margin** (node = point distance, way = polyline segment distance);
+  dragging far from the feature does not move it; with no node selected, directly hitting a node still drags that node
+- `app.rs` gained `selection_screen_distance` + `point_segment_distance`; the selection set only becomes draggable near the mouse
+- Help text/README updated in sync
 
 
-### 2026-11-15 · 外边距同时作为"可选择范围"（与拖动边距统一，但按元素类型分开）
-- `HitTester::pick_with_margins(camera, screen, node_margin, way_margin)`：
-  - 节点 16px / way 16px **独立边距**；节点边距内点击优先选节点（不会误选压着的 way），否则选 way
-  - 可选范围与拖动范围一致（都在 16px 外边距内）
-- 桌面 `pick_at` 改用该接口；不可见节点仍被过滤（与渲染 LOD 一致）
-- 单测 `pick_with_margins_separates_nodes_and_ways`：长 way 中点选 way；节点附近 10px 偏移选节点；远处不命中
-- UI 验证：`45b-margin-click-node`（点击距节点 10px → 选中 node 21911894）
+### 2026-11-15 · Selection drag outer margin (16px) verification
+- Measured (`scripts/ui_check.ps1` + `NEO_TEST_SELECT=node` selecting a z19 node):
+  - Press and drag near the node (≤16px): `undo 1`, `moved 1 node`, node coordinates updated ✅
+  - Press and drag far away (hundreds of px of empty space): `undo 0`, no movement/edit at all ✅
+- Key fix: the drag origin must use the **press origin** (`pointer.press_origin()`), not the current pointer position when the drag threshold fires;
+  otherwise the pointer has already moved ~18px and falsely exceeds the 16px margin (the first implementation made "nearby drags" fail).
 
 
-### 2026-11-15 · 修复"点击要素本身选不中、点旁边几像素反而能选中"
-- 根因：`pick_with_margins` 先做节点优先拾取，返回隐藏节点后应用层再按 LOD 过滤掉，
-  **way 的回退候选已经丢失** → z16 及以下节点全部隐藏时，点击压在隐藏节点边距内的道路直接无选中
-- 修复：新增 `HitTester::pick_with_margins_filtered(..., accept_node)`，在**拾取阶段**过滤隐藏节点并回退 way；
-  桌面 `pick_at` 改用该接口（`node_selectable` 作为过滤条件）
-- 单测 `filtered_pick_falls_back_to_way_when_node_hidden`（不过滤→节点；过滤→way）
-- UI 回归：z16 点击道路像素（之前无选中 `46-bug-z16-click-road`）→ 现在正确选中 way 1424758490（`47-fixed-z16-click-road`）
+### 2026-11-15 · Margin also serves as the "selectable range" (unified with the drag margin, but separate per element type)
+- `HitTester::pick_with_margins(camera, screen, node_margin, way_margin)`:
+  - Node 16px / way 16px **independent margins**; a click within the node margin prefers the node (never mis-selects the way underneath), otherwise select the way
+  - Selectable range matches the drag range (both within the 16px outer margin)
+- Desktop `pick_at` switched to this interface; invisible nodes are still filtered (consistent with render LOD)
+- Unit test `pick_with_margins_separates_nodes_and_ways`: clicking a long way's midpoint selects the way; a 10px offset near a node selects the node; far away nothing is hit
+- UI verification: `45b-margin-click-node` (click 10px from a node → node 21911894 selected)
 
 
-### 2026-11-15 · 去掉 release 版控制台窗口
-- `apps/neo-desktop/src/main.rs` 增加 `#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]`
-- 验证：release exe 的 PE Subsystem = **2 (GUI)** —— 双击不再弹出黑色控制台；debug exe 仍为 3 (console)，方便 `cargo run` 看 tracing 日志
-- 因为没有控制台，补充启动失败兜底：`rfd` 错误对话框 + `out/neo-startup-error.txt`
-- 日志：release 下用 `NEO_PERF_LOG=out/perf.log` 写文件；README 已更新
+### 2026-11-15 · Fixed "clicking a feature does not select it, but a few pixels to the side does"
+- Root cause: `pick_with_margins` did node-priority picking first, returned a hidden node, and the app layer then filtered it by LOD,
+  **losing the way fallback candidate** → when all nodes are hidden at z16 and below, clicking a road within a hidden node's margin selected nothing at all
+- Fix: added `HitTester::pick_with_margins_filtered(..., accept_node)` that filters hidden nodes **during picking** and falls back to the way;
+  desktop `pick_at` switched to it (`node_selectable` as the filter)
+- Unit test `filtered_pick_falls_back_to_way_when_node_hidden` (no filter → node; filtered → way)
+- UI regression: clicking a road pixel at z16 (previously no selection `46-bug-z16-click-road`) → now correctly selects way 1424758490 (`47-fixed-z16-click-road`)
 
 
-### 2026-11-15 · 拖动前自动选中（修复"拖了但没选中" / "way 不先选中就不能拖"）
-- 按下拖动时若命中的要素**未选中**，先 `select_only` 把它设为选中（红框立即出现），再开始拖动
-- 拖动 range = 当前选中节点 + 选中 way 的全部节点（新增 `collect_selection_nodes`）
-- 松开后保留选中状态并 `request_repaint()`，红色高亮显示在移动后的位置
-- 实测：
-  - z19 无预选、直接拖节点 → `撤销 1`、`移动 1 个节点`、node 选中红圈（48a）
-  - z16 无预选、直接拖 way → `撤销 1`、`移动 15 个节点`、way 选中红框（48b）
-- UI 帮助/README/docs/05 更新
+### 2026-11-15 · Removed the release console window
+- `apps/neo-desktop/src/main.rs` gained `#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]`
+- Verified: the release exe's PE Subsystem = **2 (GUI)** — double-click no longer shows a black console; the debug exe stays at 3 (console) so `cargo run` shows tracing logs
+- Since there is no console, added startup-failure fallbacks: an `rfd` error dialog + `out/neo-startup-error.txt`
+- Logging: in release, write to a file via `NEO_PERF_LOG=out/perf.log`; README updated
 
 
-### 2026-11-15 · 界面重构为 JOSM 风格（现代化）+ Phosphor 图标
-- `crates/neo-ui` 重写：顶部**菜单栏**（文件/编辑/视图/工具/帮助）+ **图标工具栏**、左侧**图层面板**、
-  右侧**属性/标签面板**、底部**状态栏**（中心坐标/缩放/选中数/撤销重做/最近操作）
-- 图标：开源 **Phosphor Icons**（`egui-phosphor` 0.14，MIT）；字体安装与中文 CJK 字体合并到 `install_fonts`
-- 深色主题（`apply_modern_style`）：JOSM 蓝强调色、统一间距/字号/按钮高度，地图画布居中
-- 帮助窗口（帮助 → 快捷键与关于）列出快捷键与图标/数据授权
-- 修复：面板被长标签撑宽导致地图被挤扁（宽度约束 + 标签截断）；状态栏长文本与左侧指标重叠（截断）
-- 截图：`assets/ui-josm-style.png`（README 引用）
+### 2026-11-15 · Auto-select before dragging (fixes "dragged but nothing selected" / "cannot drag a way without selecting it first")
+- When a drag starts and the hit feature is **not selected**, first `select_only` it (red outline appears immediately), then start dragging
+- Drag range = currently selected nodes + all nodes of selected ways (new `collect_selection_nodes`)
+- On release keep the selection and `request_repaint()`; the red highlight shows at the moved position
+- Measured:
+  - z19, nothing preselected, drag a node directly → `undo 1`, `moved 1 node`, node selected with red circle (48a)
+  - z16, nothing preselected, drag a way directly → `undo 1`, `moved 15 nodes`, way selected with red outline (48b)
+- UI help/README/docs/05 updated
 
 
-### 2026-11-15 · exe 图标 + 内置全 Unicode fallback 字体
-- Windows exe 图标：`build.rs` 用 `rc.exe` 嵌入 `assets/neo.ico`；窗口/任务栏图标用 `assets/neo-icon.png`
-  （验证：`Icon.ExtractAssociatedIcon(exe)` 得到 32×32 NEO 图标）
-- 内置 fallback 字体（随 exe 分发，商业可用开源许可，OFL）：
-  - Noto Sans CJK SC（中文/日文/韩文）
-  - GNU Unifont（BMP 全量兜底）+ Unifont Upper（SMP/Plane2/3）
-  - 字体链：CJK → Phosphor 图标 → 默认字体/emoji → Unifont → Unifont Upper → 系统 CJK
-- 帮助窗口新增"字体覆盖示例"，用于人工检查是否还有方框；exe 体积 15.8 → **43.2 MB**（字体约 26 MB）
-- 许可证/来源：`assets/fonts/NOTICE.md` + `OFL-1.1.txt`
+### 2026-11-15 · UI refactor to JOSM style (modernized) + Phosphor icons
+- `crates/neo-ui` rewritten: top **menu bar** (File/Edit/View/Tools/Help) + **icon toolbar**, left **layer panel**,
+  right **property/tag panel**, bottom **status bar** (center coordinates/zoom/selection count/undo-redo/latest action)
+- Icons: open-source **Phosphor Icons** (`egui-phosphor` 0.14, MIT); font installation merged with Chinese CJK font loading in `install_fonts`
+- Dark theme (`apply_modern_style`): JOSM blue accent, unified spacing/font sizes/button heights, map canvas centered
+- Help window (Help → Shortcuts and About) lists shortcuts plus icon/data licenses
+- Fixes: panels widened by long labels squeezed the map flat (width constraints + label truncation); long status-bar text overlapped the left metrics (truncation)
+- Screenshot: `assets/ui-josm-style.png` (referenced by README)
 
 
-### 2026-11-15 · 界面按 JOSM 重构（左侧工具栏 / 右侧面板堆叠 / 底部测距）
-- 左侧改为**竖排工具栏**（选择/绘制/删除/测距 + 完成线/分割/反转/合并）
-- 右侧改为 JOSM 式**面板堆叠**：图层、标签/成员、选择、关系、校验结果、冲突
-- **图层信息移到图层右键菜单**：右键图层 → 信息…（窗口显示计数/版本/脏对象/视口/选中）、缩放至图层、另存 XML
-- 底部状态栏：鼠标经纬度（悬停）、比例尺（按 m/px 自适应 m/km）、缩放、**测距结果**、选中数、撤销/重做
-- 新增**测距工具（M）**：两次点击显示黄色连线 + 距离标签，状态栏同步显示
-- 帮助窗口/README 更新；测试钩子 `NEO_TEST_MODE=measure|draw|delete`、`NEO_SHOW_LAYER_INFO=1`
-- 自动化截图验证：布局 `54-josm-layout.png`、测距 `60-measure.png`、图层信息 `52-layer-info.png`
+### 2026-11-15 · exe icon + built-in full Unicode fallback fonts
+- Windows exe icon: `build.rs` embeds `assets/neo.ico` via `rc.exe`; window/taskbar icon uses `assets/neo-icon.png`
+  (verified: `Icon.ExtractAssociatedIcon(exe)` returns the 32×32 NEO icon)
+- Built-in fallback fonts (shipped with the exe, commercially usable open-source licenses, OFL):
+  - Noto Sans CJK SC (Chinese/Japanese/Korean)
+  - GNU Unifont (full BMP fallback) + Unifont Upper (SMP/Plane2/3)
+  - Font chain: CJK → Phosphor icons → default font/emoji → Unifont → Unifont Upper → system CJK
+- Help window gained a "font coverage sample" for manual tofu checks; exe size 15.8 → **43.2 MB** (fonts ~26 MB)
+- Licenses/sources: `assets/fonts/NOTICE.md` + `OFL-1.1.txt`
 
 
-### 2026-11-15 · 右侧面板按 JOSM 细节调整
-- 图层行精简：**眼睛图标**（显示/隐藏图层，隐藏后地图画布留空）+ **数据图层活动开关**（对勾方框）+ 图层名；右键菜单保留信息/缩放/另存
-- 标签/成员：**表格直接显示全部标签**（key = value），way 节点/relation 成员列表显示在框底部；无选择时整个框留空
-- 选择框：**无选择时不显示任何内容**（去掉占位文字）
-- 关系框：**直接列出全部 relation**（id + name），为空时留空
-- 校验结果/冲突：无数据时只保留标题，**不显示占位文字**；移除右侧"从 journal 恢复"按钮（菜单里已有）
-- 测试：`NEO_LAYER_HIDDEN=1` 验证隐藏图层；截图 `65-layer-hidden.png` / `66-panel-final.png` / `63-right-panel-selected.png`
+### 2026-11-15 · UI refactored after JOSM (left toolbar / right panel stack / bottom measure)
+- Left side is now a **vertical toolbar** (select/draw/delete/measure + finish line/split/reverse/merge)
+- Right side is a JOSM-style **panel stack**: layers, tags/members, selection, relations, validation results, conflicts
+- **Layer info moved to the layer context menu**: right-click a layer → Info… (window shows counts/version/dirty objects/viewport/selection), zoom to layer, save as XML
+- Bottom status bar: mouse lat/lon (hover), scale bar (adaptive m/km by m/px), zoom, **measure result**, selection count, undo/redo
+- Added **measure tool (M)**: two clicks show a yellow line + distance label, mirrored in the status bar
+- Help window/README updated; test hooks `NEO_TEST_MODE=measure|draw|delete`, `NEO_SHOW_LAYER_INFO=1`
+- Automated screenshot verification: layout `54-josm-layout.png`, measure `60-measure.png`, layer info `52-layer-info.png`
 
 
-### 2026-11-15 · NVIDIA Overlay 弹窗说明
-- 启动时出现的「点击 Alt+Z，打开 NVIDIA 信息浮窗」来自 **NVIDIA App/GeForce Experience Overlay**，不是 NEO 弹窗
-- NVIDIA Overlay 为驱动级全局注入，无 per-app 关闭开关（官方论坛确认）；README FAQ 给出关闭步骤：
-  NVIDIA App → 设置 → 功能 → 信息浮窗 → 关闭；或 GFE → 设置 → 常规 → 游戏内覆盖 → 关闭
-- 已实测：杀 `NVIDIA Overlay` 进程后启动不再弹出，但 NVIDIA 会自动重启进程，故不推荐脚本化；正确做法是关闭 Overlay 设置
+### 2026-11-15 · Right panel tuned to JOSM details
+- Layer rows simplified: **eye icon** (show/hide layer; hidden leaves the map canvas blank) + **data-layer active toggle** (check box) + layer name; context menu keeps info/zoom/save-as
+- Tags/members: **the table shows all tags directly** (key = value); the way node / relation member list appears at the bottom of the box; the whole box stays empty when nothing is selected
+- Selection box: **shows nothing when nothing is selected** (removed placeholder text)
+- Relation box: **lists all relations directly** (id + name), empty when there are none
+- Validation results/conflicts: only the title remains when there is no data, **no placeholder text**; removed the right-side "Recover from journal" button (already in the menu)
+- Tests: `NEO_LAYER_HIDDEN=1` verifies a hidden layer; screenshots `65-layer-hidden.png` / `66-panel-final.png` / `63-right-panel-selected.png`
 
 
-### 2026-11-15 · 界面文本抽离到 i18n/
-- 新增仓库根目录 **`i18n/`**：`zh-CN.json`（默认）/ `en-US.json` + `README.md`
-- 新增 crate **`neo-i18n`**：编译期 `include_str!` 嵌入、`t()`/`tf()` 占位符、缺失回退、
-  `NEO_LANG` 环境变量与运行时 `set_language`
-- `neo-ui`（菜单/工具栏/面板/状态栏/帮助/图层信息）与 `neo-desktop`（状态消息/错误/模式名/窗口标题）全部改为 i18n key
-- 菜单新增 **语言 / Language**（中文 / English），切换即时生效
-- 校验：`cargo test -p neo-i18n`（双语 key 对齐 + 回退 + 占位符）、`python scripts/check-i18n.py`
-- 截图：`70-en-ui.png`（English）/ `71-zh-ui.png`（中文）
+### 2026-11-15 · NVIDIA Overlay popup explanation
+- The "press Alt+Z to open the NVIDIA info overlay" prompt at startup comes from the **NVIDIA App/GeForce Experience Overlay**, not from NEO
+- NVIDIA Overlay is a driver-level global injection with no per-app off switch (confirmed on the official forums); the README FAQ gives the steps to turn it off:
+  NVIDIA App → Settings → Features → Info overlay → off; or GFE → Settings → General → In-game overlay → off
+- Measured: killing the `NVIDIA Overlay` process stops the popup on the next start, but NVIDIA restarts it automatically, so scripting is not recommended; the right fix is to turn off the Overlay setting
 
 
-### 2026-11-15 · 图层只读 + 设置窗口
-- 图层「活动开关」取消后：**GPU shader 对数据去色 + 50% 不透明度**，不是灰遮罩；不显示文字提示；禁止选择/拖动/绘制/测距
-  （平移/缩放可用），同时清空选择；图层名置灰
-- 语言与快捷键集中到 **设置窗口**（入口：**帮助 → 设置…**）；顶层「语言 / Language」菜单移除
-- 设置窗口：语言切换（中文/English）+ 快捷键一览（含鼠标操作），并注明快捷键自定义在后续版本
-- 帮助窗口保留「关于 NEO」、字体覆盖示例与许可证信息
-- 测试钩子：`NEO_LAYER_INACTIVE=1`（只读图层）、`NEO_SHOW_SETTINGS=1`（设置窗口）
-- 截图：`74-settings.png`、`75-layer-inactive.png`、`77-inactive-select-test.png`
+### 2026-11-15 · UI text extracted into i18n/
+- Added repo-root **`i18n/`**: `zh-CN.json` (default) / `en-US.json` + `README.md`
+- Added crate **`neo-i18n`**: compile-time `include_str!` embedding, `t()`/`tf()` placeholders, missing-key fallback,
+  `NEO_LANG` environment variable and runtime `set_language`
+- `neo-ui` (menus/toolbar/panels/status bar/help/layer info) and `neo-desktop` (status messages/errors/mode names/window title) all switched to i18n keys
+- Menu gained a **Language** selector (Chinese / English), effective immediately on switch
+- Verification: `cargo test -p neo-i18n` (bilingual key alignment + fallback + placeholders), `python scripts/check-i18n.py`
+- Screenshots: `70-en-ui.png` (English) / `71-zh-ui.png` (Chinese)
 
 
-### 2026-11-15 · 开源工程化：文档站 + CI / Release / Pages
-- 文档按开源项目范式重组：
-  - 根目录：`LICENSE`（Apache-2.0 OR MIT）、`LICENSE-MIT`、`LICENSE-APACHE`、`NOTICE`、
-    `CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md`、`CHANGELOG.md`
-  - `docs/guide/`：安装、快速上手、界面、编辑、文件与会话、设置/i18n、性能、FAQ
-  - `docs/dev/`：架构、workspace/crate、构建测试、贡献、发布、路线图
-  - `docs/SUMMARY.md` + `book.toml`（mdBook）+ `theme/neo.css`，技术文档/ADR 一并上线
-- GitHub Actions：
-  - `ci.yml`：fmt / clippy / test / i18n / deps / release 构建 / mdBook 构建
-  - `release.yml`：tag `v*` → 校验 tag 与 Cargo 版本一致 → 测试 → Windows zip + SHA256 → GitHub Release
-  - `pages.yml`：push master（docs / theme / book.toml 变更）→ mdBook → GitHub Pages（`https://trapmehere.github.io/NEO/`）
-- GitHub 模板：issue（bug/feature）、PR 模板、Dependabot（cargo + actions，分组）
-- 清理 `scripts/`：只保留 `ui_check.ps1` / `bench.ps1` / `check-*.py` 等长期工具
-- README 重写为开源项目首页（徽章、特性、下载、文档入口、贡献、许可）
+### 2026-11-15 · Read-only layers + settings window
+- Layer "active toggle" off: **GPU shader desaturates the data + 50% opacity**, not a gray overlay; no text hint; selecting/dragging/drawing/measuring disabled
+  (pan/zoom still work), the selection is cleared at the same time; the layer name is grayed out
+- Language and shortcuts consolidated into a **settings window** (entry: **Help → Settings…**); the top-level Language menu was removed
+- Settings window: language switch (Chinese/English) + shortcut overview (incl. mouse operations), noting that shortcut customization comes in a later version
+- Help window keeps "About NEO", the font coverage sample, and license info
+- Test hooks: `NEO_LAYER_INACTIVE=1` (read-only layer), `NEO_SHOW_SETTINGS=1` (settings window)
+- Screenshots: `74-settings.png`, `75-layer-inactive.png`, `77-inactive-select-test.png`
 
 
-### 2026-11-15 · 阶段 4（专业编辑）第一部分
-- **neo-validate**：12 条规则（增加 JOSM 风格：孤立节点、重复坐标、可疑标签组合、multipolygon 角色、way 自相交）+ `Report` + 12 个单元测试
-- 右侧「校验结果」面板：运行校验、错误/警告统计、问题列表、点击选中并定位对象（测试钩子 `NEO_RUN_VALIDATION=1`）
-- **neo-style 预设**：改用 **id-tagging-schema**（约 1500 条，中英文名，ISC license）+ 标签面板可搜索下拉
-- **neo-api**：OSM API 0.6 协议客户端（changeset、diff upload、map 下载、409/412、MockTransport）+ 5 个测试
-- **neo-editor 冲突模型**：MergeCase / ConflictResolution / 三方标签合并；6 类冲突测试
-- **journal 恢复报告**：RecoveryReport（frames/applied/skipped），恢复后状态显示明细
-- 截图：`81-validation.png`（校验面板）
-- **自动保存**：每 60s 复制 journal 到 `out/autosave/`，保留 3 代（状态栏提示）
-- 阶段 4 剩余：MapCSS 渲染集成、真实 HTTP 传输 + 上传/下载 UI、冲突解决 UI、SQLite 快照、changeset 端到端测试
+### 2026-11-15 · Open-source engineering: docs site + CI / Release / Pages
+- Docs reorganized following open-source project conventions:
+  - Root: `LICENSE` (Apache-2.0 OR MIT), `LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`,
+    `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `CHANGELOG.md`
+  - `docs/guide/`: install, quick start, UI, editing, files and sessions, settings/i18n, performance, FAQ
+  - `docs/dev/`: architecture, workspace/crates, build and test, contributing, release, roadmap
+  - `docs/SUMMARY.md` + `book.toml` (mdBook) + `theme/neo.css`; technical docs/ADRs published alongside
+- GitHub Actions:
+  - `ci.yml`: fmt / clippy / test / i18n / deps / release build / mdBook build
+  - `release.yml`: tag `v*` → verify the tag matches the Cargo version → test → Windows zip + SHA256 → GitHub Release
+  - `pages.yml`: push to master (docs / theme / book.toml changes) → mdBook → GitHub Pages (`https://trapmehere.github.io/NEO/`)
+- GitHub templates: issues (bug/feature), PR template, Dependabot (cargo + actions, grouped)
+- Cleaned `scripts/`: keep only long-lived tools such as `ui_check.ps1` / `bench.ps1` / `check-*.py`
+- README rewritten as the open-source project homepage (badges, features, downloads, doc entry points, contributing, license)
 
 
-### 2026-11-15 · 阶段 4：设置双栏 + OSM 账户 OAuth
-- 设置窗口改为**左侧分类 / 右侧内容**（语言、OSM 账户、快捷键）
-- 新增 **OSM 账户**：OAuth2 + PKCE 浏览器登录、本地回调监听、token 保存、
-  多账户列表/切换/删除/退出；`accounts.json` 位于 `%APPDATA%/NEO/`
-- `neo-api::oauth`：PKCE、授权 URL、token 交换/刷新、用户信息解析（4 个测试）
-- `ReqwestTransport`（feature `http`）接入真实 HTTP（30s 超时）
-- 测试钩子：`NEO_SHOW_SETTINGS=1`、`NEO_SETTINGS_TAB=account`
-- 截图：`83-settings-account.png`
+### 2026-11-15 · Phase 4 (professional editing), part 1
+- **neo-validate**: 12 rules initially, 24 today (JOSM-style additions such as isolated nodes, duplicate coordinates, suspicious tag combinations, multipolygon roles, way self-intersection) + `Report` + 12 unit tests
+- Right-side "Validation results" panel: run validation, error/warning counts, issue list, click to select and zoom to the object (test hook `NEO_RUN_VALIDATION=1`)
+- **neo-style presets**: switched to **id-tagging-schema** (~1500 entries, Chinese/English names, ISC license) + searchable dropdown in the tag panel
+- **neo-api**: OSM API 0.6 protocol client (changeset, diff upload, map download, 409/412, MockTransport) + 5 tests
+- **neo-editor conflict model**: MergeCase / ConflictResolution / three-way tag merge; 6 conflict-kind tests
+- **journal recovery report**: RecoveryReport (frames/applied/skipped), details shown after recovery
+- Screenshot: `81-validation.png` (validation panel)
+- **Autosave**: every 60s copies the journal to `out/autosave/`, keeping 3 generations (status-bar hint)
+- Remaining Phase 4: MapCSS render integration, real HTTP transport + upload/download UI, conflict-resolution UI, SQLite snapshots, changeset end-to-end tests
 
 
-### 2026-11-15 · 阶段 4：OSM 同步 UI
-- **文件 → 同步（下载/上传）…**：显示账户、当前视口 bbox、changeset 注释
-- 下载：`GET /api/0.6/map` → OSM XML → 替换当前图层
-- 上传：创建 changeset → osmChange 上传 → 关闭 changeset；成功显示确认对象数
-- 409：冲突对象列表 + 「重新下载（放弃本地修改）」策略
-- 后台线程执行网络请求，UI 不阻塞；`NEO_SHOW_SYNC=1` 打开窗口
-- 截图：`85-sync.png`
+### 2026-11-15 · Phase 4: two-column settings + OSM account OAuth
+- Settings window changed to **categories on the left / content on the right** (language, OSM account, shortcuts)
+- Added **OSM account**: OAuth2 + PKCE browser login, local callback listener, token storage,
+  multi-account list/switch/delete/logout; `accounts.json` lives in `%APPDATA%/NEO/`
+- `neo-api::oauth`: PKCE, authorization URL, token exchange/refresh, user info parsing (4 tests)
+- `ReqwestTransport` (feature `http`) wired to real HTTP (30s timeout)
+- Test hooks: `NEO_SHOW_SETTINGS=1`, `NEO_SETTINGS_TAB=account`
+- Screenshot: `83-settings-account.png`
 
 
-### 2026-11-15 · 阶段 4：MapCSS + SQLite 快照 + 上传端到端测试
-- **MapCSS 子集**：解析/编译（选择器、tag 条件、zoom、color/fill/width/opacity）+ 默认
-  `assets/styles/neo.mapcss` 接入 `SceneBuilder`；未命中回退内置调色板
-- **SQLite 快照库** `neo_persist::SnapshotStore`：journal 字节 + 统计（WAL，保留 10 条）；
-  自动保存同时写 JSONL 与 SQLite；journal 丢失时启动从最近快照恢复
-- **上传端到端测试**：changeset 创建 → upload → close；409 冲突 → 重试成功（MockTransport）
-- 截图：`86-mapcss.png`
-- 仍待：冲突 KeepLocal/手合并 UI、MapCSS text/icon、上传前 validator gate
+### 2026-11-15 · Phase 4: OSM sync UI
+- **File → Sync (download/upload)…**: shows the account, the current viewport bbox, and the changeset comment
+- Download: `GET /api/0.6/map` → OSM XML → replaces the current layer
+- Upload: create changeset → upload osmChange → close changeset; on success shows the number of confirmed objects
+- 409: conflict object list + "re-download (discard local changes)" strategy
+- Network requests run on background threads so the UI does not block; `NEO_SHOW_SYNC=1` opens the window
+- Screenshot: `85-sync.png`
 
 
-### 2026-11-15 · 阶段 4 收尾：冲突 KeepLocal + 文档
-- 同步窗口 409 冲突新增 **保留本地并重试（KeepLocal）**：`Editor::set_object_version`
-  对齐服务端版本后重传（覆盖远端）；保留「重新下载（TakeRemote）」
-- 文档更新：同步冲突策略、阶段 4 状态、README
-- 仍待：手合并 UI（按字段/几何）、MapCSS text/icon/过滤器全集、上传前 validator gate、
-  真实网络人工验收（需要测试账号）
+### 2026-11-15 · Phase 4: MapCSS + SQLite snapshots + upload end-to-end test
+- **MapCSS subset**: parse/compile (selectors, tag conditions, zoom, color/fill/width/opacity) + the default
+  `assets/styles/neo.mapcss` wired into `SceneBuilder`; fall back to the built-in palette on a miss
+- **SQLite snapshot store** `neo_persist::SnapshotStore`: journal bytes + stats (WAL, keeps 10 entries);
+  autosave writes both JSONL and SQLite; when the journal is lost, startup restores from the newest snapshot
+- **Upload end-to-end test**: changeset create → upload → close; 409 conflict → retry succeeds (MockTransport)
+- Screenshot: `86-mapcss.png`
+- Still pending: conflict KeepLocal/manual-merge UI, MapCSS text/icon, pre-upload validator gate
 
 
-### 2026-11-15 · 固定 OAuth + 统一导出 + 框选下载
-- OAuth 使用内置客户端；设置窗口不展示任何认证配置细节
-- **统一导出窗口**：文件 → 导出…（也替换工具栏导出按钮），格式：OSM XML / osmChange / PBF / JOSM 会话
-- **下载窗口**：工具栏云下载图标 → 在地图上左键框选 bbox → 从 OSM API 下载该区域并替换图层
-- 测试钩子：`NEO_SHOW_EXPORT=1`、`NEO_SHOW_DOWNLOAD=1`、`NEO_DOWNLOAD_SELECT=1`
-- 截图：`87-download.png`、`88-export.png`
+### 2026-11-15 · Phase 4 wrap-up: conflict KeepLocal + docs
+- The sync window's 409 conflicts gained **Keep local and retry (KeepLocal)**: `Editor::set_object_version`
+  aligns with the server version and re-uploads (overwriting the remote); "re-download (TakeRemote)" remains
+- Docs updated: sync conflict strategy, Phase 4 status, README
+- Still pending: manual-merge UI (per field/geometry), MapCSS text/icon/full filter set, pre-upload validator gate,
+  manual real-network acceptance (needs a test account)
+
+
+### 2026-11-15 · Fixed OAuth + unified export + box-select download
+- OAuth uses a built-in client; the settings window shows no authentication configuration details
+- **Unified export window**: File → Export… (also replaces the toolbar export button); formats: OSM XML / osmChange / PBF / JOSM session
+- **Download window**: toolbar cloud-download icon → left-drag a bbox on the map → download that area from the OSM API and replace the layer
+- Test hooks: `NEO_SHOW_EXPORT=1`, `NEO_SHOW_DOWNLOAD=1`, `NEO_DOWNLOAD_SELECT=1`
+- Screenshots: `87-download.png`, `88-export.png`

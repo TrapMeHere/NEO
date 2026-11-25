@@ -1,6 +1,6 @@
-//! 多线程场景构建：每个相机一份 `SceneBuilder`，结果顺序与串行一致。
+//! Multi-threaded scene building: one `SceneBuilder` per camera, with results in the same order as serial.
 //!
-//! `SceneBuilder` 内部有 `RefCell` scratch，不能跨线程共享；这里按相机克隆样式后并行。
+//! `SceneBuilder` has `RefCell` scratch internally and cannot be shared across threads; here the style is cloned per camera and then run in parallel.
 
 use neo_geo::{Camera, SpatialIndex};
 use neo_store::{DataSet, Referrers};
@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use crate::batches::SceneFrame;
 use crate::builder::SceneBuilder;
 
-/// 串行构建（对照用）。
+/// Serial build (for comparison).
 pub fn build_serial(
     prototype: &SceneBuilder,
     data: &DataSet,
@@ -27,7 +27,7 @@ pub fn build_serial(
         .collect()
 }
 
-/// 并行构建。每个相机一个 rayon 任务。
+/// Parallel build. One rayon task per camera.
 pub fn build_parallel(
     prototype: &SceneBuilder,
     data: &DataSet,
@@ -36,7 +36,7 @@ pub fn build_parallel(
     world_cache: &neo_geo::WorldCache,
     cameras: &[Camera],
 ) -> Vec<SceneFrame> {
-    // 先克隆出 Sync 的样式和配置。`SceneBuilder` 自己含 RefCell，不能跨线程共享。
+    // First clone the Sync style and config. `SceneBuilder` itself contains a `RefCell` and cannot be shared across threads.
     let style = prototype.style.clone();
     let config = prototype.config.clone();
     cameras

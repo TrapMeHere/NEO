@@ -1,42 +1,42 @@
-//! Way 的 SoA 存储。
+//! SoA storage for ways.
 //!
-//! Way 的节点引用不是 `Vec<Vec<...>>`，而是**连续引用池 + 每 way 的 (offset, len)**：
+//! A Way's node references are not `Vec<Vec<...>>` but a **contiguous reference pool + per-way (offset, len)**:
 //!
 //! ```text
 //! way 0 -> offsets[0]=0, count[0]=3  -> node_refs[0..3]
 //! way 1 -> offsets[1]=3, count[1]=5  -> node_refs[3..8]
 //! ```
 //!
-//! 编辑 way 的节点序列时采用"追加新区间 + 更新 offset/count"，旧区间在 compact 时回收；
-//! 这样引用池永远只追加，不会移动已有 way 的引用（否则要更新所有索引）。
+//! Editing a way's node sequence appends a new range and updates offset/count; the old range is reclaimed on compact;
+//! this keeps the reference pool append-only, so existing ways' references never move (otherwise all indexes would need updating).
 
 use neo_core::{ByteSize, Handle, Meta, ObjectId, SlotAllocator};
 
 use crate::node_store::{NodeSlot, NodeStore};
 use crate::tag_store::TagSetId;
 
-/// 标记类型。
+/// Marker type.
 #[derive(Debug)]
 pub struct WaySlot;
 
-/// Way 的只读快照。
+/// Read-only snapshot of a Way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WayRef {
-    /// 句柄。
+    /// Handle.
     pub handle: Handle<WaySlot>,
-    /// 外部 ID。
+    /// External ID.
     pub id: ObjectId,
-    /// tag 集合。
+    /// Tag set.
     pub tags: TagSetId,
-    /// 元数据。
+    /// Metadata.
     pub meta: Meta,
-    /// 节点引用区间起点。
+    /// Start of the node reference range.
     pub first_node: u32,
-    /// 节点个数。
+    /// Number of nodes.
     pub node_count: u32,
 }
 
-/// Way 的 SoA 存储。
+/// SoA storage for ways.
 #[derive(Debug, Default)]
 pub struct WayStore {
     ids: Vec<ObjectId>,
@@ -49,12 +49,12 @@ pub struct WayStore {
 }
 
 impl WayStore {
-    /// 空存储。
+    /// Empty storage.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 预分配。
+    /// Preallocate.
     pub fn with_capacity(capacity: usize) -> Self {
         let mut s = Self::new();
         s.ids.reserve(capacity);
@@ -66,31 +66,31 @@ impl WayStore {
         s
     }
 
-    /// 槽位总数。
+    /// Total number of slots.
     #[inline]
     pub fn slot_len(&self) -> usize {
         self.ids.len()
     }
 
-    /// 存活 way 数。
+    /// Number of live ways.
     #[inline]
     pub fn len(&self) -> usize {
         self.alloc.live_len()
     }
 
-    /// 是否没有 way。
+    /// Whether there are no ways.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// 引用池中的节点引用总数。
+    /// Total number of node references in the reference pool.
     #[inline]
     pub fn ref_count(&self) -> usize {
         self.node_refs.len()
     }
 
-    /// 追加一条 way。
+    /// Append a way.
     pub fn push(
         &mut self,
         id: ObjectId,
@@ -116,19 +116,19 @@ impl WayStore {
         Handle::new(index, generation)
     }
 
-    /// 句柄是否有效。
+    /// Whether a handle is valid.
     #[inline]
     pub fn contains(&self, handle: Handle<WaySlot>) -> bool {
         self.alloc.is_valid(handle)
     }
 
-    /// 槽位当前的 generation。
+    /// Current generation of a slot.
     #[inline]
     pub fn generation(&self, index: u32) -> Option<u32> {
         self.alloc.generation(index)
     }
 
-    /// 读取快照。
+    /// Read a snapshot.
     pub fn get(&self, handle: Handle<WaySlot>) -> Option<WayRef> {
         if !self.contains(handle) {
             return None;
@@ -144,13 +144,13 @@ impl WayStore {
         })
     }
 
-    /// 外部 ID。
+    /// External ID.
     #[inline]
     pub fn id(&self, handle: Handle<WaySlot>) -> Option<ObjectId> {
         self.contains(handle).then(|| self.ids[handle.index() as usize])
     }
 
-    /// 节点引用切片（几何构建热路径）。
+    /// Slice of node references (hot path for geometry building).
     #[inline]
     pub fn nodes(&self, handle: Handle<WaySlot>) -> Option<&[Handle<NodeSlot>]> {
         if !self.contains(handle) {
@@ -162,7 +162,7 @@ impl WayStore {
         Some(&self.node_refs[start..end])
     }
 
-    /// 替换节点序列（追加式）；返回旧引用区间句柄。
+    /// Replace the node sequence (append-only); returns the old reference range handle.
     pub fn set_nodes(&mut self, handle: Handle<WaySlot>, nodes: &[Handle<NodeSlot>]) -> Option<u32> {
         if !self.contains(handle) {
             return None;
@@ -175,7 +175,7 @@ impl WayStore {
         Some(old_start)
     }
 
-    /// 替换外部 ID（上传成功后映射为服务端新 ID）。
+    /// Replace the external ID (mapped to the new server ID after a successful upload).
     pub fn set_id(&mut self, handle: Handle<WaySlot>, id: ObjectId) -> bool {
         if !self.contains(handle) {
             return false;
@@ -184,7 +184,7 @@ impl WayStore {
         true
     }
 
-    /// 替换 tag 集合。
+    /// Replace the tag set.
     pub fn set_tags(&mut self, handle: Handle<WaySlot>, tags: TagSetId) -> bool {
         if !self.contains(handle) {
             return false;
@@ -193,7 +193,7 @@ impl WayStore {
         true
     }
 
-    /// 替换元数据。
+    /// Replace metadata.
     pub fn set_meta(&mut self, handle: Handle<WaySlot>, meta: Meta) -> bool {
         if !self.contains(handle) {
             return false;
@@ -202,14 +202,14 @@ impl WayStore {
         true
     }
 
-    /// 删除（逻辑删除 + 槽位回收）。
+    /// Delete (logical delete + slot recycling).
     pub fn remove(&mut self, handle: Handle<WaySlot>) -> Option<WayRef> {
         let view = self.get(handle)?;
         self.alloc.free(handle.index());
         Some(view)
     }
 
-    /// 迭代存活 way 快照。
+    /// Iterate snapshots of live ways.
     pub fn iter(&self) -> impl Iterator<Item = WayRef> + '_ {
         (0..self.slot_len()).filter_map(|i| {
             let generation = self.alloc.generation(i as u32)?;
@@ -217,7 +217,7 @@ impl WayStore {
         })
     }
 
-    /// 几何便捷方法：把节点引用解析为坐标序列（跳过失效节点）。
+    /// Geometry convenience: resolve node references into a coordinate sequence (skipping stale nodes).
     pub fn positions<'a>(
         &'a self,
         handle: Handle<WaySlot>,
@@ -226,7 +226,7 @@ impl WayStore {
         Some(self.nodes(handle)?.iter().filter_map(move |h| nodes.position(*h)))
     }
 
-    /// 估算堆内存。
+    /// Estimate heap memory.
     pub fn mem_bytes(&self) -> ByteSize {
         use core::mem::size_of;
         ByteSize(

@@ -1,12 +1,12 @@
-//! 应用状态与帧循环。
+//! Application state and frame loop.
 //!
-//! 阶段 3 集成后，`NeoApp` 不再直接持有 `DataSet`，而是持有 [`neo_editor::Editor`]，
-//! 所有修改都经命令/事务/历史/journal。应用层只负责：
+//! After the Phase 3 integration, `NeoApp` no longer holds a `DataSet` directly but holds [`neo_editor::Editor`],
+//! with all modifications going through commands/transactions/history/journal. The application layer only handles:
 //!
-//! * 把 egui 输入翻译成工具事件（选择/绘制/拖拽/删除）；
-//! * 把 `UiActions` 翻译成命令或 IO 操作；
-//! * 相机与场景重建时机；
-//! * 保存/导出（XML、osmChange）。关闭程序时丢掉本次编辑记录，只留用户设置。
+//! * translating egui input into tool events (select/draw/drag/delete);
+//! * translating `UiActions` into commands or IO operations;
+//! * camera and scene-rebuild timing;
+//! * save/export (XML, osmChange). Closing the app discards this session's edit records, keeping only user settings.
 
 mod actions;
 mod canvas;
@@ -14,6 +14,7 @@ mod core;
 mod edit;
 mod imagery;
 mod layers;
+pub(crate) mod locale;
 mod open;
 mod plugins;
 mod session;
@@ -41,7 +42,7 @@ use std::sync::mpsc::Receiver;
 
 use serde::{Deserialize, Serialize};
 
-/// 运行期数据目录（绝不依赖 CWD：快捷方式在 Program Files 下 CWD 不可写）。
+/// Runtime data directory (never rely on CWD: for shortcuts under Program Files the CWD is not writable).
 fn data_dir() -> std::path::PathBuf {
     if let Ok(local) = std::env::var("LOCALAPPDATA")
         && !local.is_empty()
@@ -81,111 +82,111 @@ fn layers_dir() -> std::path::PathBuf {
     data_dir().join("layers")
 }
 
-/// 用编辑器自己的符号表构建场景样式，不把可变数据集交出去。
+/// Build scene styles from the editor's own symbol table without handing out a mutable dataset.
 pub(super) fn scene_builder(editor: &mut neo_editor::Editor) -> neo_scene::SceneBuilder {
     neo_scene::SceneBuilder::with_intern(|name| editor.intern_sym(name))
 }
 
-/// journal 绑定的数据集基线：恢复时必须先加载这份文件，再把命令重放上去。
+/// Dataset baseline bound to the journal: on recovery this file must be loaded first, then commands are replayed on top.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct AppState {
-    /// 当前编辑的源文件（None 表示空数据集/合成数据）
+    /// Source file currently being edited (None means an empty/synthetic dataset)
     data_path: Option<std::path::PathBuf>,
-    /// 展示名
+    /// Display name
     #[serde(default)]
     label: String,
-    /// 自动保存间隔（秒）
+    /// Autosave interval (seconds)
     #[serde(default)]
     autosave_secs: Option<u64>,
-    /// way 简化容差（像素）
+    /// Way simplification tolerance (pixels)
     #[serde(default)]
     simplify_px: Option<f64>,
-    /// 绘制时几何吸附
+    /// Geometry snapping while drawing
     #[serde(default)]
     draw_snap_enabled: Option<bool>,
-    /// 绘制吸附半径（像素）
+    /// Draw-snap radius (pixels)
     #[serde(default)]
     draw_snap_radius_px: Option<f32>,
-    /// OSM API 基地址
+    /// OSM API base URL
     #[serde(default)]
     api_base: Option<String>,
-    /// 已启用的插件 id
+    /// Enabled plugin ids
     #[serde(default)]
     enabled_plugins: Vec<String>,
-    /// 影像 TMS 模板
+    /// Imagery TMS template
     #[serde(default)]
     imagery_url: Option<String>,
-    /// 是否显示影像
+    /// Whether imagery is shown
     #[serde(default)]
     imagery_enabled: Option<bool>,
-    /// 影像不透明度
+    /// Imagery opacity
     #[serde(default)]
     imagery_opacity: Option<f32>,
-    /// 影像预设 id
+    /// Imagery preset id
     #[serde(default)]
     imagery_preset: Option<String>,
-    /// WMS 模式
+    /// WMS mode
     #[serde(default)]
     imagery_wms: Option<bool>,
     /// WMS layers
     #[serde(default)]
     imagery_layers: Option<String>,
-    /// `{apikey}` 令牌
+    /// `{apikey}` token
     #[serde(default)]
     imagery_api_key: Option<String>,
-    /// 署名
+    /// Attribution
     #[serde(default)]
     imagery_attribution: Option<String>,
-    /// WMS 投影
+    /// WMS projection
     #[serde(default)]
     imagery_crs: Option<String>,
-    /// WMS bbox 纬度在前
+    /// WMS bbox latitude first
     #[serde(default)]
     imagery_lat_first: Option<bool>,
-    /// 影像列表只显示当前地区
+    /// Show only imagery for the current region
     #[serde(default)]
     imagery_region_only: Option<bool>,
-    /// OSM 影像图层是否显示
+    /// Whether the OSM imagery layer is shown
     #[serde(default)]
     imagery_osm: Option<bool>,
-    /// 自定义快捷键
+    /// Custom keyboard shortcuts
     #[serde(default)]
     shortcuts: Option<std::collections::BTreeMap<String, String>>,
-    /// 上次视图中心纬度（度）
+    /// Last view-center latitude (degrees)
     #[serde(default)]
     view_lat: Option<f64>,
-    /// 上次视图中心经度（度）
+    /// Last view-center longitude (degrees)
     #[serde(default)]
     view_lon: Option<f64>,
-    /// 上次缩放。下次启动时不超过 10。
+    /// Last zoom. Capped at 10 on next startup.
     #[serde(default)]
     view_zoom: Option<f64>,
-    /// 为 true 时关闭图层/应用不再提示未保存。
+    /// When true, closing a layer/the app no longer prompts about unsaved changes.
     #[serde(default)]
     skip_unsaved_confirm: Option<bool>,
 }
 
-/// 未保存确认框要执行的动作。
+/// Action to take when the unsaved-changes confirmation is answered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UnsavedPromptKind {
-    /// 关闭图层列表中的某一项。
+    /// Close one entry in the layer list.
     CloseLayer(usize),
-    /// 退出应用。
+    /// Exit the application.
     Exit,
 }
 
-/// 未保存确认框状态。
+/// Unsaved-changes confirmation state.
 #[derive(Clone, Debug)]
 struct UnsavedPrompt {
     kind: UnsavedPromptKind,
-    /// 「不再提示」勾选。
+    /// "Do not ask again" checkbox.
     dont_ask: bool,
 }
 
-/// 重新打开时允许恢复的最大缩放。
+/// Maximum zoom allowed when reopening.
 const MAX_RESTORED_ZOOM: f64 = 10.0;
 
-/// 上次界面相机。只看保存的中心和缩放，不看数据集里有没有要素。
+/// Last UI camera. Only the saved center and zoom are used; whether the dataset has any features is irrelevant.
 fn saved_camera(state: &AppState, viewport: [u32; 2]) -> Option<Camera> {
     let (lat, lon, zoom) = (state.view_lat?, state.view_lon?, state.view_zoom?);
     if !lat.is_finite()
@@ -223,65 +224,65 @@ fn save_state(state: &AppState) {
     }
 }
 
-/// journal 自动快照保留代数（阶段 4 自动保存）。
+/// Number of journal auto-snapshot generations kept (Phase 4 autosave).
 const AUTOSAVE_KEEP: usize = 3;
 
-/// 选中要素
-/// 可拖动外边距"（屏幕像素）：鼠标在此范围内才拖动选中要素
+/// Selected features
+/// "Draggable margin" (screen pixels): the selected feature is dragged only when the mouse is within it
 const SELECTION_DRAG_MARGIN_PX: f32 = 16.0;
-/// 节点
-/// 可选择外边
-/// （屏幕像素）
+/// Node
+/// selectable margin
+/// (screen pixels)
 const NODE_PICK_MARGIN_PX: f32 = 16.0;
 /// way
-/// 可选择外边
-/// （屏幕像素）；与节点独立，避免互相侵占
+/// selectable margin
+/// (screen pixels); independent of the node margin so they do not swallow each other
 const WAY_PICK_MARGIN_PX: f32 = 16.0;
-/// 线段中点三角可点击半径（屏幕像素）。
+/// Clickable radius of segment midpoint triangles (screen pixels).
 const MIDPOINT_HIT_RADIUS_PX: f32 = 10.0;
-/// 线段屏幕长度低于此值时不显示中点三角。
+/// Segment midpoint triangles are hidden below this screen-space length.
 const MIDPOINT_MIN_SEGMENT_PX: f32 = 24.0;
 
-/// 后台导入结果
+/// Background import result
 /// data, label, report, source path)
 type OpenResult = Result<(DataSet, String, String, std::path::PathBuf), String>;
 
-/// 同步后台结果
+/// Background sync result
 enum SyncOutcome {
-    /// 下载
+    /// Download
     /// OSM XML
     Downloaded(String),
-    /// 上传成功
+    /// Upload succeeded
     Uploaded(UploadResult),
-    /// 分块上传部分成功（已上传映射 + 错误）
+    /// Chunked upload partially succeeded (uploaded mapping + error)
     UploadedPartial(UploadResult, String),
-    /// 409 冲突
+    /// 409 conflict
     Conflict(ConflictReport),
-    /// 错误
+    /// Error
     Error(String),
 }
 
-/// Notes 后台结果。
+/// Notes background result.
 enum NotesOutcome {
-    /// 列表刷新。
+    /// List refreshed.
     List(Vec<NoteDto>),
-    /// 单条新建/评论/关闭。
+    /// Single create/comment/close.
     One(NoteDto),
 }
 
-/// Notes 请求。
+/// Notes request.
 enum NotesRequest {
-    /// 当前视口。
+    /// Current viewport.
     Refresh,
-    /// 新建。
+    /// Create.
     Create { lat: f64, lon: f64, text: String },
-    /// 评论。
+    /// Comment.
     Comment { id: i64, text: String },
-    /// 关闭。
+    /// Close.
     Close { id: i64, text: String },
 }
 
-/// 复制/粘贴的图元（字符串标签，跨文档可用）
+/// Copied/pasted primitives (string tags, usable across documents)
 #[derive(Clone, Default)]
 struct Clipboard {
     nodes: Vec<ClipboardNode>,
@@ -317,21 +318,21 @@ impl Clipboard {
 }
 
 struct DragState {
-    /// (节点 ID, 原始位置)：单节点拖动或选中集合拖动
+    /// (node ID, original position): single-node drag or selection-set drag
     nodes: Vec<(ObjectId, LatLon)>,
-    /// 拖拽起点世界坐标
+    /// Drag-start world coordinates
     anchor: WorldPoint,
-    /// 当前鼠标世界坐标
+    /// Current mouse world coordinates
     current: WorldPoint,
 }
 
 impl DragState {
-    /// 世界坐标平移量（米）
+    /// World-coordinate translation (meters)
     fn delta(&self) -> WorldPoint {
         WorldPoint::new(self.current.x - self.anchor.x, self.current.y - self.anchor.y)
     }
 
-    /// 把原始位置按拖动量平移后的经纬度
+    /// Lon/lat after translating the original position by the drag delta
     fn shifted(&self, pos: LatLon) -> LatLon {
         let delta = self.delta();
         let point = WorldPoint::from_latlon(pos);
@@ -339,29 +340,29 @@ impl DragState {
     }
 }
 
-/// 影像窗口里的底图。
+/// Basemap inside the imagery window.
 const SOURCE_CUSTOM: u8 = 0;
-/// OSM 标准地图图层。
+/// Standard OSM map layer.
 const SOURCE_OSM: u8 = 1;
 
-/// 一张已解码的影像瓦片。
+/// One decoded imagery tile.
 struct CachedTile {
     texture: egui::TextureHandle,
-    /// 最近一次被当前视口用到的代数。淘汰时旧的先让路。
+    /// Generation last used by the current viewport. On eviction, older ones go first.
     used: u64,
 }
 
-/// 影像瓦片键。
+/// Imagery tile key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct TileKey {
-    /// 0 = 影像窗口里的底图，1 = OSM 影像图层。
+    /// 0 = basemap in the imagery window, 1 = OSM imagery layer.
     source: u8,
     z: u32,
     x: u32,
     y: u32,
 }
 
-/// 停靠的数据图层（非活动，只读渲染）。
+/// Docked data layer (inactive, rendered read-only).
 struct ParkedLayer {
     label: String,
     path: Option<std::path::PathBuf>,
@@ -369,14 +370,14 @@ struct ParkedLayer {
     editor: Editor,
     builder: SceneBuilder,
     visible: bool,
-    /// 该层已框选/视口下载过的范围（多次下载取并集）。
+    /// Extent downloaded for this layer via box select/viewport (multiple downloads are unioned).
     downloaded_bboxes: Vec<neo_ui::BboxView>,
 }
 
-/// WMS 后台结果：(key, bbox, bytes)。
+/// WMS background result: (key, bbox, bytes).
 type WmsResult = (String, [f64; 4], Result<Vec<u8>, String>);
 
-/// NEO 应用状态
+/// NEO application state
 pub struct NeoApp {
     editor: Editor,
     camera: Camera,
@@ -388,16 +389,16 @@ pub struct NeoApp {
     status: String,
     last_scene_micros: u64,
     data_label: String,
-    /// 等待二次确认的级联删除：记录首次按下删除时的目标集合。
-    /// 非空表示"同一批目标已被提示过会连带删除路径"。
+    /// Cascade delete awaiting confirmation: records the target set from the first delete press.
+    /// Non-empty means "the same targets have already been prompted about deleting their ways too".
     pending_delete: Option<Vec<(ObjectKind, ObjectId)>>,
     drag: Option<DragState>,
-    /// 框选矩形（世界坐标起止）
+    /// Box-select rectangle (world-coordinate start/end)
     box_select: Option<(WorldPoint, WorldPoint)>,
     clipboard: Clipboard,
     journal_path: PathBuf,
     data_path: Option<PathBuf>,
-    /// 是否显示帮助窗口
+    /// Whether the help window is shown
     show_help: bool,
     show_search: bool,
     search: neo_ui::SearchUiState,
@@ -411,32 +412,32 @@ pub struct NeoApp {
     parked_layers: Vec<ParkedLayer>,
     show_imagery: bool,
     imagery: neo_ui::ImageryUiState,
-    /// 同步旁路（登录/上下传/笔记）。
+    /// Sync sidecar (login/upload/download/notes).
     sync_sidecar: Option<Arc<Mutex<SyncSession>>>,
-    /// 影像旁路（瓦片下载）。
+    /// Imagery sidecar (tile download).
     imagery_sidecar: Option<Arc<ImagerySession>>,
-    /// 当前账户 id（旁路缓存）。
+    /// Current account id (cached by the sidecar).
     account_current: Option<String>,
-    /// OAuth 是否在等回调。
+    /// Whether OAuth is waiting for a callback.
     oauth_pending: bool,
-    /// 旁路里已保存的 client_id（用于判断是否要回写）。
+    /// client_id already saved in the sidecar (used to decide whether to write it back).
     sidecar_client_id: String,
-    /// 旁路里已保存的 redirect_uri。
+    /// redirect_uri already saved in the sidecar.
     sidecar_redirect_uri: String,
-    /// 影像缩放级别缓存：`(preset+floor(zoom), level)`。
+    /// Imagery zoom-level cache: `(preset+floor(zoom), level)`.
     imagery_zoom_cache: std::cell::RefCell<Option<((String, i32), u32)>>,
-    /// OSM 标准地图图层是否显示。
+    /// Whether the standard OSM map layer is shown.
     osm_visible: bool,
-    /// 活动数据层是否出现在图层列表里。启动时不放入。
+    /// Whether the active data layer appears in the layer list. Not included at startup.
     data_listed: bool,
-    /// OSM 影像是否出现在图层列表里。
+    /// Whether OSM imagery appears in the layer list.
     osm_listed: bool,
-    /// 当前影像是否出现在图层列表里。
+    /// Whether the current imagery appears in the layer list.
     imagery_listed: bool,
     show_changeset: bool,
     changeset: neo_ui::ChangesetUiState,
     imagery_tiles: std::collections::HashMap<TileKey, CachedTile>,
-    /// 视口每用一次瓦片就加一，用来区分缓存里的新旧。
+    /// Incremented each time the viewport uses a tile, to tell newer cache entries from older ones.
     imagery_clock: u64,
     imagery_pending: std::collections::HashSet<TileKey>,
     imagery_tx: std::sync::mpsc::Sender<(TileKey, Result<Vec<u8>, String>)>,
@@ -449,78 +450,78 @@ pub struct NeoApp {
     wms_pending: bool,
     imagery_offsets: neo_style::imagery::OffsetDb,
     icon_textures: std::collections::HashMap<String, Option<egui::TextureHandle>>,
-    /// 插件、影像和预设覆盖窗口
+    /// Plugins, imagery and preset coverage window
     show_ecosystem: bool,
-    /// 是否显示图层信息窗口（图层右键 → 信息）。
+    /// Whether the layer-info window is shown (layer context menu → Info).
     show_layer_info: bool,
-    /// 是否显示设置窗口（帮助 → 设置）。
+    /// Whether the settings window is shown (Help → Settings).
     show_settings: bool,
-    /// 最近一次校验报告
+    /// Most recent validation report
     validation: Option<neo_validate::Report>,
-    /// 上次自动保存时间
+    /// Time of the last autosave
     last_autosave: Instant,
-    /// 设置窗口状态
+    /// Settings window state
     settings: neo_ui::SettingsUiState,
-    /// 打开数据集的后台结果（PBF/XML 导入不阻
-    /// UI）
+    /// Background result of opening a dataset (PBF/XML import does not block
+    /// the UI)
     open_rx: Option<Receiver<OpenResult>>,
-    /// 是否有导入任务在跑
+    /// Whether an import task is running
     open_busy: bool,
-    /// 自动保存线程是否仍在跑（避免 60s 叠多个任务）
+    /// Whether the autosave thread is still running (avoids stacking tasks every 60 s)
     autosave_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// 是否显示同步窗口
+    /// Whether the sync window is shown
     show_sync: bool,
-    /// changeset 注释
+    /// changeset comment
     sync_comment: String,
-    /// 同步状态文本
+    /// Sync status text
     sync_status: String,
-    /// 同步进行中
+    /// Sync in progress
     sync_busy: bool,
-    /// 最
-    /// 409 冲突
+    /// Most recent
+    /// 409 conflict
     sync_conflicts: Vec<neo_ui::SyncConflict>,
-    /// 最
-    /// 409 完整报告（含服务端版本）
+    /// Most recent
+    /// full 409 report (including server version)
     sync_conflict_report: Option<ConflictReport>,
-    /// 是否显示导出窗口
+    /// Whether the export window is shown
     show_export: bool,
-    /// 导出窗口状态
+    /// Export window state
     export_state: neo_ui::ExportUiState,
-    /// 是否显示下载窗口
+    /// Whether the download window is shown
     show_download: bool,
-    /// 下载窗口状态
+    /// Download window state
     download_state: neo_ui::DownloadUiState,
-    /// 框选中的世界坐标（start, current）
+    /// Box-select world coordinates (start, current)
     bbox_drag: Option<(WorldPoint, WorldPoint)>,
-    /// 活动数据层已下载范围（多次下载取并集；活动层时框外置灰）。
+    /// Downloaded extent of the active data layer (union of multiple downloads; outside it is grayed out for the active layer).
     downloaded_bboxes: Vec<neo_ui::BboxView>,
-    /// 进行中的下载对应范围；成功后并入 `downloaded_bboxes`。
+    /// Extent of the in-progress download; merged into `downloaded_bboxes` on success.
     pending_download_bbox: Option<neo_ui::BboxView>,
-    /// 同步后台结果
+    /// Background sync result
     sync_rx: Option<Receiver<SyncOutcome>>,
-    /// 测距起点（世界坐标）
+    /// Measurement start (world coordinates)
     measure_start: Option<WorldPoint>,
-    /// 测距终点（世界坐标）
+    /// Measurement end (world coordinates)
     measure_end: Option<WorldPoint>,
-    /// 鼠标悬停位置的世界坐
-    /// 经纬度
+    /// World coordinates of the mouse hover
+    /// lon/lat
     hover_world: Option<WorldPoint>,
     hover_latlon: Option<LatLon>,
-    /// 绘制工具当前吸附命中（画布 overlay / 落点用）。
+    /// Current snap hit for the drawing tool (used by the canvas overlay / point placement).
     snap_hit: Option<neo_geo::SnapHit>,
-    /// 选择模式下悬停的 way（用于中点三角）。
+    /// Hovered way in selection mode (used for midpoint triangles).
     hover_way: Option<ObjectId>,
-    /// 中点按下已处理插入/拖动，抑制随后的 primary click。
+    /// A midpoint press already handled insert/drag, suppressing the following primary click.
     suppress_primary_click: bool,
-    /// 图层显示开关（图层面板眼睛图标）
+    /// Layer visibility toggles (eye icons in the layer panel)
     layer_visible: bool,
-    /// 图层是否为活动数据图层
+    /// Whether the layer is the active data layer
     layer_active: bool,
-    /// 关闭图层/应用时跳过未保存确认。
+    /// Skip the unsaved-changes confirmation when closing a layer/the app.
     skip_unsaved_confirm: bool,
-    /// 待处理的未保存确认框。
+    /// Pending unsaved-changes confirmation.
     unsaved_prompt: Option<UnsavedPrompt>,
-    /// 用户已确认退出后允许视口关闭。
+    /// Allow the viewport to close once the user has confirmed exit.
     allow_exit: bool,
 }
 
@@ -528,18 +529,18 @@ impl eframe::App for NeoApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let frame_started = Instant::now();
         let mut actions = UiActions::default();
-        // journal 写失败（磁盘
-        // 只读）后已停止记录；必须
-        // UI 明确告警
-        // 否则用户以为崩溃恢复仍然有效
+        // Journal writes failed (disk
+        // read-only) and recording has stopped; the
+        // UI must be warned explicitly,
+        // otherwise users assume crash recovery still works
         if let Some(err) = self.editor.take_journal_failure() {
             self.status = tf("app.error.journal_write", &[("err", &err)]);
         }
 
-        // 关闭窗口：有未保存编辑时先拦下，弹确认框。
+        // Closing the window: intercept first when there are unsaved edits, then show the confirmation.
         if ui.ctx().input(|input| input.viewport().close_requested()) {
             if self.allow_exit || !self.needs_unsaved_prompt(self.any_unsaved_edits()) {
-                // 允许关闭
+                // Allow closing
             } else {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 if self.unsaved_prompt.is_none() {
@@ -602,7 +603,7 @@ impl eframe::App for NeoApp {
             let state = self.ui_state();
             neo_ui::top_toolbar(ui, &mut actions, state);
         });
-        // 左侧竖排工具栏（JOSM toolbox
+        // Left vertical toolbar (JOSM toolbox
         egui::Panel::left("neo-toolbox")
             .exact_size(48.0)
             .resizable(false)
@@ -643,8 +644,8 @@ impl eframe::App for NeoApp {
             self.map_canvas(ui);
         });
         let ctx = ui.ctx().clone();
-        // 直接内联构造 UiState（而不是调用 &self 方法），保证 &mut self.show_layer_info 与
-        // 字段借用互不冲突。
+        // Construct UiState inline (rather than calling an &self method) so that &mut self.show_layer_info and
+        // field borrows do not conflict.
         let center = self.camera.center.to_latlon();
         let layer_state = UiState {
             mode: self.mode,
@@ -734,10 +735,10 @@ impl eframe::App for NeoApp {
         if let Err(err) = self.apply_actions(actions) {
             self.status = tf("app.error.generic", &[("err", &err.to_string())]);
         }
-        // 关键：动作在面板绘制之后才执行，必须请求下一帧重绘，否则
-        // 撤销/重做/编辑的结果要等到下一个输入事件才会显示（UI 滞后一步）
+        // Key point: actions run after panels are drawn, so the next frame must be requested; otherwise
+        // undo/redo/edit results only appear on the next input event (the UI lags one step behind)
         self.maybe_autosave();
-        // 后台任务完成时用户可能没有输入；忙时主动请求下一帧轮询结果
+        // When a background task finishes the user may not produce input; while busy, request the next frame to poll results proactively
         if self.sync_busy || self.oauth_pending || self.open_busy {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(200));
@@ -756,7 +757,7 @@ impl eframe::App for NeoApp {
     }
 
     fn on_exit(&mut self) {
-        // 先松开 journal 文件句柄，再删编辑记录。设置在 persist_state 里另存。
+        // Release the journal file handle first, then delete the edit records. Settings are saved separately in persist_state.
         self.editor
             .set_journal_sink(Box::new(neo_editor::MemoryJournal::default()));
         for _ in 0..50 {
@@ -775,10 +776,10 @@ impl eframe::App for NeoApp {
 }
 
 // ---------------------------------------------------------------------------
-// 启动与恢
+// Startup and recovery
 // ---------------------------------------------------------------------------
 
-/// 每次启动都是空数据。上次的下载、打开的文件和 journal 不恢复。
+/// Every start begins with empty data. The previous downloads, opened files and journal are not restored.
 fn init_editor(journal_path: &Path) -> Result<(Editor, String)> {
     let (base, label) = load_initial_data()?;
     let mut editor = Editor::new(base);
@@ -792,7 +793,7 @@ fn init_editor(journal_path: &Path) -> Result<(Editor, String)> {
     Ok((editor, label))
 }
 
-/// 删掉本次编辑留下的文件。用户设置、账户、插件和影像偏移不在这里。
+/// Delete the files left by this editing session. User settings, accounts, plugins and imagery offsets are not included.
 fn clear_editing_records() {
     let dir = data_dir();
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -812,9 +813,9 @@ fn clear_editing_records() {
     let _ = std::fs::remove_dir_all(layers_dir());
 }
 
-/// 安装字体：Phosphor + 系统 CJK + 外置 OFL 字体（不 `include_bytes!`）
+/// Install fonts: Phosphor + system CJK + external OFL fonts (without `include_bytes!`)
 ///
-/// 查找 `assets/fonts/`（或 `NEO_ASSET_DIR`）。缺文件时仍可用系统字体
+/// Look up `assets/fonts/` (or `NEO_ASSET_DIR`). System fonts remain available when files are missing
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
@@ -831,7 +832,7 @@ fn install_fonts(ctx: &egui::Context) {
         }
     };
 
-    // 系统 CJK 优先，避免发行包缺字体时中文变方框
+    // Prefer system CJK so Chinese does not become tofu boxes when the distribution lacks fonts
     let system_cjk = [
         r"C:\Windows\Fonts\msyh.ttc",
         r"C:\Windows\Fonts\simhei.ttf",
@@ -850,7 +851,7 @@ fn install_fonts(ctx: &egui::Context) {
         break;
     }
 
-    // 外置 OFL 字体（随安装包分发，不进 exe）
+    // External OFL fonts (shipped with the installer, not embedded in the exe)
     let bundled = [
         ("neo-cjk", "fonts/NotoSansCJKsc-Regular.otf", true),
         ("neo-unifont", "fonts/unifont.otf", false),
@@ -879,8 +880,8 @@ fn kind_from_name(name: &str) -> Option<ObjectKind> {
     }
 }
 
-/// 节点 LOD 档位；跨档时必须重建场景，否则渲
-/// 拾取规则会不一致
+/// Node LOD tier; crossing tiers requires a scene rebuild, otherwise
+/// rendering and picking rules would disagree
 fn node_lod_band(zoom: f64) -> u8 {
     if zoom < neo_scene::NODE_MIN_ZOOM {
         0
@@ -919,9 +920,9 @@ fn load_dataset_file(path: &Path) -> Result<(DataSet, String)> {
     }
 }
 
-/// 仅开
-// 性能测试可设 `NEO_SYNTH_N=<节点
-// ` 强制生成合成数据
+/// Only enabled
+// Performance tests can set `NEO_SYNTH_N=<node count>`
+// to force synthetic data generation
 fn load_initial_data() -> Result<(DataSet, String)> {
     if let Ok(value) = std::env::var("NEO_SYNTH_N")
         && let Ok(nodes) = value.parse::<usize>()
@@ -936,7 +937,7 @@ fn load_initial_data() -> Result<(DataSet, String)> {
 #[allow(unused_imports)]
 use neo_editor::History as _History;
 
-/// 解析并匹配快捷键字符串（`Ctrl+Shift+Z`、`Delete`、`F5`）。
+/// Parse and match a shortcut string (`Ctrl+Shift+Z`, `Delete`, `F5`).
 fn shortcut_matches(input: &egui::InputState, binding: &str) -> bool {
     let mut ctrl = false;
     let mut shift = false;
@@ -957,7 +958,7 @@ fn shortcut_matches(input: &egui::InputState, binding: &str) -> bool {
     input.key_pressed(key) && command == ctrl && input.modifiers.shift == shift && input.modifiers.alt == alt
 }
 
-/// 屏幕空间中点到线段的距离（像素）
+/// Point-to-segment distance in screen space (pixels)
 fn point_segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     let ab = [b[0] - a[0], b[1] - a[1]];
     let ap = [p[0] - a[0], p[1] - a[1]];

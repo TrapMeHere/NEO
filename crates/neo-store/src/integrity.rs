@@ -1,52 +1,52 @@
-//! 引用完整性检查（G2 验收 2.5）。
+//! Reference integrity checking (G2 acceptance 2.5).
 //!
-//! OSM 的核心不变量：
-//! * 每条 Way 的每个节点引用都必须存在（除非显式标记 incomplete）；
-//! * 每个 Relation 成员都必须存在。
+//! OSM's core invariants:
+//! * every node reference of every Way must exist (unless explicitly marked incomplete);
+//! * every Relation member must exist.
 //!
-//! 本模块对内存 `DataSet` 做 O(n+e) 扫描并返回结构化问题列表；导入/上传前可调用。
-//! 注意：bbox 提取的 PBF 天然可能有不完整 relation，导入时用 `MissingPolicy::Skip`
-//! 丢弃或保留为 incomplete —— 本检查用于"全量数据是否自洽"。
+//! This module scans the in-memory `DataSet` in O(n+e) and returns a structured problem list; it can be called
+//! before import/upload. Note: bbox-extracted PBFs can naturally contain incomplete relations; on import use
+//! `MissingPolicy::Skip` to drop them or keep them as incomplete —— this check is for "is the full data set self-consistent".
 
 use neo_core::{ObjectId, ObjectKind};
 
 use crate::dataset::DataSet;
 
-/// 一条完整性问题。
+/// One integrity problem.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntegrityIssue {
-    /// 问题类别（`way-node` / `relation-member`）。
+    /// Problem category (`way-node` / `relation-member`).
     pub category: &'static str,
-    /// 引用者对象。
+    /// Referrer object.
     pub referrer: ObjectId,
-    /// 引用者种类。
+    /// Referrer kind.
     pub referrer_kind: ObjectKind,
-    /// 缺失对象种类。
+    /// Kind of the missing object.
     pub missing_kind: ObjectKind,
-    /// 缺失对象 ID（若无法解析句柄时为 `ObjectId::NONE`）。
+    /// ID of the missing object (`ObjectId::NONE` if the handle cannot be resolved).
     pub missing: ObjectId,
 }
 
-/// 完整性报告。
+/// Integrity report.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntegrityReport {
-    /// 扫描的节点数。
+    /// Number of nodes scanned.
     pub nodes: usize,
-    /// 扫描的 Way 数。
+    /// Number of Ways scanned.
     pub ways: usize,
-    /// 扫描的 Relation 数。
+    /// Number of Relations scanned.
     pub relations: usize,
-    /// 问题列表。
+    /// Problem list.
     pub issues: Vec<IntegrityIssue>,
 }
 
 impl IntegrityReport {
-    /// 是否完全自洽。
+    /// Whether the data is fully self-consistent.
     pub fn is_ok(&self) -> bool {
         self.issues.is_empty()
     }
 
-    /// 问题数。
+    /// Number of problems.
     pub fn issue_count(&self) -> usize {
         self.issues.len()
     }
@@ -65,7 +65,7 @@ impl core::fmt::Display for IntegrityReport {
     }
 }
 
-/// 全量引用完整性检查。
+/// Full reference-integrity check.
 pub fn check(data: &DataSet) -> IntegrityReport {
     let mut report = IntegrityReport {
         nodes: data.node_count(),

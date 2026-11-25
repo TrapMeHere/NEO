@@ -1,71 +1,71 @@
-# 11 样式、预设与搜索（MapCSS / Presets / Imagery）
+# 11 Styles, Presets and Search (MapCSS / Presets / Imagery)
 
-> 状态：草案 v0.1 ｜ 日期：2026-11-15 ｜ 归属 crate：`neo-style`（求值与资产）、`neo-ui`（表单）、`neo-validate`（规则消费方）
-> 相关：[04-spatial-index-and-geometry.md](04-spatial-index-and-geometry.md) ｜ [05-renderer-wgpu.md](05-renderer-wgpu.md) ｜ [12-validation.md](12-validation.md) ｜ [13-josm-parity.md](13-josm-parity.md) ｜ [ADR-0010](adr/0010-mapcss-compatibility.md) ｜ [14-performance-and-verification.md](14-performance-and-verification.md)
+> Status: draft v0.1 | Date: 2026-11-15 | Owning crates: `neo-style` (evaluation and assets), `neo-ui` (forms), `neo-validate` (rule consumer)
+> Related: [04-spatial-index-and-geometry.md](04-spatial-index-and-geometry.md) | [05-renderer-wgpu.md](05-renderer-wgpu.md) | [12-validation.md](12-validation.md) | [13-josm-parity.md](13-josm-parity.md) | [ADR-0010](adr/0010-mapcss-compatibility.md) | [14-performance-and-verification.md](14-performance-and-verification.md)
 
-## 摘要
+## Summary
 
-- 一套语法，三个消费者：JOSM 用 **extended MapCSS 0.2** 同时驱动 **地图样式**、**validator 规则**、**搜索框**；NEO 复用同一个 parser（`neo-style::mapcss`），只换求值后端（[12](12-validation.md) §3.1 的规则层）。
-- 级联语义必须照抄 JOSM：**没有 CSS 的 specificity**，规则按文件顺序「后覆盖前」，`::layer` 把属性表分层再合成。任何"改良"都会让 `elemstyles.mapcss` 渲染走样。
-- 兼容目标是 **未修改的 `elemstyles.mapcss` 能加载并画出同一张地图**，而不是"支持 MapCSS 0.2 规范"。差异用清单管理（§2.7），不是用 bug 修。
-- 不支持的属性（`line: image`、`shield:`、`label:` 下的 `font-variant`/`text-decoration`/`text-transform`/`max-width`）在**编译期**识别，给出可读警告并降级到最近的可实现视觉效果，绝不静默丢弃。
-- `defaultpresets.xml`（660 KB）同样是**兼容目标**：`group/item/chunk/reference`、`key/text/combo/multiselect/check/roles`、`type` 组合（`multipolygon` 不在 `relation` 内）全部要能吃下；XML→egui 表单走中性 `PresetForm` 描述，UI 不解析 XML。
-- 搜索框是 MapCSS 的子集 DSL：`type:`/`key=value`/`-`/`&`/`|`/正则/`preset:` + NEO 的空间谓词；语法与求值分开，`SearchQuery` 可编译成 mapcss 选择器（JOSM 的 MapCSS 模式）。
-- 所有 JOSM 资源（presets/styles/rules/boundaries）**运行时加载、不编进二进制**：GPL/CC-BY-SA 资产与 NEO 代码隔离（[ADR-0010](adr/0010-mapcss-compatibility.md)）。
-- 影像目录来自 ELI（Editor Layer Index），其 GitHub 许可标注为 **NOASSERTION**：不打包、不假设 CC0，运行时下载并逐条显示 attribution。
+- One syntax, three consumers: JOSM uses **extended MapCSS 0.2** to drive **map styling**, **validator rules**, and the **search box** at the same time; NEO reuses the same parser (`neo-style::mapcss`) and swaps only the evaluation back end (the rule layer in [12](12-validation.md) §3.1).
+- Cascade semantics must be copied from JOSM verbatim: **there is no CSS specificity**; rules apply in file order with "later overrides earlier", and `::layer` splits the property table into layers that are composed at the end. Any "improvement" will make `elemstyles.mapcss` render differently.
+- The compatibility target is **an unmodified `elemstyles.mapcss` that loads and draws the same map**, not "supporting the MapCSS 0.2 specification". Divergences are managed as a list (§2.7), not fixed as bugs.
+- Unsupported properties (`line: image`, `shield:`, and `font-variant`/`text-decoration`/`text-transform`/`max-width` under `label:`) are detected **at compile time**, reported with readable warnings and degraded to the closest achievable visual effect, never silently dropped.
+- `defaultpresets.xml` (660 KB) is likewise a **compatibility target**: `group/item/chunk/reference`, `key/text/combo/multiselect/check/roles`, and `type` combinations (`multipolygon` is not inside `relation`) must all be accepted; the XML→egui form path goes through a neutral `PresetForm` description, and the UI does not parse XML.
+- The search box is a subset DSL of MapCSS: `type:`/`key=value`/`-`/`&`/`|`/regex/`preset:` plus NEO's spatial predicates; syntax and evaluation are separate, and a `SearchQuery` can be compiled into a MapCSS selector (JOSM's MapCSS mode).
+- All JOSM assets (presets/styles/rules/boundaries) are **loaded at runtime and not compiled into the binary**: GPL/CC-BY-SA assets are isolated from NEO code ([ADR-0010](adr/0010-mapcss-compatibility.md)).
+- The imagery catalog comes from ELI (Editor Layer Index), whose GitHub license label is **NOASSERTION**: it is not bundled, CC0 is not assumed, and it is downloaded at runtime with attribution shown per entry.
 
-## 0 阶段 4 已实现（v0.1.0）
+## 0 Implemented in Phase 4 (v0.1.0)
 
-- `neo-style::mapcss`：MapCSS **子集**解析器 + 编译（选择器 `way/node/area/relation/*`、
-  `[key]`/`[key=value]`、逗号多选择器、`|z12-` 缩放、`color/fill-color/width/opacity`、
-  `dashes/text/text-color/font-size/icon-image/icon-width`、
-  `casing-color/casing-width/casing-dashes`、`#rgb/#rrggbb/#rrggbbaa`）
-- 默认样式表 `assets/styles/neo.mapcss`（编译期嵌入），`SceneBuilder` 在构建几何时按
-  `(tags, zoom)` 解析，命中则覆盖内置调色板/线宽，未命中回退
-- 结构物渲染（桥梁/隧道/路堤/路堑/过水路面）：`neo_style::structure_facts` 从标签解析语义，
-  `WayStyle` 新增 `casing`（外描边）、`hachure`（坡侧符号）、`layer_bias`（桥 +1 / 隧道 −1）；
-  路堤与路堑用**形状 + 色相**双重区分（梯状坡面 vs 梳状齿线），不只靠刻线朝向；
-  MapCSS 新增 `casing-color` / `casing-width` / `casing-dashes`；`neo-scene` 每层批次顺序为
+- `neo-style::mapcss`: MapCSS **subset** parser + compiler (selectors `way/node/area/relation/*`,
+  `[key]`/`[key=value]`, comma-separated selectors, `|z12-` zoom, `color/fill-color/width/opacity`,
+  `dashes/text/text-color/font-size/icon-image/icon-width`,
+  `casing-color/casing-width/casing-dashes`, `#rgb/#rrggbb/#rrggbbaa`)
+- Default stylesheet `assets/styles/neo.mapcss` (embedded at compile time); `SceneBuilder` resolves it by
+  `(tags, zoom)` while building geometry, overriding the built-in palette/line widths on a hit and falling back otherwise
+- Structure rendering (bridges/tunnels/embankments/cuttings/fords): `neo_style::structure_facts` derives semantics from tags,
+  `WayStyle` gains `casing` (outer stroke), `hachure` (slope-side symbol), `layer_bias` (bridge +1 / tunnel −1);
+  embankments and cuttings are distinguished by **both shape and hue** (ladder-like slope surface vs comb-like tooth line), not only by hatch direction;
+  MapCSS gains `casing-color` / `casing-width` / `casing-dashes`; `neo-scene` batches each layer in the order
   fill → casing → stroke → point
-- 未支持：eval/setting、图案、@media、MapCSS validator（后续）
+- Not supported yet: eval/setting, patterns, @media, MapCSS validator (later)
 
-## 1 目标与范围
+## 1 Goals and Scope
 
-### 1.1 目标
+### 1.1 Goals
 
-1. 完整覆盖 `elemstyles.mapcss` 实际使用的语法子集（选择器、运算符、伪类、`::layer`、`@supports`、territory），并让渲染结果与 JOSM 可对拍。
-2. 样式求值在 10M 对象规模下可由「tag 指纹缓存 + 候选剪枝」做到增量重算。
-3. `defaultpresets.xml` 零修改加载；表单生成的交互（字段类型、默认值、`match` 过滤）与 JOSM 等价。
-4. 资产许可可审计：每个资产有来源、版本、sha256、许可标识。
+1. Fully cover the syntactic subset that `elemstyles.mapcss` actually uses (selectors, operators, pseudo-classes, `::layer`, `@supports`, territory) and make rendered results comparable against JOSM.
+2. Style evaluation must remain amenable to incremental recomputation at 10M objects via "tag fingerprint cache + candidate pruning".
+3. `defaultpresets.xml` loads with zero modifications; the interactions produced by the form (field types, defaults, `match` filtering) are equivalent to JOSM's.
+4. Asset licenses are auditable: every asset has a source, version, sha256, and license identifier.
 
-### 1.2 非目标
+### 1.2 Non-Goals
 
-- 不做 MapCSS 规范的"完整实现"（`line: image`、`shield:`、Kothic 挤出等明确不做，见 §2.6）。
-- 不做样式编辑器 GUI（Phase 2 的 P2 项）；本阶段只做加载、编译、热重载。
-- 不做法线贴图/3D 样式；`extrude` 类扩展不支持。
-- 不移植 JOSM 的 40 个 Java 验证测试（属 [12](12-validation.md)）。
+- Not a "complete implementation" of the MapCSS specification (`line: image`, `shield:`, Kothic extrusions, etc. are explicitly out of scope, see §2.6).
+- No style-editor GUI (P2 in Phase 2); this phase covers loading, compiling, and hot reloading only.
+- No normal mapping/3D styling; `extrude`-style extensions are unsupported.
+- Not porting JOSM's 40 Java validation tests (that belongs to [12](12-validation.md)).
 
-## 2 设计
+## 2 Design
 
-### 2.1 三个消费者，一套前端
+### 2.1 Three Consumers, One Front End
 
 ```
                      ┌───────────────────────────────────────────┐
-  .mapcss 文本 ──►   │ lexer → parser → AST（选择器/声明/@supports）│
+  .mapcss text ──►   │ lexer → parser → AST (selectors/decls/@supports) │
                      └───────────────────────────────────────────┘
                           │                │                 │
               ┌───────────┘                │                 └────────────┐
               ▼                            ▼                              ▼
    StyleTarget::Mappaint        StyleTarget::Validator          StyleTarget::Search
-   （属性 → ResolvedStyle）      （throw*/fix* 子句，见 12）      （选择器即查询）
+   (properties → ResolvedStyle) (throw*/fix* clauses, see 12)    (selector is the query)
               │                            │                              │
               ▼                            ▼                              ▼
-    neo-scene → SceneFrame       ValidationReport              Vec<ObjId> 结果集
+    neo-scene → SceneFrame       ValidationReport              Vec<ObjId> result set
 ```
 
-三个目标共用 AST 与选择器求值，但**属性集合不同**：`fill-color` 在 validator 里无意义，`throwWarning` 在渲染里无意义。`CompileOpts.target` 决定哪些声明被保留、哪些报「该目标不支持」。
+The three targets share the AST and selector evaluation but **have different property sets**: `fill-color` is meaningless in a validator, and `throwWarning` is meaningless in rendering. `CompileOpts.target` decides which declarations are retained and which report "not supported for this target".
 
-### 2.2 词法与语法
+### 2.2 Lexical and Grammar
 
 ```text
 stylesheet  := (rule | supports_block | "meta" "{" decl* "}" | "canvas" "{" decl* "}")*
@@ -77,247 +77,247 @@ zoom        := "|z" num ( "-" num? )?            // way|z12, way|z13-15, way|z16
 cond        := "[" "!"? ( key | key op value | "/" regex "/" ) ( "?" | "?!" )? "]"
 link        := "[" ( "role" | "index" ) op value "]"
 layer       := "::" ( ident | "*" )
-decl        := prop ":" value ( ";" value )* ";"?   // 也允许 "set: class" / "set: .class"
+decl        := prop ":" value ( ";" value )* ";"?   // "set: class" / "set: .class" is also allowed
 supports_block := "@supports" "(" name ":" value ")" "{" rule* "}"
 ```
 
-| 词法要点 | 规则 |
+| Lexical point | Rule |
 |---|---|
-| 注释 | 仅 `/* … */`；注释里出现 `/…/` 正则会提前结束（JOSM 同样的坑，[文档](https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation) 明确警告） |
-| 引号 | 键/值含空格、`:`、非 ASCII 时必须 `"…"`；`"` 与 `\` 可转义 |
-| 颜色 | 具名色、`#RGB`/`#RRGGBB`/`#RRGGBBAA`、`rgb()`、`rgba()`、`hsb_color()`、可选 `name#hex`（可在颜色偏好里被用户覆盖） |
-| 数值 | 相对值前置 `+`（如 `width: +2`）表示"同层默认值 + 2"，不是绝对值 |
-| 表达式 | 允许裸表达式（JOSM 不强制 `eval(...)`），NEO 两种都接受，编译成同一 AST |
+| Comments | only `/* … */`; a `/…/` regex inside a comment ends the comment early (the same trap as JOSM, [documentation](https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation) warns about it explicitly) |
+| Quotes | keys/values containing spaces, `:`, or non-ASCII must be `"…"`; `"` and `\` can be escaped |
+| Colors | named colors, `#RGB`/`#RRGGBB`/`#RRGGBBAA`, `rgb()`, `rgba()`, `hsb_color()`, optional `name#hex` (user-overridable in color preferences) |
+| Numeric values | a relative value has a leading `+` (e.g. `width: +2`), meaning "the same layer's default value + 2", not an absolute value |
+| Expressions | bare expressions are allowed (JOSM does not force `eval(...)`); NEO accepts both and compiles them to the same AST |
 
-### 2.3 选择器与伪类
+### 2.3 Selectors and Pseudo-Classes
 
-| 选择器 | 语义 | NEO 优先级 |
+| Selector | Semantics | NEO priority |
 |---|---|---|
-| `*` | 任意对象 | P0 |
-| `node` / `way` / `relation` | 原语类型 | P0 |
-| `area` | 任何面积：闭合 way **或** multipolygon；**也匹配未闭合 way**（所以常配 `:closed`） | P0 |
-| `closedway` | 闭合 way | P0 |
-| `meta` | 样式前言（`title/icon/version/description/author/link/min-josm-version`） | P0 |
-| `canvas` | 背景（`fill-color`、`default-points`、`default-lines`） | P0 |
-| `setting` / `settings` | 样式自定义设置（`setting()` 函数取值） | P1 |
-| `parent > child` | 子选择器（`>`） | P0（`elemstyles` 需要） |
-| `parent < child` | **JOSM 专有**父选择器（`<`），属性作用于右侧对象 | P1 |
-| `>[role=…]` / `>[index=1]` | 链接选择器：成员 role、下标（负数从尾数） | P1 |
-| `|z12` / `|z13-15` / `|z16-` | zoom 选择器；只对 `>` 右侧有意义 | P0 |
+| `*` | any object | P0 |
+| `node` / `way` / `relation` | primitive type | P0 |
+| `area` | any area: a closed way **or** a multipolygon; **also matches unclosed ways** (hence usually combined with `:closed`) | P0 |
+| `closedway` | closed way | P0 |
+| `meta` | style preamble (`title/icon/version/description/author/link/min-josm-version`) | P0 |
+| `canvas` | background (`fill-color`, `default-points`, `default-lines`) | P0 |
+| `setting` / `settings` | style-defined custom settings (values read by the `setting()` function) | P1 |
+| `parent > child` | child selector (`>`) | P0 (needed by `elemstyles`) |
+| `parent < child` | **JOSM-proprietary** parent selector (`<`); properties apply to the object on the right | P1 |
+| `>[role=…]` / `>[index=1]` | link selector: member role, index (negative counts from the end) | P1 |
+| `|z12` / `|z13-15` / `|z16-` | zoom selector; meaningful only on the right side of `>` | P0 |
 
-伪类全集（JOSM 已核实清单，`!` 可否定）：`:closed`、`:closed2`、`:completely_downloaded`、`:new`、`:connection`、`:unconnected`、`:tagged`（JOSM 有一份"不算 tag"的排除表：`source*`、`source_ref`、`note`、`comment`、`converted_by`、`created_by`、`watch*`、`fixme`、`FIXME`、`description`、`attribution`）、`:area-style`、`:righthandtraffic`、`:clockwise`、`:anticlockwise`、`:unclosed_multipolygon`、`:open_end`、`:in-downloaded-area`、`:selected`、`:highlighted`、`:modified`。
+Full pseudo-class set (the JOSM-verified list; `!` negates): `:closed`, `:closed2`, `:completely_downloaded`, `:new`, `:connection`, `:unconnected`, `:tagged` (JOSM has an exclusion list of "not counted as tags": `source*`, `source_ref`, `note`, `comment`, `converted_by`, `created_by`, `watch*`, `fixme`, `FIXME`, `description`, `attribution`), `:area-style`, `:righthandtraffic`, `:clockwise`, `:anticlockwise`, `:unclosed_multipolygon`, `:open_end`, `:in-downloaded-area`, `:selected`, `:highlighted`, `:modified`.
 
-- P0（渲染必需）：`closed`、`closed2`、`tagged`、`new`、`modified`、`connection`、`unconnected`、`clockwise`、`anticlockwise`。
-- P1（校验/提示为主）：`completely_downloaded`、`in-downloaded-area`、`righthandtraffic`、`unclosed_multipolygon`、`open_end`、`selected`、`highlighted`。
-- `:area-style` **不适用**（JOSM 内部用于"该对象被给了面积样式"，NEO 的求值顺序不同，明确不支持并进差异清单）。
-- 伪类序号影响 validator 的 `{n}` 占位符（`:unconnected` = `{0}`），必须由同一 parser 保序产出（[12](12-validation.md) §3.1）。
+- P0 (required for rendering): `closed`, `closed2`, `tagged`, `new`, `modified`, `connection`, `unconnected`, `clockwise`, `anticlockwise`.
+- P1 (mostly validation/hints): `completely_downloaded`, `in-downloaded-area`, `righthandtraffic`, `unclosed_multipolygon`, `open_end`, `selected`, `highlighted`.
+- `:area-style` is **not applicable** (JOSM uses it internally for "this object was given an area style"; NEO's evaluation order differs, so it is explicitly unsupported and goes into the deviation list).
+- Pseudo-class ordinals affect the validator's `{n}` placeholders (`:unconnected` = `{0}`) and must be produced in order by the same parser ([12](12-validation.md) §3.1).
 
-条件运算符（`[k op v]`）：
+Condition operators (`[k op v]`):
 
-| 运算符 | 语义 |
+| Operator | Semantics |
 |---|---|
-| `=` / `!=` | 精确匹配（**大小写敏感**） |
-| `<` `>` `<=` `>=` | 数值比较 |
-| `^=` / `$=` / `*=` | 前缀 / 后缀 / 子串 |
-| `~=` | 分号列表成员（`vending~=stamps`） |
-| `=~` / `!~` | 正则（`/…/`，`(?i)` 内联标志可用） |
-| `∈` `⊆` | 「左侧对象属于右侧选择器集合」：`*[amenity=parking] ∈ area[amenity=parking]` |
-| `⊇` | 反向包含（较慢，多用于搜索而非渲染） |
-| `⊈` / `⊉` | 上述的否定；配 `:closed2` 避免未闭合面误判 |
-| `⧉` | 相交/重叠；**尊重 `layer` tag** |
-| `[k]` / `[!k]` / `[/^addr:/]` | 键存在 / 不存在 / 键名正则 |
-| `[k?]` / `[k?!]` | 真值（`yes`/`true`/`1`）与假值 |
+| `=` / `!=` | exact match (**case-sensitive**) |
+| `<` `>` `<=` `>=` | numeric comparison |
+| `^=` / `$=` / `*=` | prefix / suffix / substring |
+| `~=` | member of a semicolon-separated list (`vending~=stamps`) |
+| `=~` / `!~` | regex (`/…/`; inline flags such as `(?i)` are allowed) |
+| `∈` `⊆` | "the left object belongs to the right selector's set": `*[amenity=parking] ∈ area[amenity=parking]` |
+| `⊇` | reverse containment (slower; mostly for search rather than rendering) |
+| `⊈` / `⊉` | negation of the above; pair with `:closed2` to avoid misjudging unclosed areas |
+| `⧉` | intersection/overlap; **respects the `layer` tag** |
+| `[k]` / `[!k]` / `[/^addr:/]` | key exists / does not exist / key-name regex |
+| `[k?]` / `[k?!]` | truthy (`yes`/`true`/`1`) and falsy |
 
-- **解引用** `[k1=*k2]`：用 `k1` 的值去比对 `k2` 的值（`[k=~*/re/]` 则把 `k` 所指键的值当正则）；编译期展开成第二次取值，不做字符串拼接。
-- **territory** `inside("FR")` / `outside("FR,DE")`：`inside` 的逗号是 **OR**、`outside` 的逗号是 **AND**，支持 `FR`/`FX`/`EU`/次国家码 `US-FL`；数据来自 `boundaries.osm`，求值昂贵（样式慎用、validator 常用）。
-- 子选择器左侧不带 zoom/layer，`prop()`/`is_prop_set()` 只在 `>` 右侧有效；`area` 与 `:closed` 的组合必须显式写。
+- **Dereference** `[k1=*k2]`: compares the value of `k1` against the value of `k2` (`[k=~*/re/]` treats the value of the key referenced by `k` as a regex); it expands at compile time into a second lookup, with no string concatenation.
+- **territory** `inside("FR")` / `outside("FR,DE")`: for `inside` the commas are **OR**, for `outside` they are **AND**; supports `FR`/`FX`/`EU`/sub-national codes such as `US-FL`; data comes from `boundaries.osm`, evaluation is expensive (use sparingly in styles, commonly in validators).
+- The left side of a child selector carries no zoom/layer; `prop()`/`is_prop_set()` are only valid on the right side of `>`; `area` combined with `:closed` must be written explicitly.
 
-### 2.4 级联与优先级（照抄 JOSM，不做"改良"）
+### 2.4 Cascade and Priorities (copy JOSM, no "improvements")
 
-JOSM 的算法是：**按文件顺序遍历每条规则；选择器命中就写入属性表（后者覆盖前者）**；`::layer` 把属性表分成独立的层，最后合成。**没有 specificity 概念**。
+JOSM's algorithm is: **walk every rule in file order; when a selector matches, write into the property table (later overrides earlier)**; `::layer` splits the property table into separate layers that are composed at the end. **There is no notion of specificity.**
 
 ```
-for rule in rules_in_file_order:            # 后覆盖前
+for rule in rules_in_file_order:            # later overrides earlier
     if selector.matches(obj, ctx):
-        layer = rule.layer or "default"     # ::name；::* 写入所有层
+        layer = rule.layer or "default"     # ::name; ::* writes into all layers
         props[layer].apply(rule.decls)
-compose(props) -> ResolvedStyle             # 按 z-index 排序层，逐层叠加
+compose(props) -> ResolvedStyle             # sort layers by z-index, apply one by one
 ```
 
-| 排序键（从高到低） | 说明 |
+| Sort key (high to low) | Description |
 |---|---|
-| `major-z-index` | 对象类别层（点/线/面）的粗排序 |
-| `z-index` | `::layer` 内排序（JOSM 默认 **0**，Halcyon 是 5） |
-| `object-z-index` | 同层内单对象微调 |
-| 层声明序号 | 兜底：稳定且可复现（golden 图依赖） |
+| `major-z-index` | coarse ordering of object classes (point/line/area) |
+| `z-index` | ordering within `::layer` (JOSM default **0**, Halcyon uses 5) |
+| `object-z-index` | fine adjustment for a single object within the same layer |
+| layer declaration order | tiebreaker: stable and reproducible (golden images depend on it) |
 
-- `::*` 是"对**所有**层写入/初始化"的语法糖，`elemstyles` 用它做全局默认（如 `*::* { … }`）；NEO 在编译期把它展开成"每个已声明层各一条"，避免运行时遍历层。
-- 相对值 `+2` 在合成期解析（取同层 `default` 的当前值再加），因此必须保留"声明顺序 + 层"信息，不能在编译期折叠成常量。
-- 多文件叠加（用户激活多个样式）：按加载顺序拼接，`source: origin.file + rule.index` 参与诊断与热重载定位。
+- `::*` is syntactic sugar for "write into/initialize **all** layers"; `elemstyles` uses it for global defaults (e.g. `*::* { … }`); NEO expands it at compile time into "one per declared layer", avoiding a runtime loop over layers.
+- Relative values such as `+2` are resolved during composition (taking the current value of `default` on the same layer and adding to it), so "declaration order + layer" information must be preserved and cannot be folded into constants at compile time.
+- Multi-file layering (the user activates several styles): concatenated in load order, with `source: origin.file + rule.index` participating in diagnostics and hot-reload targeting.
 
-### 2.5 属性与值模型
+### 2.5 Property and Value Model
 
-| 组 | 代表属性 | NEO 映射 |
+| Group | Representative properties | NEO mapping |
 |---|---|---|
-| 线 | `width`、`color`、`opacity`、`dashes`、`linecap`、`linejoin`、`repeat-image*` | `StrokeSpec`（`repeat-image*` 走图标纹理，P2） |
-| casing | `casing-*`、`left-casing-*`、`right-casing-*` | 独立 `StrokeSpec`，`BatchFlags::casing_of` 绑定（[05](05-renderer-wgpu.md) §2.3） |
-| 面 | `fill-color`、`fill-image`、`fill-opacity`（默认 **0.2**，r11700 起）、`fill-extent` | `FillSpec`；`fill-opacity` 默认值易被忽略，必须照抄 |
-| 点/图标 | `symbol-shape`、`symbol-size`、`symbol-fill-color`、`icon-image`、`icon-width` | `IconSpec`（C 管线实例） |
-| 文本 | `text`、`text-color/-halo-*/-offset-*/-anchor-*/-rotation`、`font-family/-size/-weight/-style`、`text-position` | `TextSpec`（D 管线，[05](05-renderer-wgpu.md) §2.6） |
-| 求值函数 | `tag()`、`prop()`、`is_prop_set()`、`parent_tag()`、`concat()`、`eval()`、`setting()`、`tr()`… | 编译成闭包树，白名单执行，**不允许**任意副作用 |
+| line | `width`, `color`, `opacity`, `dashes`, `linecap`, `linejoin`, `repeat-image*` | `StrokeSpec` (`repeat-image*` goes through icon textures, P2) |
+| casing | `casing-*`, `left-casing-*`, `right-casing-*` | separate `StrokeSpec`, bound by `BatchFlags::casing_of` ([05](05-renderer-wgpu.md) §2.3) |
+| area | `fill-color`, `fill-image`, `fill-opacity` (default **0.2** since r11700), `fill-extent` | `FillSpec`; the `fill-opacity` default is easily overlooked and must be copied |
+| point/icon | `symbol-shape`, `symbol-size`, `symbol-fill-color`, `icon-image`, `icon-width` | `IconSpec` (pipeline C instances) |
+| text | `text`, `text-color/-halo-*/-offset-*/-anchor-*/-rotation`, `font-family/-size/-weight/-style`, `text-position` | `TextSpec` (pipeline D, [05](05-renderer-wgpu.md) §2.6) |
+| evaluation functions | `tag()`, `prop()`, `is_prop_set()`, `parent_tag()`, `concat()`, `eval()`, `setting()`, `tr()`… | compiled into a closure tree, executed against a whitelist, **no** arbitrary side effects allowed |
 
-`eval()` 的实现边界：白名单函数 + 字面量 + 四则/布尔/比较，绝不做通用脚本。`JOSM_pref()`/`JOSM_search()` 返回 NEO 的设置值/搜索结果（后者会触发求值递归，标记为 P2 并默认禁用）。
+The implementation boundary of `eval()`: whitelisted functions + literals + arithmetic/boolean/comparison, never a general-purpose script. `JOSM_pref()`/`JOSM_search()` return NEO settings/search results (the latter triggers recursive evaluation, marked P2 and disabled by default).
 
-### 2.6 不支持项与差异清单
+### 2.6 Unsupported Items and Deviation List
 
-| JOSM 能力 | 状态 | NEO 策略 |
+| JOSM capability | Status | NEO strategy |
 |---|---|---|
-| `line: image`（沿线重复贴图） | ❌ 不支持（JOSM 也不支持，[文档](https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation) 明确） | 编译期警告，降级为纯色线 |
-| `shield:` 系（路牌） | ❌ 不支持 | 降级为 `text:` + 圆角背景（Phase 2 的 P2） |
-| `label:` 下的 `font-variant` / `text-decoration` / `text-transform` / `max-width` | ❌ 不支持 | 警告；`text-transform` 在 NEO 里可选项实现（P2） |
-| `@media (min-josm-version: …)` | ⚠️ 接受但**建议用 `@supports`**（JOSM 已弃用 `@media`） | `@media` 求值为"按 NEO 声称的 josm-version 兼容级别"，映射规则见 §2.7 |
-| `:area-style` | ❌ 不适用 | 差异清单第 1 条 |
-| 正则风味 | Java regex vs Rust `regex` | 不用 lookaround/backreference 的规则可等价；命中不支持的构造时警告并退化为"不匹配"（不是 panic） |
+| `line: image` (repeated texture along a line) | ❌ unsupported (JOSM does not support it either; the [documentation](https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation) says so explicitly) | compile-time warning, degrade to a solid-color line |
+| `shield:` family (road shields) | ❌ unsupported | degrade to `text:` + rounded background (P2 of Phase 2) |
+| `font-variant` / `text-decoration` / `text-transform` / `max-width` under `label:` | ❌ unsupported | warning; `text-transform` may be implemented as an option in NEO (P2) |
+| `@media (min-josm-version: …)` | ⚠️ accepted but **`@supports` is recommended** (JOSM has deprecated `@media`) | `@media` evaluates as "at the josm-version compatibility level NEO claims", mapping rules in §2.7 |
+| `:area-style` | ❌ not applicable | entry 1 of the deviation list |
+| regex flavor | Java regex vs Rust `regex` | rules not using lookaround/backreference are equivalent; on hitting an unsupported construct, warn and degrade to "no match" (not a panic) |
 
-> 原则：**未知属性 = 警告 + 保留原始文本**。`elemstyles.mapcss` 里有几十个我们暂不实现的属性，静默丢弃会让"看起来差一点"变成无法定位的谜题；保留原文使 `neo-ui` 能列出"这条规则的第 N 个属性未生效"。
+> Principle: **unknown property = warning + keep the original text**. `elemstyles.mapcss` contains dozens of properties we do not implement yet; silently dropping them turns "looks slightly different" into an untraceable puzzle. Keeping the original text lets `neo-ui` list "the Nth property of this rule is inactive".
 
-### 2.7 对 `elemstyles.mapcss` 的兼容目标
+### 2.7 Compatibility Targets for `elemstyles.mapcss`
 
-| 维度 | 目标 | 验收方式 |
+| Dimension | Target | Acceptance method |
 |---|---|---|
-| 解析 | 零 `StyleError`（警告允许，错误不允许） | CI 加载 + 计数断言 |
-| 选择器 | `elemstyles` 用到的全部选择器可编译（含 `area`、`::layer`、`:closed`、zoom） | 覆盖率报告：未命中的 selector 种类 = 0 |
-| 渲染 | 同数据集、同 zoom 下与 JOSM 截图人工对拍（网格取样 9 宫格） | `docs/known-deviations.md` 记录的差异 ≤ 5 条 |
-| z 序 | `major-z-index`/`z-index` 排序与 JOSM 一致（默认 0） | 叠放顺序对比用例 |
-| 性能 | 10M 对象下样式求值不进主线程热点 | 预算见 [05](05-renderer-wgpu.md) §2.13 |
+| parsing | zero `StyleError`s (warnings allowed, errors not) | CI load + count assertion |
+| selectors | every selector used by `elemstyles` compiles (including `area`, `::layer`, `:closed`, zoom) | coverage report: un-hit selector kinds = 0 |
+| rendering | manual comparison with JOSM screenshots on the same dataset and zoom (9-cell grid sampling) | deviations recorded in `docs/known-deviations.md` ≤ 5 |
+| z-order | `major-z-index`/`z-index` ordering matches JOSM (default 0) | stacking-order comparison cases |
+| performance | style evaluation does not enter main-thread hot spots at 10M objects | budget in [05](05-renderer-wgpu.md) §2.13 |
 
-已知差异（初始清单，随实现增补，进 `docs/known-deviations.md`）：
+Known deviations (initial list, extended as implementation proceeds, recorded in `docs/known-deviations.md`):
 
-1. `:area-style` 不求值。
-2. `::*` 在编译期展开而非运行时遍历（语义等价，但 `is_prop_set` 的时序细节需对拍）。
-3. 文本排版用 NEO 的 atlas/egui，字体度量与 Java AWT 不同（行高、字距），标签避让结果会有像素级差异。
-4. `@media` 的版本语义按"兼容级别"映射而非 JOSM 构建号。
+1. `:area-style` is not evaluated.
+2. `::*` is expanded at compile time rather than iterated at runtime (semantically equivalent, but the timing details of `is_prop_set` need comparison).
+3. Text layout uses NEO's atlas/egui, and font metrics differ from Java AWT (line height, letter spacing), so label avoidance results will differ at the pixel level.
+4. `@media` version semantics are mapped by "compatibility level" rather than JOSM build numbers.
 
-### 2.8 样式 → `SceneFrame` 的求值管线
+### 2.8 Evaluation Pipeline from Style to `SceneFrame`
 
 ```
-① 编译（启动/热重载，一次性）
+① compile (startup/hot reload, one-time)
    .mapcss ──lexer──► tokens ──parser──► AST ──compile──► StyleSheet
                                                           ├ rules: Vec<CompiledRule>
-                                                          ├ key_index: HashMap<Key, SmallVec<RuleId>>  ← 剪枝
+                                                          ├ key_index: HashMap<Key, SmallVec<RuleId>>  ← pruning
                                                           ├ layers / meta / canvas
                                                           └ unsupported: Vec<UnsupportedProperty>
 
-② 求值（每对象一次，结果缓存）
+② evaluate (once per object, result cached)
    tags ──► TagFingerprint(u64)  ──► LRU<TagFingerprint, SmallVec<StyleRef>>
-                │ 未命中
-                ├─ 候选 = key_index[每个存在的 key] ∪ 无 key 条件的规则
-                ├─ 逐条 matches(obj, ctx)          ← 选择器求值（含伪类/territory）
-                └─ 命中集合 → 级联合成 → ResolvedStyle
+                │ miss
+                ├─ candidates = key_index[each present key] ∪ rules without key conditions
+                ├─ matches(obj, ctx) one by one          ← selector evaluation (incl. pseudo-classes/territory)
+                └─ matched set → cascade compose → ResolvedStyle
 
-③ 打包（neo-scene）
+③ pack (neo-scene)
    ResolvedStyle + Polyline/AreaGeom ──► MapVertex / RenderBatch / LabelItem
 ```
 
-| 失效条件 | 重算范围 |
+| Invalidation condition | Recompute scope |
 |---|---|
-| 对象 tag 变化 | 该对象的指纹缓存条目 |
-| 选中/高亮/修改状态变化 | 维护 `pseudo → BTreeSet<ObjId>`，只重算含该伪类的规则命中对象 |
-| 样式热重载 | 整表重建 + 全缓存清空（样式切换本来就是低频） |
-| zoom 跨档 | 只影响几何/LOD，样式命中不变（除非规则含 zoom 选择器 → 按档位分桶缓存） |
+| an object's tags change | that object's fingerprint cache entry |
+| selection/highlight/modification state changes | maintain `pseudo → BTreeSet<ObjId>` and recompute only objects matched by rules containing that pseudo-class |
+| style hot reload | rebuild the whole table + clear all caches (switching styles is low-frequency anyway) |
+| zoom crosses a level | affects only geometry/LOD; style matches are unchanged (unless the rule contains a zoom selector → cache bucketed by level) |
 
-`TagFingerprint` = 排序后的 `(key, value)` 序列的 64 位哈希（含类型位），碰撞用全量比对兜底。这一层是「10M 对象 × 数千规则」能成立的前提。
+`TagFingerprint` = a 64-bit hash of the sorted `(key, value)` sequence (including type bits), with full comparison as the collision fallback. This layer is the precondition for "10M objects × thousands of rules" being viable.
 
 ### 2.9 Presets XML
 
 ```text
 <presets xmlns="http://josm.openstreetmap.de/tagging-preset-1.0" author version description shortdescription link icon baselanguage>
-  <group name icon>                                  ← 树节点
+  <group name icon>                                  ← tree node
     <item name type preset_name_label icon name_template match_expression>
       <label text/> <optional text/> <space/> <separator/> <item_separator/> <link wiki|href/>
-      <key key value match/>                          ← value 省略 = 删除该 key
+      <key key value match/>                          ← value omitted = delete that key
       <text key/> <combo key values delimiter …/> <multiselect … delimiter=";"/>
       <check key default="on|off"/> <list_entry value/> <checkgroup columns>…</checkgroup>
       <roles><role key text requisite count type member_expression regexp/></roles>
-      <preset_link preset_name text/>  <reference ref="surface"/>   ← 引用 <chunk id="surface">
+      <preset_link preset_name text/>  <reference ref="surface"/>   ← reference to <chunk id="surface">
     </item>
   </group>
-  <chunk id="surface">…</chunk>                        ← 可复用片段
+  <chunk id="surface">…</chunk>                        ← reusable fragment
 </presets>
 ```
 
-| 约束 | 说明 |
+| Constraint | Description |
 |---|---|
-| `type` | `node`、`way`、`closedway`、`multipolygon`、`relation`，可逗号组合；**`multipolygon` 不包含在 `relation` 里**（经典 bug 源） |
-| schema | `tagging-preset.xsd` 是解析器的唯一规范来源，样本文件 660 KB → `match` 表达式必须**预编译**（不是每次逐对象解析 XML 文本） |
-| 多语言 | 属性后缀式本地化（`de.description`）与 `baselanguage`；`<label text>` 走 `tr()` |
-| 引用 | `<chunk>`/`<reference>` 在加载期展开成树（保留 chunk id 以便诊断），**不是**运行时 include |
-| 校验 | `assertMatch`/`assertNoMatch` 只属于 validator 规则，presets 没有；presets 的自检靠 xsd |
+| `type` | `node`, `way`, `closedway`, `multipolygon`, `relation`, combinable with commas; **`multipolygon` is not included in `relation`** (a classic bug source) |
+| schema | `tagging-preset.xsd` is the parser's sole normative source; with a 660 KB sample file, `match` expressions must be **precompiled** (not parsing XML text per object every time) |
+| i18n | attribute-suffix localization (`de.description`) and `baselanguage`; `<label text>` goes through `tr()` |
+| references | `<chunk>`/`<reference>` are expanded into a tree at load time (keeping the chunk id for diagnostics), **not** a runtime include |
+| validation | `assertMatch`/`assertNoMatch` belong only to validator rules, not presets; presets self-check via the xsd |
 
-XML → egui 表单的映射（`PresetForm` 是中性描述，`neo-ui` 才认识 egui）：
+Mapping from XML to egui forms (`PresetForm` is a neutral description; only `neo-ui` knows about egui):
 
-| XML 元素 | `PresetForm` 控件 | 交互 |
+| XML element | `PresetForm` control | Interaction |
 |---|---|---|
-| `<text key>` | `TextField`（单行/多行） | 空值 = 删除该 key |
-| `<combo key values editable delimiter>` | `ComboBox`（可编辑 + 逗号/分号拆分） | `values_from` 从另一个 key 动态取值（P1） |
-| `<multiselect>` | `ChipGroup`（分隔符默认 `;`，`\` 转义） | 顺序保留 |
-| `<check key default>` | `Checkbox` | `on/off` 与"不存在"三态映射 |
-| `<key key value>` | 无控件、直接写入 | `value` 缺省表示**移除** |
-| `<roles>` | 成员角色表格（role/type/count/requisite） | relation 编辑器的约束 |
-| `<reference>` | 展开为同一片段（共享状态） | 修改同时影响所有引用点 |
+| `<text key>` | `TextField` (single-line/multi-line) | empty value = delete that key |
+| `<combo key values editable delimiter>` | `ComboBox` (editable + comma/semicolon splitting) | `values_from` takes values dynamically from another key (P1) |
+| `<multiselect>` | `ChipGroup` (delimiter defaults to `;`, `\` escapes) | order preserved |
+| `<check key default>` | `Checkbox` | three-state mapping of `on/off` and "absent" |
+| `<key key value>` | no control, written directly | a missing `value` means **remove** |
+| `<roles>` | member-role table (role/type/count/requisite) | relation-editor constraints |
+| `<reference>` | expanded to the same fragment (shared state) | edits affect all reference points |
 
-### 2.10 Validator 规则复用
+### 2.10 Reusing Validator Rules
 
-- 同一 `StyleSheet` 前端，`StyleTarget::Validator` 只保留 `throwError|throwWarning|throwOther`（**恰好一个**）、`fixAdd`/`fixRemove`/`fixChangeKey`/`fixDeleteObject`/`suggestAlternative`/`group`/`assertMatch`/`assertNoMatch`。
-- `{0}`/`{1}` 的编号来自**选择器顺序（含伪类）**，由 parser 统一产出，避免 `neo-validate` 自己再解析一遍。
-- 规则来源：12 个核心 `.validator.mapcss` + 社区 `Rules/*`；与 Rust 规则的分工、严重级别与抑制语义**全部以 [12](12-validation.md) 为准**，本文只负责"同一份 AST"。
+- The same `StyleSheet` front end; `StyleTarget::Validator` retains only `throwError|throwWarning|throwOther` (**exactly one**), `fixAdd`/`fixRemove`/`fixChangeKey`/`fixDeleteObject`/`suggestAlternative`/`group`/`assertMatch`/`assertNoMatch`.
+- The numbering of `{0}`/`{1}` comes from **selector order (including pseudo-classes)**, produced uniformly by the parser so `neo-validate` does not have to parse again.
+- Rule sources: the 12 core `.validator.mapcss` files + community `Rules/*`; the division of labor with Rust rules, severity levels, and suppression semantics **all follow [12](12-validation.md)**; this document is only responsible for "the same AST".
 
-### 2.11 Imagery 目录、ELI 与图层配置
+### 2.11 Imagery Catalog, ELI, and Layer Configuration
 
-| 项 | 事实 | NEO 策略 |
+| Item | Fact | NEO strategy |
 |---|---|---|
-| 目录来源 | JOSM 从 `josm.openstreetmap.de` 取 `maps.xml`，由 **ELI（Editor Layer Index）** 生成 | 直接消费 ELI 的 JSON/`maps.xml`，缓存到用户数据目录，带 ETag/版本 |
-| 许可 | ELI 仓库 GitHub 元数据标注 **NOASSERTION / Other** → **不能假设 CC0** | 不打包进安装包；运行时下载；UI 展示每条目的 `attribution` 与 `terms`；导出「我用了哪些影像」清单 |
-| 内置条目 | JOSM 内置 5 条（Bing、Esri World Imagery、Esri Clarity Beta、Mapbox Satellite、OSM Carto） | 不预置需要商业 key 的条目；提供 `OSM Carto` 这类无 key 项 + "添加 URL" |
-| 图层类型 | TMS / WMS / WMTS（JOSM 会话文件里是独立图层类型） | 统一 `ImageryLayer { url_template, kind, min_zoom, max_zoom, tile_size, format, attribution }` |
-| URL 模板 | TMS `{z}/{x}/{y}`；WMS `SERVICE=WMS&REQUEST=GetMap&…&BBOX={bbox}&WIDTH={width}&HEIGHT={height}&SRS={proj}`；WMTS `TileMatrix={z}&TileRow={y}&TileCol={x}`；子域轮转 `{switch:a,b,c}` | 模板变量表随实现固定；**完整占位符集合 > 待验证**（以 `maps.xsd` 为准） |
-| 偏移 | 偏移库是 **XML**（不是 JSON），端点 `GET {server}get?lat=…&lon=…`，返回 `<offset>`；本地偏移按影像持久化 | 只做本地 x/y 偏移 + 手动调整；在线偏移库 P1（默认服务器 `https://offsets.textual.ru/`，注意这是第三方服务） |
+| catalog source | JOSM fetches `maps.xml` from `josm.openstreetmap.de`, generated from **ELI (Editor Layer Index)** | consume ELI's JSON/`maps.xml` directly, cached in the user data directory with ETag/version |
+| license | the ELI repository's GitHub metadata is labeled **NOASSERTION / Other** → **CC0 must not be assumed** | not bundled into the installer; downloaded at runtime; the UI shows each entry's `attribution` and `terms`; export an "imagery I used" list |
+| built-in entries | JOSM ships 5 (Bing, Esri World Imagery, Esri Clarity Beta, Mapbox Satellite, OSM Carto) | do not preselect entries requiring commercial keys; offer keyless ones such as `OSM Carto` plus "add URL" |
+| layer types | TMS / WMS / WMTS (separate layer types in JOSM session files) | unified `ImageryLayer { url_template, kind, min_zoom, max_zoom, tile_size, format, attribution }` |
+| URL templates | TMS `{z}/{x}/{y}`; WMS `SERVICE=WMS&REQUEST=GetMap&…&BBOX={bbox}&WIDTH={width}&HEIGHT={height}&SRS={proj}`; WMTS `TileMatrix={z}&TileRow={y}&TileCol={x}`; subdomain rotation `{switch:a,b,c}` | the template variable table is fixed with the implementation; **the complete placeholder set > to verify** (per `maps.xsd`) |
+| offsets | the offset database is **XML** (not JSON), endpoint `GET {server}get?lat=…&lon=…`, returning `<offset>`; local offsets are persisted per imagery | local x/y offsets + manual adjustment only; the online offset database is P1 (default server `https://offsets.textual.ru/`; note this is a third-party service) |
 
-### 2.12 Filter 语义（已移除）
+### 2.12 Filter Semantics (removed)
 
-过滤器在 v0.1.0 中曾实现（隐藏匹配对象），因与"选择不依赖渲染状态"的产品决定冲突已整体移除；框选改为纯几何选择，点选/悬停仍按渲染 LOD。
+Filters were implemented in v0.1.0 (hiding matching objects) but have been removed entirely because they conflicted with the product decision that "selection does not depend on render state"; box selection is now a pure geometric selection, while click/hover still follow the render LOD.
 
-### 2.13 搜索 DSL
+### 2.13 Search DSL
 
-| 语法 | 语义 | 来源 |
+| Syntax | Semantics | Source |
 |---|---|---|
-| `type:node` / `type:way` / `type:relation` | 类型 | JOSM 已核实 |
-| `key=value` | 精确匹配（大小写敏感） | 已核实 |
-| `key:value` | 子串匹配（大小写不敏感，如 `name:Herrengasse`） | 已核实 |
-| `"addr:street"="Baker Street"` | 键/值含 `:` 或空格必须加引号 | 已核实 |
-| `-expr` | 取反（如 `-highway:`） | 已核实 |
-| `expr1 expr2` / `expr1 & expr2` | AND（并列即 AND） | 已核实 |
-| `expr1 \| expr2` | OR | 已核实 |
-| `key=~/regex/`、`/^addr:/` | 正则（JOSM 用 Java regex；NEO 用 `regex` crate，构造差异见 §2.6） | 已核实 |
-| `id:`、`user:`、`timestamp:a/b`、`version:`、`changeset:` | 元数据谓词 | 已核实（示例含 `user:Steve`） |
-| `preset:"Craft/Beekeeper"` | 按预设匹配 | 已核实 |
-| 整串交给 MapCSS 选择器 | JOSM 搜索框的 "MapCSS selector" 模式 | 已核实 |
-| `in <bbox>` / `bbox:` | 空间范围谓词 | **> 待验证**：JOSM 官方搜索页未列出 `in`/`bbox`，NEO 作为扩展实现并标注 |
+| `type:node` / `type:way` / `type:relation` | type | JOSM-verified |
+| `key=value` | exact match (case-sensitive) | verified |
+| `key:value` | substring match (case-insensitive, e.g. `name:Herrengasse`) | verified |
+| `"addr:street"="Baker Street"` | keys/values containing `:` or spaces must be quoted | verified |
+| `-expr` | negation (e.g. `-highway:`) | verified |
+| `expr1 expr2` / `expr1 & expr2` | AND (juxtaposition means AND) | verified |
+| `expr1 \| expr2` | OR | verified |
+| `key=~/regex/`, `/^addr:/` | regex (JOSM uses Java regex; NEO uses the `regex` crate; construction differences in §2.6) | verified |
+| `id:`, `user:`, `timestamp:a/b`, `version:`, `changeset:` | metadata predicates | verified (example includes `user:Steve`) |
+| `preset:"Craft/Beekeeper"` | match by preset | verified |
+| the whole string handed to a MapCSS selector | JOSM search box's "MapCSS selector" mode | verified |
+| `in <bbox>` / `bbox:` | spatial range predicate | **> to verify**: JOSM's official search page does not list `in`/`bbox`; NEO implements it as an extension and marks it as such |
 
-求值顺序：`DSL parse → 类型/键索引剪枝 → 谓词求值 → 返回 Vec<ObjId>`。空间谓词用 [04](04-spatial-index-and-geometry.md) 的对象 R-tree；`-` 与 `&`/`|` 的优先级遵循"`-` 最强、`&` 次之、`|` 最弱"，括号显式分组。
+Evaluation order: `DSL parse → type/key index pruning → predicate evaluation → return Vec<ObjId>`. Spatial predicates use the object R-tree from [04](04-spatial-index-and-geometry.md); the precedence of `-` with `&`/`|` follows "`-` highest, `&` next, `|` lowest", with explicit grouping via parentheses.
 
-### 2.14 i18n 与资产加载
+### 2.14 i18n and Asset Loading
 
-| 资产 | 加载方式 | 许可/隔离 |
+| Asset | Loading method | License/isolation |
 |---|---|---|
-| `elemstyles.mapcss`、presets、12 个 validator 规则、`boundaries.osm` | 运行时从 assets 目录或用户目录读取（热重载） | GPL/CC-BY-SA 资产与代码物理分离；不 `include_str!`、不进二进制 |
-| 翻译 | JOSM 的 `.lang`（48 个文件）与 NEO 自有 key 并存；先查 NEO 表，再查资产表 | `.lang` 随资产目录分发 |
-| 字体 | 系统字体枚举（CJK 见 [05](05-renderer-wgpu.md) §2.11），可选下载 OFL 字库 | 不进二进制 |
-| 目录清单 | `assets/manifest.json`：来源 URL、版本、sha256、license 标识 | CI 校验 sha256；缺 license 字段直接失败 |
+| `elemstyles.mapcss`, presets, the 12 validator rules, `boundaries.osm` | read at runtime from the assets directory or the user directory (hot reload) | GPL/CC-BY-SA assets are physically separated from code; no `include_str!`, not in the binary |
+| translations | JOSM's `.lang` (48 files) coexist with NEO's own keys; look up the NEO table first, then the asset table | `.lang` ships with the asset directory |
+| fonts | system font enumeration (CJK see [05](05-renderer-wgpu.md) §2.11), optional OFL font download | not in the binary |
+| catalog manifest | `assets/manifest.json`: source URL, version, sha256, license identifier | CI verifies sha256; a missing license field fails the build |
 
-`tr()` 的键空间：NEO 自有 UI 用 `neo.*` 前缀，JOSM 资产用原始英文串（与 `.lang` 对齐），避免两套翻译体系互相覆盖。
+Key spaces of `tr()`: NEO's own UI uses the `neo.*` prefix, and JOSM assets use the original English strings (aligned with `.lang`), so the two translation systems never override each other.
 
-## 3 关键接口
+## 3 Key Interfaces
 
 ```rust
 // ── neo-style/src/mapcss/mod.rs ─────────────────────────────────────────────
@@ -327,20 +327,20 @@ pub struct CompileOpts { pub target: StyleTarget, pub settings: StyleSettings, p
 pub struct StyleSheet { /* rules, key_index, layers, meta, canvas, unsupported */ }
 impl StyleSheet {
     pub fn compile(src: &str, opts: &CompileOpts) -> Result<Self, Vec<StyleError>>;
-    pub fn extend(&mut self, src: &str, origin: StyleOrigin) -> Result<(), Vec<StyleError>>; // 多文件叠加
-    pub fn apply(&self, obj: &StyleObject<'_>, ctx: &StyleCtx<'_>) -> ResolvedStyle;         // 级联 + 层合成
-    pub fn candidates(&self, tags: &TagView<'_>, kind: GeomKind) -> RuleCandidates<'_>;      // key 索引剪枝
+    pub fn extend(&mut self, src: &str, origin: StyleOrigin) -> Result<(), Vec<StyleError>>; // multi-file layering
+    pub fn apply(&self, obj: &StyleObject<'_>, ctx: &StyleCtx<'_>) -> ResolvedStyle;         // cascade + layer composition
+    pub fn candidates(&self, tags: &TagView<'_>, kind: GeomKind) -> RuleCandidates<'_>;      // key-index pruning
     pub fn meta(&self) -> &StyleMeta;
     pub fn canvas(&self) -> &CanvasStyle;
-    pub fn unsupported(&self) -> &[UnsupportedProperty];   // 供 UI 与 known-deviations 导出
-    pub fn fingerprint(&self) -> u64;                      // 热重载判定
+    pub fn unsupported(&self) -> &[UnsupportedProperty];   // exported for the UI and known-deviations
+    pub fn fingerprint(&self) -> u64;                      // hot-reload detection
 }
 
 pub struct StyleObject<'a> {
     pub kind: GeomKind,
     pub tags: TagView<'a>,
     pub pseudo: PseudoSet,
-    pub geom: Option<GeomFacts>,   // 闭合、面积、方向、未闭合 multipolygon
+    pub geom: Option<GeomFacts>,   // closed, area, direction, unclosed multipolygon
 }
 pub struct StyleCtx<'a> {
     pub zoom: f64,
@@ -350,7 +350,7 @@ pub struct StyleCtx<'a> {
 }
 pub struct ResolvedStyle {
     pub fill: Option<FillSpec>,
-    pub stroke: Vec<StrokeSpec>,     // 主线 + casing(left/right)
+    pub stroke: Vec<StrokeSpec>,     // main stroke + casing(left/right)
     pub icon: Option<IconSpec>,
     pub text: Option<TextSpec>,
     pub z: ZKey,                     // (major_z, z, object_z)
@@ -358,14 +358,14 @@ pub struct ResolvedStyle {
 }
 
 // ── neo-style/src/preset.rs ─────────────────────────────────────────────────
-pub struct PresetCatalog { /* 预编译 match 表达式 + name/type 索引 */ }
+pub struct PresetCatalog { /* precompiled match expressions + name/type indexes */ }
 impl PresetCatalog {
     pub fn load_xml(bytes: &[u8], i18n: &dyn I18n) -> Result<Self, Vec<PresetError>>;
     pub fn extend_xml(&mut self, bytes: &[u8], i18n: &dyn I18n) -> Result<(), Vec<PresetError>>;
     pub fn matches_for(&self, kind: PresetType, tags: &TagView<'_>) -> Vec<&PresetItem>;
     pub fn item_by_name(&self, name: &str) -> Option<&PresetItem>;
     pub fn roots(&self) -> &[PresetGroup];
-    pub fn form(&self, item: &PresetItem) -> PresetForm;   // 与 egui 无关的中性描述
+    pub fn form(&self, item: &PresetItem) -> PresetForm;   // neutral description, independent of egui
 }
 
 // ── neo-editor/src/search.rs ────────────────────────────────────────────────
@@ -373,69 +373,69 @@ pub struct SearchQuery { /* AST */ }
 impl SearchQuery {
     pub fn parse(src: &str) -> Result<Self, Vec<SearchError>>;
     pub fn eval(&self, snapshot: &Snapshot, index: &SpatialIndex, bbox: Option<Aabb>) -> Vec<ObjId>;
-    pub fn to_mapcss_selector(&self) -> Option<String>;   // JOSM 的 MapCSS 搜索模式
+    pub fn to_mapcss_selector(&self) -> Option<String>;   // JOSM's MapCSS search mode
 }
 
 ```
 
-## 4 数据流
+## 4 Data Flow
 
 ```
-启动 / 热重载：assets/*.mapcss ─► StyleSheet::compile + extend ─► neo-scene
-             defaultpresets.xml ─► PresetCatalog::load_xml（chunk/reference 展开 + match 预编译）
+startup / hot reload: assets/*.mapcss ─► StyleSheet::compile + extend ─► neo-scene
+             defaultpresets.xml ─► PresetCatalog::load_xml (chunk/reference expansion + match precompilation)
              validator/*.mapcss ─► StyleSheet::compile(Validator) ─► neo-validate
-             boundaries.osm ─► TerritoryDb；ELI/maps.xml ─► ImageryCatalog（缓存 + attribution）
-每帧：① 数据快照 ─► ② 样式求值（工作线程，指纹缓存）─► ③ 打包 SceneFrame ─► neo-render（仅 ③ 在主线程）
-编辑：改 tag ─► 指纹失效 ─► 只重算该对象；改选择 ─► 只重算 :selected/:highlighted 相关
+             boundaries.osm ─► TerritoryDb; ELI/maps.xml ─► ImageryCatalog (cache + attribution)
+per frame: ① data snapshot ─► ② style evaluation (worker thread, fingerprint cache) ─► ③ pack SceneFrame ─► neo-render (only ③ on the main thread)
+editing: change tag ─► fingerprint invalidated ─► recompute only that object; change selection ─► recompute only :selected/:highlighted-related
 ```
 
 ```
-一次搜索
+one search
   parse("type:way highway & -service") ──► AST
-     ├─ 键索引：候选 = ways 且含 highway
-     ├─ 谓词求值（标签 + 正则 + 空间）
-     └─ 结果 Vec<ObjId> ──► 选中集（可撤销为独立命令）
+     ├─ key index: candidates = ways containing highway
+     ├─ predicate evaluation (tags + regex + spatial)
+     └─ result Vec<ObjId> ──► selection set (undoable as a standalone command)
 ```
 
-## 5 权衡与替代
+## 5 Trade-offs and Alternatives
 
-| 决策 | 备选 | 取此的理由 | 代价 |
+| Decision | Alternative | Why this choice | Cost |
 |---|---|---|---|
-| 一套 parser 三个目标 | validator 另写一套 | JOSM 的 `.validator.mapcss` 与样式共享选择器语法；两套必然漂移 | parser 需要 `StyleTarget` 分支，测试面变大 |
-| 照抄 JOSM 的"后覆盖前" | 引入 CSS specificity | `elemstyles` 依赖文件顺序；加 specificity 会改变渲染结果 | 规则顺序成为契约，重排即破坏兼容 |
-| 编译期识别不支持属性并降级 | 遇错整体失败 | 663 KB 的官方样式里必然有我们没实现的属性；整体失败 = 不可用 | 需要维护 `unsupported` 清单与 UI 提示 |
-| tag 指纹缓存 + key 倒排剪枝 | 逐对象逐规则全量匹配 | 10M × 数千规则不可行 | 缓存失效逻辑是新 bug 面 |
-| 资产运行时加载 | 编进二进制 | GPL/CC-BY-SA 隔离 + 可热更新 + 用户可换 | 启动要多一次 IO 与校验；缺资产要优雅降级 |
-| Presets 中性 `PresetForm` | UI 直接操作 XML DOM | egui 与 XML 解耦，可单测表单生成 | 多一层映射代码 |
-| 影像不打包、在线目录 | 内置一份快照 | 许可（NOASSERTION）与时效性 | 首次启动需联网；离线需缓存 |
+| one parser, three targets | write a separate validator parser | JOSM's `.validator.mapcss` shares selector syntax with styles; two parsers would inevitably drift | the parser needs `StyleTarget` branches, enlarging the test surface |
+| copy JOSM's "later overrides earlier" | introduce CSS specificity | `elemstyles` depends on file order; adding specificity would change rendering results | rule order becomes a contract; reordering breaks compatibility |
+| detect unsupported properties at compile time and degrade | fail wholesale on any error | the 663 KB official stylesheet inevitably contains properties we have not implemented; failing wholesale = unusable | must maintain the `unsupported` list and UI hints |
+| tag fingerprint cache + key inverted-index pruning | full match of every object against every rule | 10M × thousands of rules is infeasible | cache-invalidation logic is a new bug surface |
+| load assets at runtime | compile into the binary | GPL/CC-BY-SA isolation + hot updates + user-swappable | one more IO and validation at startup; must degrade gracefully when assets are missing |
+| neutral `PresetForm` for presets | UI directly manipulates the XML DOM | egui is decoupled from XML and form generation is unit-testable | one more mapping layer |
+| no bundled imagery, online catalog | ship a built-in snapshot | licensing (NOASSERTION) and freshness | first startup needs network; offline requires a cache |
 
-## 6 风险
+## 6 Risks
 
-| # | 风险 | 影响 | 缓解 |
+| # | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R1 | GPL/CC-BY-SA 资产被误编进二进制 | 许可污染，整包需 GPL | CI 检查 `include_str!`/`include_bytes!` 白名单；资产目录独立 + manifest |
-| R2 | MapCSS 语义偏差（尤其 `::*`、`:area-style`、z 序） | 与 JOSM 渲染不一致 | `known-deviations.md` 逐条登记；9 宫格截图对拍 |
-| R3 | 样式求值拖慢主线程 | 掉帧 | 指纹缓存 + 工作线程 + `05` 的帧预算；超预算降 LOD 不降样式 |
-| R4 | 660 KB presets + 大 match 表达式导致启动/匹配慢 | 打开预设面板卡顿 | 加载期预编译 match 为谓词；按 type 建索引；启动后异步完成 |
-| R5 | 正则风味差异（lookaround/backref） | 某条规则永不匹配 | 编译期报"不支持的正则构造"，降级为不匹配并提示 |
-| R6 | ELI 目录条目许可/条款变化 | 用户被误导使用受限影像 | 逐条展示 attribution/terms；不做"一键全选" |
-| R7 | `.lang` 与 NEO 自有 i18n 混用导致串味 | UI 文案错乱 | 键前缀隔离（`neo.*` vs 原文），加载顺序固定 |
+| R1 | GPL/CC-BY-SA assets accidentally compiled into the binary | license contamination, the whole package would need GPL | CI checks an allowlist for `include_str!`/`include_bytes!`; asset directory separate + manifest |
+| R2 | MapCSS semantic deviations (especially `::*`, `:area-style`, z-order) | rendering does not match JOSM | register each in `known-deviations.md`; 9-cell screenshot comparison |
+| R3 | style evaluation slows down the main thread | dropped frames | fingerprint cache + worker thread + the frame budget from `05`; when over budget lower LOD, not styles |
+| R4 | 660 KB of presets + large match expressions make startup/matching slow | preset panel stutters | precompile matches into predicates at load time; index by type; finish asynchronously after startup |
+| R5 | regex flavor differences (lookaround/backref) | some rule never matches | report "unsupported regex construct" at compile time, degrade to no-match with a hint |
+| R6 | ELI catalog entries change license/terms | users misled into using restricted imagery | show attribution/terms per entry; no "select all" shortcut |
+| R7 | mixing `.lang` with NEO's own i18n causes cross-contamination | garbled UI copy | key-prefix isolation (`neo.*` vs original text), fixed load order |
 
-## 7 验收标准
+## 7 Acceptance Criteria
 
-1. **解析**：`elemstyles.mapcss`、12 个 `.validator.mapcss`、`defaultpresets.xml` 三者加载后 `StyleError`/`PresetError` 均为 0；`unsupported()` 条目与 `docs/known-deviations.md` 一一对应。
-2. **渲染对拍**：参考数据集在 zoom 10/13/16/19 四档与 JOSM 截图九宫格比对，差异条目 ≤ 5 且每条有理由。
-3. **级联**：构造 20 条用例覆盖"后覆盖前"、`::layer` 排序、`::*` 展开、相对 `+2`、casing 成对，全部通过。
-4. **Presets**：`group/item/chunk/reference` 展开正确；`type` 组合（含 `multipolygon` 与 `relation` 的差异）用例通过；`match` 过滤在 10k 对象上单次 ≤ 【待实测，见 docs/14-performance-and-verification.md】。
-5. **搜索**：§2.13 表中每条语法至少 2 个用例；`-`/`&`/`|` 优先级用例通过。
-6. **许可**：`assets/manifest.json` 覆盖全部资产，缺 license/sha256 时 CI 失败；二进制中 grep 不到任何资产文件的字符串常量。
+1. **Parsing**: loading `elemstyles.mapcss`, the 12 `.validator.mapcss` files, and `defaultpresets.xml` yields 0 `StyleError`/`PresetError`; `unsupported()` entries correspond one-to-one with `docs/known-deviations.md`.
+2. **Render comparison**: on the reference dataset at zoom 10/13/16/19, compare 9-cell screenshots against JOSM; deviation entries ≤ 5, each with a stated reason.
+3. **Cascade**: construct 20 cases covering "later overrides earlier", `::layer` ordering, `::*` expansion, relative `+2`, and paired casing; all pass.
+4. **Presets**: `group/item/chunk/reference` expand correctly; `type` combinations (including the difference between `multipolygon` and `relation`) cases pass; `match` filtering on 10k objects takes ≤ [pending measurement, see docs/14-performance-and-verification.md] per run.
+5. **Search**: each syntax in the §2.13 table has at least 2 cases; `-`/`&`/`|` precedence cases pass.
+6. **Licensing**: `assets/manifest.json` covers all assets, and CI fails when license/sha256 is missing; no asset file string constants can be found in the binary by grep.
 
-## 8 参考
+## 8 References
 
-- JOSM MapCSS 实现（选择器、运算符、`::layer`、`@supports`、不支持项清单）：<https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation>
-- MapCSS tag checker（`throw*/fix*/assertMatch`、`{n}` 占位符）：<https://josm.openstreetmap.de/wiki/Help/Validator/MapCSSTagChecker>
-- Tagging presets（XML 结构、`chunk`/`reference`、字段类型）：<https://josm.openstreetmap.de/wiki/TaggingPresets>
-- 搜索语法（`type:`、`key=value`、`-`、`&`、`|`、正则、`preset:`、MapCSS 模式）：<https://josm.openstreetmap.de/wiki/Help/Action/Search>
-- Editor Layer Index（许可标注 NOASSERTION，需逐条确认）：<https://github.com/osmlab/editor-layer-index>
-- JOSM 影像偏移库（XML + 查询串端点）：<https://josm.openstreetmap.de/wiki/Plugin/ImageryOffsetDb>
-- 待验证：`maps.xsd` 的完整 URL 占位符集合（`{switch:…}` 等）**> 待验证**；搜索框 `in`/`bbox` 关键字在 JOSM 中的正式语义 **> 待验证**；图标资产逐文件 provenance **> 待验证**。
+- JOSM's MapCSS implementation (selectors, operators, `::layer`, `@supports`, list of unsupported items): <https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation>
+- MapCSS tag checker (`throw*/fix*/assertMatch`, `{n}` placeholders): <https://josm.openstreetmap.de/wiki/Help/Validator/MapCSSTagChecker>
+- Tagging presets (XML structure, `chunk`/`reference`, field types): <https://josm.openstreetmap.de/wiki/TaggingPresets>
+- Search syntax (`type:`, `key=value`, `-`, `&`, `|`, regex, `preset:`, MapCSS mode): <https://josm.openstreetmap.de/wiki/Help/Action/Search>
+- Editor Layer Index (license labeled NOASSERTION; needs case-by-case confirmation): <https://github.com/osmlab/editor-layer-index>
+- JOSM imagery offset database (XML + query-string endpoint): <https://josm.openstreetmap.de/wiki/Plugin/ImageryOffsetDb>
+- To verify: the complete URL placeholder set of `maps.xsd` (`{switch:…}` etc.) **> to verify**; the official semantics of the search-box `in`/`bbox` keywords in JOSM **> to verify**; per-file provenance of icon assets **> to verify**.

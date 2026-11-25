@@ -1,4 +1,4 @@
-//! NeoApp::open 方法。行为与拆分前的 app.rs 相同。
+//! NeoApp::open methods. Same behavior as before the app.rs split.
 
 use neo_editor::{AddNode, AddWay, Editor};
 use neo_i18n::{t, tf};
@@ -11,7 +11,7 @@ use super::NeoApp;
 
 impl NeoApp {
     ///
-    /// GPX 导入为当前图层的节点/way（通过命令批，保持单写者）
+    /// Imports GPX as nodes/ways of the current layer (through a command batch, preserving the single writer)
     pub(super) fn import_gpx(&mut self, path: &Path) {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
@@ -79,7 +79,7 @@ impl NeoApp {
         }
     }
 
-    /// 后台打开 PBF/XML：大文件导入不再冻结 UI；完成后始终作为新的活动图层。
+    /// Opens PBF/XML in the background: large imports no longer freeze the UI; on completion it always becomes the new active layer.
     pub(super) fn start_open_dataset(&mut self, path: std::path::PathBuf, pbf: bool) {
         if self.open_busy {
             self.status = t("app.status.import_busy").to_owned();

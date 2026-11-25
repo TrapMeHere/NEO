@@ -1,11 +1,12 @@
-//! # neo-api — OSM API 0.6 客户端
+//! # neo-api — OSM API 0.6 client
 //!
-//! 这一层只负责 **HTTP 语义与 XML 协议**：changeset 创建/关闭、diff 上传、区域下载、
-//! 409 冲突解析。传输层通过 [`Transport`] 注入，因此单元测试不需要网络，应用层可以
-//! 选择 reqwest（feature `http`）或自己的 mock/代理。
+//! This layer only handles **HTTP semantics and the XML protocol**: changeset create/close, diff upload,
+//! area download, 409 conflict parsing. The transport layer is injected via [`Transport`], so unit tests need
+//! no network and the application layer can choose reqwest (feature `http`) or its own mock/proxy.
 //!
-//! 冲突的**业务合并**（MergeCase）属于 `neo-editor`；本 crate 只把 409 的 XML
-//! 翻译成 [`ConflictReport`]（对象 id/version + 服务端消息），不依赖 editor（见 docs/06 §2.6）。
+//! The **business merge** of conflicts (MergeCase) belongs to `neo-editor`; this crate only translates the
+//! 409 XML into [`ConflictReport`] (object id/version + server message) and does not depend on the editor
+//! (see docs/06 §2.6).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -17,21 +18,21 @@ use std::sync::Mutex;
 
 use neo_core::{ObjectId, ObjectKind};
 
-/// 一次 HTTP 请求（与具体客户端解耦）。
+/// One HTTP request (decoupled from any concrete client).
 #[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
-    /// 方法（GET/POST/PUT）。
+    /// Method (GET/POST/PUT).
     pub method: String,
-    /// 绝对 URL。
+    /// Absolute URL.
     pub url: String,
-    /// 请求头。
+    /// Request headers.
     pub headers: Vec<(String, String)>,
-    /// 请求体。
+    /// Request body.
     pub body: String,
 }
 
-/// 手写 Debug：请求头里有 `Authorization: Bearer <token>`，不能让 `{:?}`
-/// 把长期凭据打进日志/测试输出。
+/// Hand-written Debug: the headers carry `Authorization: Bearer <token>`, and `{:?}` must not
+/// leak long-lived credentials into logs or test output.
 impl core::fmt::Debug for HttpRequest {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let headers: Vec<String> = self
@@ -54,81 +55,81 @@ impl core::fmt::Debug for HttpRequest {
     }
 }
 
-/// 一次 HTTP 响应。
+/// One HTTP response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpResponse {
-    /// HTTP 状态码。
+    /// HTTP status code.
     pub status: u16,
-    /// 响应体。
+    /// Response body.
     pub body: String,
 }
 
-/// 传输层错误。
+/// Transport error.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
-    /// 网络/客户端错误。
+    /// Network/client error.
     #[error("transport: {0}")]
     Other(String),
 }
 
-/// 可注入的 HTTP 传输层。
+/// Injectable HTTP transport layer.
 pub trait Transport: Send + Sync {
-    /// 发送请求。
+    /// Sends a request.
     fn send(&self, request: HttpRequest) -> Result<HttpResponse, TransportError>;
 }
 
-/// API 错误。
+/// API error.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
-    /// 传输层失败。
+    /// Transport failure.
     #[error(transparent)]
     Transport(#[from] TransportError),
-    /// 认证失败（401/403）。
+    /// Authentication failure (401/403).
     #[error("authentication failed: {0}")]
     Unauthorized(String),
-    /// 409：上传冲突。
+    /// 409: upload conflict.
     #[error("conflict: {0:?}")]
     Conflict(ConflictReport),
-    /// 412：前置条件失败（版本/changeset 状态）。
+    /// 412: precondition failed (version/changeset state).
     #[error("precondition failed: {0}")]
     Precondition(String),
-    /// 其它 HTTP 错误。
+    /// Other HTTP errors.
     #[error("http {status}: {body}")]
     Http {
-        /// 状态码。
+        /// Status code.
         status: u16,
-        /// 响应体。
+        /// Response body.
         body: String,
     },
-    /// 响应格式错误。
+    /// Malformed response.
     #[error("protocol: {0}")]
     Protocol(String),
 }
 
-/// 冲突中的一个对象。
+/// One object involved in a conflict.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConflictObject {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 本地（旧）id（新建对象为负）。
+    /// Local (old) id (negative for newly created objects).
     pub old_id: ObjectId,
-    /// 服务端新 id（若服务端创建成功）。
+    /// New server id (present if the server created it successfully).
     pub new_id: Option<ObjectId>,
-    /// 服务端当前版本（若给出）。
+    /// Current server version (if provided).
     pub version: Option<i32>,
 }
 
-/// 409 冲突报告。
+/// 409 conflict report.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ConflictReport {
-    /// 服务端错误消息。
+    /// Server error message.
     pub message: String,
-    /// 冲突对象。
+    /// Conflicting objects.
     pub objects: Vec<ConflictObject>,
 }
 
 impl ConflictReport {
-    /// 是否包含某些对象。
+    /// Whether it contains some objects.
     pub fn contains(&self, kind: ObjectKind, id: ObjectId) -> bool {
         self.objects
             .iter()
@@ -136,110 +137,110 @@ impl ConflictReport {
     }
 }
 
-/// 上传返回的 diffResult 条目。
+/// A diffResult entry returned by an upload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffEntry {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 本地 id。
+    /// Local id.
     pub old_id: ObjectId,
-    /// 服务端 id。
+    /// Server id.
     pub new_id: Option<ObjectId>,
-    /// 新版本。
+    /// New version.
     pub new_version: Option<i32>,
 }
 
-/// 上传结果。
+/// Upload result.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct UploadResult {
-    /// 逐对象结果。
+    /// Per-object results.
     pub entries: Vec<DiffEntry>,
 }
 
-/// 一条 note 评论。
+/// One note comment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteComment {
-    /// 时间（服务端原样字符串）。
+    /// Time (raw server string).
     pub date: String,
-    /// 用户名（匿名可为空）。
+    /// User name (may be empty for anonymous).
     pub user: String,
-    /// 文本。
+    /// Text.
     pub text: String,
-    /// 动作：`opened`/`commented`/`closed` 等。
+    /// Action: `opened`/`commented`/`closed` etc.
     pub action: String,
 }
 
-/// 一条 OSM note。
+/// One OSM note.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Note {
-    /// note id。
+    /// Note ID.
     pub id: i64,
-    /// 纬度。
+    /// Latitude.
     pub lat: f64,
-    /// 经度。
+    /// Longitude.
     pub lon: f64,
-    /// `open` 或 `closed`。
+    /// `open` or `closed`.
     pub status: String,
-    /// 评论（第一条是开启者）。
+    /// Comments (the first one is from the opener).
     pub comments: Vec<NoteComment>,
 }
 
-/// changeset 历史（只读元数据）。
+/// Changeset history (read-only metadata).
 ///
-/// `bbox` 的元组顺序与 [`ApiClient::download_map`] 一致：`(min_lon, min_lat,
-/// max_lon, max_lat)`。changeset 没有改动过对象、或服务端省略 bbox 属性时为 `None`。
+/// The tuple order of `bbox` matches [`ApiClient::download_map`]: `(min_lon, min_lat,
+/// max_lon, max_lat)`. It is `None` when the changeset has not modified objects or the server omits the bbox attribute.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangesetInfo {
-    /// changeset id。
+    /// Changeset ID.
     pub id: i64,
-    /// 作者 uid（匿名/导入 changeset 可能缺失）。
+    /// Author uid (may be missing for anonymous/imported changesets).
     pub uid: Option<i64>,
-    /// 作者显示名（缺失时为空串）。
+    /// Author display name (empty string when missing).
     pub user: String,
-    /// 创建时间（服务端原样字符串，ISO 8601）。
+    /// Creation time (raw server string, ISO 8601).
     pub created_at: String,
-    /// 关闭时间（仍打开时为 `None`）。
+    /// Closing time (`None` while still open).
     pub closed_at: Option<String>,
-    /// 是否仍打开（缺少 `open` 属性时按 `closed_at` 是否为空推断）。
+    /// Whether it is still open (when the `open` attribute is missing, inferred from whether `closed_at` is empty).
     pub open: bool,
-    /// `comment` 标签的值（没有 `comment` 标签时为空串）。
+    /// Value of the `comment` tag (empty string when there is no `comment` tag).
     pub comment: String,
-    /// 全部标签（按出现顺序；含 `comment`）。
+    /// All tags (in order of appearance; includes `comment`).
     pub tags: Vec<(String, String)>,
-    /// 改动对象数：优先 `changes_count`，缺失时回退 `comments_count`。
+    /// Number of changed objects: prefers `changes_count`, falls back to `comments_count` when missing.
     pub changes_count: Option<usize>,
-    /// 改动范围 `(min_lon, min_lat, max_lon, max_lat)`。
+    /// Changed area `(min_lon, min_lat, max_lon, max_lat)`.
     pub bbox: Option<(f64, f64, f64, f64)>,
 }
 
-/// OSM 用户的公开信息（只读）。
+/// Public OSM user information (read-only).
 ///
-/// 与 [`oauth::UserInfo`] 不同：这里读取的是 `/api/0.6/user/{uid}` 的公开资料，
-/// 额外包含 `<description>` 与注册时间；`oauth` 那份来自 `/user/details`。
+/// Unlike [`oauth::UserInfo`]: this reads the public profile from `/api/0.6/user/{uid}`,
+/// which additionally contains `<description>` and the registration time; the one in `oauth` comes from `/user/details`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserInfo {
-    /// 数字 uid。
+    /// Numeric uid.
     pub id: i64,
-    /// 显示名。
+    /// Display name.
     pub display_name: String,
-    /// 个人描述（`<description>` 的文本，可能为空）。
+    /// Personal description (text of `<description>`, possibly empty).
     pub description: String,
-    /// 注册时间（服务端原样字符串）。
+    /// Registration time (raw server string).
     pub account_created: String,
 }
 
-/// OSM API 客户端。
+/// OSM API client.
 pub struct ApiClient<T: Transport> {
-    /// API 根（例如 `https://api.openstreetmap.org`）。
+    /// API root (e.g. `https://api.openstreetmap.org`).
     pub base_url: String,
-    /// OAuth2 access token（可选，匿名只能读）。
+    /// OAuth2 access token (optional; anonymous access can only read).
     pub token: Option<String>,
-    /// 传输层。
+    /// Transport layer.
     pub transport: T,
 }
 
 impl<T: Transport> ApiClient<T> {
-    /// 创建客户端。
+    /// Creates a client.
     pub fn new(base_url: impl Into<String>, token: Option<String>, transport: T) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
@@ -283,9 +284,9 @@ impl<T: Transport> ApiClient<T> {
         }
     }
 
-    /// 创建 changeset，返回 changeset id。
+    /// Creates a changeset and returns its id.
     ///
-    /// OSM 只注册了 `PUT /api/0.6/changeset/create`。用 POST 会落到网站的 HTML 404。
+    /// OSM only registers `PUT /api/0.6/changeset/create`. Using POST lands on the website's HTML 404.
     pub fn create_changeset(&self, comment: &str, created_by: &str) -> Result<i64, ApiError> {
         let body = format!(
             "<osm><changeset><tag k=\"comment\" v=\"{}\"/><tag k=\"created_by\" v=\"{}\"/></changeset></osm>",
@@ -298,7 +299,7 @@ impl<T: Transport> ApiClient<T> {
             .map_err(|_| ApiError::Protocol(format!("unexpected changeset id: {text}")))
     }
 
-    /// 上传 osmChange（调用方用 `neo-io` 生成 XML）。
+    /// Uploads osmChange (the caller generates the XML with `neo-io`).
     pub fn upload_diff(&self, changeset: i64, osc: &str) -> Result<UploadResult, ApiError> {
         let text = self.request(
             "POST",
@@ -309,7 +310,7 @@ impl<T: Transport> ApiClient<T> {
         Ok(parse_diff_result(&text))
     }
 
-    /// 关闭 changeset。
+    /// Closes a changeset.
     pub fn close_changeset(&self, changeset: i64) -> Result<(), ApiError> {
         self.request(
             "PUT",
@@ -320,25 +321,25 @@ impl<T: Transport> ApiClient<T> {
         Ok(())
     }
 
-    /// 读取 changeset 历史（只读）：`GET /api/0.6/changeset/{id}`。
+    /// Reads changeset history (read-only): `GET /api/0.6/changeset/{id}`.
     ///
-    /// 响应是 `<osm><changeset ...>` XML；`<discussion>` 与注释正文被忽略，
-    /// 只取元数据与 `<tag>`。根元素不是 `<osm>`、或 XML 结构损坏时返回
-    /// [`ApiError::Protocol`]。
+    /// The response is `<osm><changeset ...>` XML; `<discussion>` and comment bodies are ignored and only
+    /// metadata plus `<tag>` are taken. Returns an error when the root element is not `<osm>` or the XML is malformed.
+    /// The returned error is [`ApiError::Protocol`].
     pub fn changeset(&self, id: i64) -> Result<ChangesetInfo, ApiError> {
         let text = self.request("GET", &format!("/api/0.6/changeset/{id}"), "", "text/xml")?;
         parse_changeset(&text, id)
     }
 
-    /// 读取用户公开信息（只读）：`GET /api/0.6/user/{uid}`。
+    /// Reads the user's public information (read-only): `GET /api/0.6/user/{uid}`.
     ///
-    /// 不需要 token；`<description>` 中的 XML 实体（`&amp;` 等）会被反转义。
+    /// No token required; XML entities in `<description>` (`&amp;` etc.) are unescaped.
     pub fn user(&self, uid: i64) -> Result<UserInfo, ApiError> {
         let text = self.request("GET", &format!("/api/0.6/user/{uid}"), "", "text/xml")?;
         parse_user(&text, uid)
     }
 
-    /// 下载单个对象（冲突时“采用远端”用）。
+    /// Downloads a single object (used by "take remote" during conflicts).
     pub fn download_object(&self, kind: ObjectKind, id: ObjectId) -> Result<String, ApiError> {
         let name = match kind {
             ObjectKind::Node => "node",
@@ -349,19 +350,19 @@ impl<T: Transport> ApiClient<T> {
         self.request("GET", &format!("/api/0.6/{name}/{}", id.0), "", "text/xml")
     }
 
-    /// 下载 bbox 区域（返回 OSM XML；调用方用 `neo-io` 解析）。
+    /// Downloads a bbox area (returns OSM XML; the caller parses it with `neo-io`).
     pub fn download_map(&self, bbox: (f64, f64, f64, f64)) -> Result<String, ApiError> {
         let (min_lon, min_lat, max_lon, max_lat) = bbox;
         let path = format!("/api/0.6/map?bbox={min_lon:.7},{min_lat:.7},{max_lon:.7},{max_lat:.7}");
         self.request("GET", &path, "", "text/xml")
     }
 
-    /// 通过 Overpass QL 下载 OSM XML（`endpoint` 为完整 interpreter URL）。
+    /// Downloads OSM XML through an Overpass QL query (`endpoint` is the full interpreter URL).
     pub fn download_overpass(&self, endpoint: &str, query: &str) -> Result<String, ApiError> {
         download_overpass(&self.transport, endpoint, query)
     }
 
-    /// 读取 bbox 内的 notes（默认最多 100 条，含最近 7 天关闭的）。
+    /// Reads notes inside the bbox (at most 100 by default, including ones closed in the last 7 days).
     pub fn notes(&self, bbox: (f64, f64, f64, f64)) -> Result<Vec<Note>, ApiError> {
         let (min_lon, min_lat, max_lon, max_lat) = bbox;
         let path = format!(
@@ -371,7 +372,7 @@ impl<T: Transport> ApiClient<T> {
         parse_notes(&text)
     }
 
-    /// 新建 note（需要登录 token）。
+    /// Creates a note (requires a login token).
     pub fn create_note(&self, lat: f64, lon: f64, text: &str) -> Result<Note, ApiError> {
         let body = form_body(&[
             ("lat", format!("{lat:.7}")),
@@ -387,7 +388,7 @@ impl<T: Transport> ApiClient<T> {
         parse_note_response(&response)
     }
 
-    /// 追加评论（需要登录 token）。
+    /// Appends a comment (requires a login token).
     pub fn comment_note(&self, id: i64, text: &str) -> Result<Note, ApiError> {
         let body = form_body(&[("text", text.to_owned())]);
         let response = self.request(
@@ -399,7 +400,7 @@ impl<T: Transport> ApiClient<T> {
         parse_note_response(&response)
     }
 
-    /// 关闭 note（需要登录 token）。
+    /// Closes a note (requires a login token).
     pub fn close_note(&self, id: i64, text: &str) -> Result<Note, ApiError> {
         let body = form_body(&[("text", text.to_owned())]);
         let response = self.request(
@@ -420,9 +421,9 @@ fn form_body(pairs: &[(&str, String)]) -> String {
     serializer.finish()
 }
 
-/// 向 Overpass interpreter 提交 QL，返回 OSM XML。
+/// Submits QL to the Overpass interpreter and returns OSM XML.
 ///
-/// `endpoint` 一般为 `https://overpass-api.de/api/interpreter`。
+/// `endpoint` is typically `https://overpass-api.de/api/interpreter`.
 pub fn download_overpass<T: Transport>(
     transport: &T,
     endpoint: &str,
@@ -473,7 +474,7 @@ fn parse_notes(text: &str) -> Result<Vec<Note>, ApiError> {
     if let Some(features) = value.get("features").and_then(|v| v.as_array()) {
         return Ok(features.iter().filter_map(parse_note_value).collect());
     }
-    // 新建/评论接口可能直接返回单个 feature 或 {note: ...}。
+    // The create/comment endpoints may return a single feature directly or {note: ...}.
     if let Some(note) = parse_note_value(&value) {
         return Ok(vec![note]);
     }
@@ -606,7 +607,7 @@ fn parse_diff_result(xml: &str) -> UploadResult {
     result
 }
 
-/// 校验文档根元素是 `<osm>`（OSM API 0.6 的所有 XML 响应都以它为根）。
+/// Verifies that the document root element is `<osm>` (all OSM API 0.6 XML responses use it as the root).
 fn check_osm_root(root: &mut Option<String>, name: &str) -> Result<(), ApiError> {
     if root.is_none() {
         if name != "osm" {
@@ -619,12 +620,12 @@ fn check_osm_root(root: &mut Option<String>, name: &str) -> Result<(), ApiError>
     Ok(())
 }
 
-/// 从 `<changeset>` 的属性构造 [`ChangesetInfo`]（不含子元素 `<tag>`）。
+/// Builds a [`ChangesetInfo`] from the `<changeset>` attributes (excluding the `<tag>` child elements).
 ///
-/// `fallback_id` 用于响应缺少 `id` 属性时回退到调用方请求的 id。
+/// `fallback_id` is used when the response lacks an `id` attribute, falling back to the id the caller requested.
 fn changeset_from_attrs(attrs: &[(String, String)], fallback_id: i64) -> ChangesetInfo {
     let closed_at = attr(attrs, "closed_at").filter(|value| !value.is_empty());
-    // 老服务端/简化响应可能没有 open 属性：有 closed_at 就是已关闭。
+    // Old or simplified servers may lack the open attribute: having closed_at means it is closed.
     let open = match attr(attrs, "open") {
         Some(value) => matches!(value.as_str(), "true" | "1"),
         None => closed_at.is_none(),
@@ -636,7 +637,7 @@ fn changeset_from_attrs(attrs: &[(String, String)], fallback_id: i64) -> Changes
         number("max_lat"),
         number("max_lon"),
     );
-    // 四个角必须齐全才算有效 bbox；顺序与 download_map 一致（lon 在前）。
+    // All four corners must be present for a valid bbox; the order matches download_map (lon first).
     let bbox = match (min_lat, min_lon, max_lat, max_lon) {
         (Some(min_lat), Some(min_lon), Some(max_lat), Some(max_lon)) => {
             Some((min_lon, min_lat, max_lon, max_lat))
@@ -661,22 +662,22 @@ fn changeset_from_attrs(attrs: &[(String, String)], fallback_id: i64) -> Changes
     }
 }
 
-/// 把 changeset 的直接子 `<tag k="..." v="...">` 追加到 [`ChangesetInfo`]。
+/// Appends the direct child `<tag k="..." v="...">` elements of the changeset to [`ChangesetInfo`].
 fn push_changeset_tag(info: &mut Option<ChangesetInfo>, attrs: &[(String, String)]) {
     if let (Some(key), Some(value), Some(info)) = (attr(attrs, "k"), attr(attrs, "v"), info.as_mut()) {
         info.tags.push((key, value));
     }
 }
 
-/// 解析 `/api/0.6/changeset/{id}` 的 XML。
+/// Parses the XML of `/api/0.6/changeset/{id}`.
 fn parse_changeset(xml: &str, fallback_id: i64) -> Result<ChangesetInfo, ApiError> {
     let mut reader = quick_xml::Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut root: Option<String> = None;
     let mut root_closed = false;
     let mut depth = 0usize;
-    // `<changeset>` / `<discussion>` 所在深度：只有 changeset 的直接子 `<tag>`
-    // 才算元数据，discussion 里的 `<tag>` 一律忽略。
+    // Depth of `<changeset>` / `<discussion>`: only `<tag>` elements that are direct children of changeset
+    // count as metadata; any `<tag>` inside discussion is ignored.
     let mut changeset_depth: Option<usize> = None;
     let mut discussion_depth: Option<usize> = None;
     let mut info: Option<ChangesetInfo> = None;
@@ -706,7 +707,7 @@ fn parse_changeset(xml: &str, fallback_id: i64) -> Result<ChangesetInfo, ApiErro
                 let name = e.name().as_ref().to_owned();
                 if root.is_none() {
                     check_osm_root(&mut root, &name)?;
-                    // `<osm/>` 自身闭合，不会有 End 事件。
+                    // `<osm/>` is self-closing, so there is no End event.
                     root_closed = true;
                 }
                 match name.as_str() {
@@ -756,7 +757,7 @@ fn parse_changeset(xml: &str, fallback_id: i64) -> Result<ChangesetInfo, ApiErro
     Ok(info)
 }
 
-/// 从 `<user>` 的属性构造 [`UserInfo`]（`description` 由子元素填充）。
+/// Builds a [`UserInfo`] from the `<user>` attributes (`description` is filled from the child element).
 fn user_from_attrs(attrs: &[(String, String)], fallback_uid: i64) -> UserInfo {
     UserInfo {
         id: attr(attrs, "id")
@@ -768,7 +769,7 @@ fn user_from_attrs(attrs: &[(String, String)], fallback_uid: i64) -> UserInfo {
     }
 }
 
-/// 解析 `/api/0.6/user/{uid}` 的 XML。
+/// Parses the XML of `/api/0.6/user/{uid}`.
 fn parse_user(xml: &str, fallback_uid: i64) -> Result<UserInfo, ApiError> {
     let mut reader = quick_xml::Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -787,7 +788,7 @@ fn parse_user(xml: &str, fallback_uid: i64) -> Result<UserInfo, ApiError> {
                         user = Some(user_from_attrs(&attrs_of(&e), fallback_uid));
                     }
                     "description" if user.is_some() => {
-                        // read_text 会消费掉 </description>，所以要手动补一次 depth。
+                        // read_text consumes </description>, so depth must be restored manually.
                         let raw = reader
                             .read_text(e.name())
                             .map_err(|err| ApiError::Protocol(format!("malformed <description>: {err}")))?;
@@ -835,7 +836,7 @@ fn parse_user(xml: &str, fallback_uid: i64) -> Result<UserInfo, ApiError> {
 fn parse_conflict(xml: &str) -> ConflictReport {
     let mut report = ConflictReport::default();
     if !xml.trim_start().starts_with('<') {
-        // 纯文本错误体（OSM 的 409 常见形态）。
+        // Plain-text error body (the common shape of OSM 409s).
         report.message = xml.trim().to_owned();
         parse_conflict_text(&report.message.clone(), &mut report);
         return report;
@@ -886,9 +887,9 @@ fn parse_conflict(xml: &str) -> ConflictReport {
             _ => {}
         }
     }
-    // OSM 的 409 往往只有一段纯文本（"Version mismatch: Provided 2, server
-    // had: 3 of Node 123"），没有结构化的 <node old_id=...>。没有这条回退，
-    // 冲突 UI 永远显示 0 条、KeepLocal 无从下手。
+    // OSM 409s often contain only plain text ("Version mismatch: Provided 2, server
+    // had: 3 of Node 123") with no structured <node old_id=...>. Without this fallback the
+    // conflict UI would always show 0 objects and KeepLocal would have nothing to act on.
     if report.objects.is_empty() && !report.message.is_empty() {
         let message = report.message.clone();
         parse_conflict_text(&message, &mut report);
@@ -912,7 +913,7 @@ fn parse_conflict_text(text: &str, report: &mut ConflictReport) {
             let Ok(id) = digits.parse::<i64>() else {
                 continue;
             };
-            // 在附近文本里找 "server had: N"。
+            // Look for "server had: N" in the nearby text.
             let window_start = pos.saturating_sub(200);
             let window_end = (pos + 240).min(text.len());
             let window = text.get(window_start..window_end).unwrap_or("");
@@ -940,7 +941,7 @@ fn parse_conflict_text(text: &str, report: &mut ConflictReport) {
     }
 }
 
-/// reqwest 阻塞传输（feature `http`）。
+/// Blocking reqwest transport (feature `http`).
 #[cfg(feature = "http")]
 pub struct ReqwestTransport {
     client: reqwest::blocking::Client,
@@ -948,11 +949,11 @@ pub struct ReqwestTransport {
 
 #[cfg(feature = "http")]
 impl ReqwestTransport {
-    /// 创建 HTTP 传输。
+    /// Creates an HTTP transport.
     pub fn new() -> Result<Self, TransportError> {
         let client = reqwest::blocking::Client::builder()
-            // 上传/token 都是非幂等 POST：绝不自动跟随重定向（301/302 会把 POST
-            // 改写成 GET，307/308 会重放 body）。
+            // Uploads and token requests are non-idempotent POSTs: never follow redirects automatically
+            // (301/302 would rewrite POST into GET, 307/308 would replay the body).
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(180))
@@ -966,8 +967,8 @@ impl ReqwestTransport {
 #[cfg(feature = "http")]
 impl Default for ReqwestTransport {
     fn default() -> Self {
-        // 构造失败说明 TLS 后端不可用；此时返回一个会明确报错的客户端，
-        // 而不是在库代码里 panic。
+        // Construction failure means the TLS backend is unavailable; return a client that reports errors
+        // explicitly instead of panicking inside library code.
         Self::new().unwrap_or_else(|_| Self {
             client: reqwest::blocking::Client::new(),
         })
@@ -997,7 +998,7 @@ impl Transport for ReqwestTransport {
     }
 }
 
-/// 测试用 mock 传输：按队列返回响应，并记录请求。
+/// Test mock transport: returns responses from a queue and records requests.
 #[derive(Default)]
 pub struct MockTransport {
     responses: Mutex<VecDeque<HttpResponse>>,
@@ -1005,12 +1006,12 @@ pub struct MockTransport {
 }
 
 impl MockTransport {
-    /// 新 mock。
+    /// New mock.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 追加一个响应。
+    /// Appends one response.
     pub fn push(&self, status: u16, body: impl Into<String>) {
         self.responses.lock().unwrap().push_back(HttpResponse {
             status,
@@ -1018,7 +1019,7 @@ impl MockTransport {
         });
     }
 
-    /// 已收到的请求。
+    /// Requests received so far.
     pub fn requests(&self) -> Vec<HttpRequest> {
         self.requests.lock().unwrap().clone()
     }
@@ -1104,7 +1105,7 @@ mod tests {
             "discussion tags must be ignored"
         );
         assert_eq!(info.changes_count, Some(7));
-        // bbox 顺序与 download_map 一致：(min_lon, min_lat, max_lon, max_lat)。
+        // bbox order matches download_map: (min_lon, min_lat, max_lon, max_lat).
         assert_eq!(info.bbox, Some((8.0, 47.0, 8.5, 47.5)));
         let requests = client.transport.requests();
         assert_eq!(requests.len(), 1);
@@ -1138,7 +1139,7 @@ mod tests {
         assert_eq!(info.user, "");
         assert_eq!(info.created_at, "");
         assert_eq!(info.closed_at, None);
-        // 没有 open 属性且没有 closed_at：按“仍打开”推断。
+        // No open attribute and no closed_at: infer "still open".
         assert!(info.open);
         assert_eq!(info.comment, "");
         assert!(info.tags.is_empty());

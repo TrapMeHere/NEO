@@ -1,4 +1,4 @@
-//! changeset 面板。
+//! changeset panel.
 
 use egui::{Color32, RichText};
 use egui_phosphor::regular as ph;
@@ -6,39 +6,39 @@ use neo_i18n::t;
 
 use super::UiActions;
 
-/// Changeset 查看器状态。
+/// Changeset viewer state.
 #[derive(Clone, Debug, Default)]
 pub struct ChangesetUiState {
-    /// 输入框。
+    /// Input field.
     pub id: String,
-    /// 结果。
+    /// Result.
     pub info: Option<ChangesetView>,
-    /// 状态/错误。
+    /// Status/error.
     pub status: String,
 }
 
-/// Changeset 视图。
+/// Changeset view.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangesetView {
     /// id。
     pub id: i64,
-    /// 用户。
+    /// User.
     pub user: String,
-    /// 创建时间。
+    /// Created time.
     pub created_at: String,
-    /// 关闭时间。
+    /// Closed time.
     pub closed_at: String,
-    /// 是否仍打开。
+    /// Whether still open.
     pub open: bool,
-    /// 评论。
+    /// Comment.
     pub comment: String,
-    /// 变更数。
+    /// Number of changes.
     pub changes: String,
-    /// 标签。
+    /// Tags.
     pub tags: Vec<(String, String)>,
 }
 
-/// Changeset 查看窗口。
+/// Changeset view window.
 pub fn changeset_window(
     ctx: &egui::Context,
     actions: &mut UiActions,

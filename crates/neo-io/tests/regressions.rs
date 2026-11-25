@@ -1,4 +1,4 @@
-//! IO 回归测试：XML 时间戳/action、osmChange 实体与删除顺序、PBF 往返。
+//! IO regression tests: XML timestamp/action, osmChange entities and delete order, PBF round-trip.
 
 use std::io::Cursor;
 
@@ -112,7 +112,7 @@ fn osc_decodes_entities_and_orders_delete_by_dependency() {
     let name = data.resolve(view.tag(name_key).unwrap());
     assert_eq!(name, "Fish & Chips");
 
-    // 删除顺序：relation → way → node。
+    // Delete order: relation → way → node.
     let mut data = DataSet::new();
     push_tagged(&mut data, 1, 47.0, 8.0, &[]);
     data.push_node(node(2, 47.1, 8.1)).unwrap();
@@ -140,8 +140,8 @@ fn osc_decodes_entities_and_orders_delete_by_dependency() {
 
 #[test]
 fn nested_relation_delete_emits_parent_before_child() {
-    // 父 relation 的 ID 比子 relation 大：只按 (kind, id) 排序会先输出子 relation，
-    // 服务端因为"子仍被父引用"而 412（配合 if-unused 则变成静默不删）。
+    // The parent relation has a larger id than the child: sorting only by (kind, id) would emit the child first,
+    // and the server returns 412 because "the child is still referenced by the parent" (with if-unused it is silently skipped).
     let mut data = DataSet::new();
     let role = data.intern("");
     data.push_relation(
@@ -178,7 +178,10 @@ fn nested_relation_delete_emits_parent_before_child() {
     let text = String::from_utf8(out).unwrap();
     let parent = text.find("<relation id=\"30\"").expect("parent delete");
     let child = text.find("<relation id=\"20\"").expect("child delete");
-    assert!(parent < child, "父 relation 必须先于子 relation 删除:\n{text}");
+    assert!(
+        parent < child,
+        "parent relation must be deleted before child relation:\n{text}"
+    );
 }
 
 #[test]
@@ -226,7 +229,7 @@ fn pbf_roundtrip_preserves_coordinates_tags_and_visibility() {
         MissingPolicy::Error,
     )
     .unwrap();
-    // 历史对象：visible=false。
+    // Historical object: visible=false.
     data.set_change_state_visible(ObjectKind::Node, ObjectId(2), ChangeState::Deleted, false);
 
     let path = std::env::temp_dir().join(format!(
@@ -318,7 +321,7 @@ fn chunking_keeps_create_dependencies_together() {
     .unwrap();
     data.set_change_state(ObjectKind::Way, ObjectId(-5), ChangeState::Added);
     let set = collect_changeset(&data).unwrap();
-    // 4 nodes + 1 way；way 与两个节点必须同块，2 放不下。
+    // 4 nodes + 1 way; the way and two of the nodes must share a block, so 2 cannot fit.
     assert!(set.chunks(2).is_err());
     let chunks = set.chunks(5).unwrap();
     assert_eq!(chunks.len(), 1);

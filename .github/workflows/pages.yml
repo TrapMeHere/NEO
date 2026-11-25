@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: pages
-  # 不取消进行中的部署：半途取消可能让线上留下不完整的站点。
+  # Do not cancel in-progress deployments: cancelling halfway can leave an incomplete site live.
   cancel-in-progress: false
 
 jobs:
@@ -35,8 +35,8 @@ jobs:
       - name: Build documentation
         run: mdbook build
 
-      # 前置条件：仓库 Settings → Pages → Build and deployment → Source = GitHub Actions。
-      # 未启用时本步会以 404 失败（错误信息中已写明原因），不再静默跳过部署。
+      # Prerequisite: repo Settings -> Pages -> Build and deployment -> Source = GitHub Actions.
+      # When this is not enabled, this step fails with a 404 (the error message already states why) instead of silently skipping the deployment.
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v6

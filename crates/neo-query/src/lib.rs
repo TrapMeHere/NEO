@@ -1,20 +1,20 @@
-//! # neo-query — 只读地图查询能力
+//! # neo-query — read-only map query capabilities
 //!
-//! 存在的理由（架构缺口修复，见 ADR-0007 与 docs/15）：
+//! Rationale (architecture gap fix, see ADR-0007 and docs/15):
 //!
-//! * 插件、验证器、后台任务需要"按 ID 读对象 / 按 bbox 查对象 / 查父引用"；
-//! * 但它们**不允许**持有 `&mut DataSet`，也不应该直接依赖 `neo-store` 的写接口；
-//! * 于是把只读能力收敛成一个 trait + 一个不可变快照视图。
+//! * Plugins, validators and background tasks need "read object by ID / query objects by bbox / look up parent references";
+//! * But they are **not allowed** to hold `&mut DataSet`, nor should they depend directly on `neo-store`'s write interfaces;
+//! * So read-only capability is consolidated into one trait + one immutable snapshot view.
 //!
 //! ```text
-//! 编辑线程（单写者）           后台 / 插件（多读者）
-//! ┌──────────────┐  快照发布   ┌────────────────────┐
-//! │ &mut DataSet │ ──────────► │ Arc<MapSnapshot>   │
-//! └──────────────┘  arc-swap   │  → QueryView<'_>   │
-//!                              └────────────────────┘
+//! editor thread (single writer)        background / plugins (many readers)
+//! ┌──────────────┐   snapshot publish   ┌────────────────────┐
+//! │ &mut DataSet │ ──────────►          │ Arc<MapSnapshot>   │
+//! └──────────────┘   arc-swap           │  → QueryView<'_>   │
+//!                                       └────────────────────┘
 //! ```
 //!
-//! 注意：本 crate 只做**查询**。任何修改必须回到 `neo-editor` 的 Command 通道。
+//! Note: this crate only **queries**. Any modification must go through `neo-editor`'s Command channel.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -26,37 +26,37 @@ use neo_geo::{SpatialIndex, WorldBounds, WorldPoint};
 use neo_osm::{Node, Relation, Way};
 use neo_store::{DataSet, Referrers};
 
-/// 只读地图查询接口。
+/// Read-only map query interface.
 ///
-/// 所有实现都必须是"读时不改变可见状态"的；后台任务可以安全地并发调用。
+/// All implementations must be "do not change visible state while reading"; background tasks may call them concurrently and safely.
 pub trait MapQuery {
-    /// 底层数据集（只读）。
+    /// Underlying dataset (read-only).
     fn data(&self) -> &DataSet;
 
-    /// 按 ID 读节点 DTO。
+    /// Read a node DTO by ID.
     fn node(&self, id: ObjectId) -> Option<Node>;
-    /// 按 ID 读 way DTO。
+    /// Read a way DTO by ID.
     fn way(&self, id: ObjectId) -> Option<Way>;
-    /// 按 ID 读 relation DTO。
+    /// Read a relation DTO by ID.
     fn relation(&self, id: ObjectId) -> Option<Relation>;
 
-    /// 引用某节点的 way。
+    /// Ways referencing a node.
     fn parent_ways(&self, node: ObjectId) -> Vec<ObjectId>;
-    /// 引用某对象的 relation。
+    /// Relations referencing an object.
     fn parent_relations(&self, kind: ObjectKind, id: ObjectId) -> Vec<ObjectId>;
 
-    /// 包围盒内的节点（世界坐标）。
+    /// Nodes inside a bounding box (world coordinates).
     fn nodes_in(&self, bounds: WorldBounds) -> Vec<ObjectId>;
-    /// 包围盒内的 way。
+    /// Ways inside a bounding box.
     fn ways_in(&self, bounds: WorldBounds) -> Vec<ObjectId>;
 
-    /// 最近的节点（在 `max_meters` 内）。
+    /// Nearest node (within `max_meters`).
     fn nearest_node(&self, point: WorldPoint, max_meters: f64) -> Option<(ObjectId, f64)>;
 }
 
-/// 一个查询视图：数据集 + 可选的空间索引/反向引用。
+/// A query view: dataset + optional spatial index/reverse references.
 ///
-/// 索引与引用可以缺省（例如刚导入还没建），此时相关查询返回空集，而不是 panic。
+/// Index and referrers may be absent (e.g. just imported and not built yet); related queries then return empty sets instead of panicking.
 pub struct QueryView<'a> {
     data: &'a DataSet,
     index: Option<&'a SpatialIndex>,
@@ -64,7 +64,7 @@ pub struct QueryView<'a> {
 }
 
 impl<'a> QueryView<'a> {
-    /// 仅数据集（无空间查询能力）。
+    /// Dataset only (no spatial query capability).
     pub fn new(data: &'a DataSet) -> Self {
         Self {
             data,
@@ -73,7 +73,7 @@ impl<'a> QueryView<'a> {
         }
     }
 
-    /// 数据集 + 空间索引。
+    /// Dataset + spatial index.
     pub fn with_index(data: &'a DataSet, index: &'a SpatialIndex) -> Self {
         Self {
             data,
@@ -82,7 +82,7 @@ impl<'a> QueryView<'a> {
         }
     }
 
-    /// 完整能力。
+    /// Full capability.
     pub fn with_all(data: &'a DataSet, index: &'a SpatialIndex, referrers: &'a Referrers) -> Self {
         Self {
             data,
@@ -233,11 +233,11 @@ impl MapQuery for QueryView<'_> {
     }
 }
 
-/// 不可变地图快照（可跨线程持有、可原子发布）。
+/// Immutable map snapshot (can be held across threads and published atomically).
 ///
-/// 当前实现用 `Arc<DataSet>`；**注意**：编辑线程提交事务后发布新快照需要深拷贝
-/// 数据集，成本 O(n)。第一版原型只在"导入完成/大批量变更"时发布快照，交互编辑
-/// 的渲染走单线程增量路径。真正的 COW/分块快照方案见 docs/07 与 ADR-0006。
+/// The current implementation uses `Arc<DataSet>`; **note**: publishing a new snapshot after the editor thread commits a transaction requires deep-copying
+/// the dataset at O(n) cost. The first prototype only publishes snapshots on "import finished / large batch changes"; interactive editing
+/// rendering uses the single-threaded incremental path. The real COW/chunked snapshot design is in docs/07 and ADR-0006.
 #[derive(Clone)]
 pub struct MapSnapshot {
     data: Arc<DataSet>,
@@ -246,7 +246,7 @@ pub struct MapSnapshot {
 }
 
 impl MapSnapshot {
-    /// 仅数据集。
+    /// Dataset only.
     pub fn new(data: Arc<DataSet>) -> Self {
         Self {
             data,
@@ -255,7 +255,7 @@ impl MapSnapshot {
         }
     }
 
-    /// 数据集 + 已构建的索引。
+    /// Dataset + built index.
     pub fn with_index(data: Arc<DataSet>, index: Arc<SpatialIndex>) -> Self {
         Self {
             data,
@@ -264,7 +264,7 @@ impl MapSnapshot {
         }
     }
 
-    /// 数据集 + 索引 + 反向引用。
+    /// Dataset + index + reverse references.
     pub fn with_all(data: Arc<DataSet>, index: Arc<SpatialIndex>, referrers: Arc<Referrers>) -> Self {
         Self {
             data,
@@ -273,7 +273,7 @@ impl MapSnapshot {
         }
     }
 
-    /// 取得只读查询视图。
+    /// Get a read-only query view.
     pub fn view(&self) -> QueryView<'_> {
         QueryView {
             data: &self.data,
@@ -282,39 +282,39 @@ impl MapSnapshot {
         }
     }
 
-    /// 底层数据集 Arc。
+    /// Underlying dataset Arc.
     pub fn data(&self) -> &Arc<DataSet> {
         &self.data
     }
 
-    /// 快照版本（等于数据版本）。
+    /// Snapshot version (equals the data version).
     pub fn version(&self) -> u64 {
         self.data.version()
     }
 }
 
-/// 用 `arc_swap` 发布/读取快照的容器（读路径无锁）。
+/// Container that publishes/reads snapshots via `arc_swap` (lock-free read path).
 ///
-/// 写者（编辑线程）在事务提交后 `store(new_snapshot)`；任意多个读者 `load()` 得到
-/// 一个稳定视图，不会看到半更新状态。
+/// The writer (editor thread) calls `store(new_snapshot)` after committing a transaction; any number of readers call `load()` and get
+/// a stable view without seeing half-updated state.
 pub struct SnapshotCell {
     cell: arc_swap::ArcSwap<MapSnapshot>,
 }
 
 impl SnapshotCell {
-    /// 用初始快照构造。
+    /// Construct with an initial snapshot.
     pub fn new(initial: MapSnapshot) -> Self {
         Self {
             cell: arc_swap::ArcSwap::from_pointee(initial),
         }
     }
 
-    /// 读取当前快照。
+    /// Read the current snapshot.
     pub fn load(&self) -> arc_swap::Guard<Arc<MapSnapshot>> {
         self.cell.load()
     }
 
-    /// 发布新快照。
+    /// Publish a new snapshot.
     pub fn store(&self, snapshot: MapSnapshot) {
         self.cell.store(Arc::new(snapshot));
     }

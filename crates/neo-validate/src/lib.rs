@@ -1,22 +1,22 @@
-//! # neo-validate — 内置校验器
+//! # neo-validate — built-in validators
 //!
-//! 对 [`DataSet`] 做只读检查，产出 [`Report`]。规则刻意保持**可解释、可测试**：
-//! 每条规则只产出“对象 + 规则 id + 细节”，界面文案由 i18n 层翻译，库本身不拼接 UI 文本。
+//! Read-only checks over [`DataSet`], producing a [`Report`]. Rules are deliberately **explainable and testable**:
+//! each rule yields only "object + rule id + details"; UI text is translated by the i18n layer, and the library never composes UI text.
 //!
-//! 当前规则（阶段 4 v1）：
+//! Current rules (stage 4 v1):
 //!
-//! | 规则 | 严重级别 | 说明 |
+//! | Rule | Severity | Description |
 //! |---|---|---|
-//! | [`Rule::WayTooShort`] | Error | way 少于 2 个节点 |
-//! | [`Rule::WayDuplicateNode`] | Warning | 相邻重复节点 |
-//! | [`Rule::WayUntagged`] | Warning | way 没有任何标签 |
-//! | [`Rule::BuildingNotClosed`] | Error | `building=*` 的 way 未闭合 |
-//! | [`Rule::DuplicateWay`] | Warning | 两条 way 的节点序列完全相同 |
-//! | [`Rule::RelationEmpty`] | Warning | relation 无标签 |
-//! | [`Rule::RelationNoMembers`] | Error | relation 没有成员 |
+//! | [`Rule::WayTooShort`] | Error | way has fewer than 2 nodes |
+//! | [`Rule::WayDuplicateNode`] | Warning | adjacent duplicate nodes |
+//! | [`Rule::WayUntagged`] | Warning | way has no tags |
+//! | [`Rule::BuildingNotClosed`] | Error | way with `building=*` is not closed |
+//! | [`Rule::DuplicateWay`] | Warning | two ways have exactly the same node sequence |
+//! | [`Rule::RelationEmpty`] | Warning | relation has no tags |
+//! | [`Rule::RelationNoMembers`] | Error | relation has no members |
 //!
-//! 校验是线性的、无分配热点（除报告本身），1M 对象可在 UI 线程内完成；
-//! 后续会按 bbox/脏对象做增量校验（见 docs/12）。
+//! Validation is linear with no allocation hotspots (except the report itself); 1M objects finish on the UI thread;
+//! incremental validation by bbox/dirty objects will follow (see docs/12).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -26,72 +26,72 @@ use std::collections::{HashMap, HashSet};
 use neo_core::{ObjectId, ObjectKind};
 use neo_store::DataSet;
 
-/// 规则 id。稳定标识用于 i18n、配置过滤与测试。
+/// Rule id. The stable identifier is used for i18n, config filtering and tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Rule {
-    /// way 少于 2 个节点。
+    /// way has fewer than 2 nodes.
     WayTooShort,
-    /// 相邻重复节点。
+    /// Adjacent duplicate nodes.
     WayDuplicateNode,
-    /// way 没有任何标签。
+    /// way has no tags.
     WayUntagged,
-    /// `building=*` 的 way 未闭合。
+    /// way with `building=*` is not closed.
     BuildingNotClosed,
-    /// 两条 way 节点序列完全相同。
+    /// Two ways have exactly the same node sequence.
     DuplicateWay,
-    /// relation 没有标签。
+    /// relation has no tags.
     RelationEmpty,
-    /// relation 没有成员。
+    /// relation has no members.
     RelationNoMembers,
-    /// 未标注且不属于任何 way 的孤立节点（JOSM: untagged node）。
+    /// Isolated node with no tags and not belonging to any way (JOSM: untagged node).
     UntaggedNode,
-    /// 坐标完全相同的重复节点。
+    /// Duplicate nodes with exactly the same coordinates.
     DuplicateNode,
-    /// 可疑标签组合（如 highway + building）。
+    /// Suspicious tag combination (e.g. highway + building).
     SuspiciousTagCombination,
-    /// multipolygon 成员角色不是 outer/inner/空。
+    /// Multipolygon member role is not outer/inner/empty.
     MultipolygonBadRole,
-    /// way 自相交。
+    /// way is self-intersecting.
     SelfIntersectingWay,
-    /// way 超过 OSM API 的 2000 节点上限。
+    /// way exceeds the OSM API's 2000-node limit.
     WayTooLong,
-    /// 闭合 way 少于 4 个节点（无法构成面）。
+    /// Closed way has fewer than 4 nodes (cannot form an area).
     ClosedWayTooFewNodes,
-    /// relation 有成员但没有 `type` 标签。
+    /// relation has members but no `type` tag.
     RelationTypeMissing,
-    /// relation 重复引用同一成员。
+    /// relation references the same member twice.
     DuplicateRelationMember,
-    /// `layer` 标签不是整数。
+    /// `layer` tag is not an integer.
     InvalidLayerTag,
-    /// `area=yes` 的 way 未闭合。
+    /// way with `area=yes` is not closed.
     AreaNotClosed,
-    /// 非相邻位置重复引用同一节点。
+    /// The same node is referenced twice at non-adjacent positions.
     NonAdjacentDuplicateNode,
-    /// `oneway` 值非法。
+    /// Invalid `oneway` value.
     OnewayInvalid,
-    /// `name` 为空。
+    /// `name` is empty.
     EmptyName,
-    /// `layer` 超出合理范围（|layer| > 5）。
+    /// `layer` is outside the reasonable range (|layer| > 5).
     LayerOutOfRange,
-    /// multipolygon 没有 outer 成员。
+    /// multipolygon has no outer member.
     MultipolygonNoOuter,
-    /// multipolygon 的 outer way 未闭合。
+    /// multipolygon's outer way is not closed.
     MultipolygonOuterNotClosed,
 }
 
-/// 严重级别。
+/// Severity level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
-    /// 提示。
+    /// Hint.
     Info,
-    /// 警告：可能的数据质量问题。
+    /// Warning: possible data-quality problem.
     Warning,
-    /// 错误：数据上的明确问题。不阻止上传。
+    /// Error: a definite data problem. Does not block upload.
     Error,
 }
 
 impl Rule {
-    /// 规则 id 字符串（用于 i18n key：`validate.rule.<id>`）。
+    /// Rule id string (used for the i18n key: `validate.rule.<id>`).
     pub fn id(self) -> &'static str {
         match self {
             Self::WayTooShort => "way_too_short",
@@ -121,7 +121,7 @@ impl Rule {
         }
     }
 
-    /// 默认严重级别。
+    /// Default severity.
     pub fn severity(self) -> Severity {
         match self {
             Self::WayTooShort | Self::BuildingNotClosed | Self::RelationNoMembers => Severity::Error,
@@ -148,16 +148,16 @@ impl Rule {
     }
 }
 
-/// 一条校验问题。
+/// One validation problem.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Issue {
-    /// 规则。
+    /// Rule.
     pub rule: Rule,
-    /// 严重级别（可被用户配置覆盖，当前取规则默认）。
+    /// Severity (can be overridden by user config; currently the rule default).
     pub severity: Severity,
-    /// 涉及对象（第一个通常用于定位/选择）。
+    /// Involved objects (the first is usually used for locating/selecting).
     pub objects: Vec<(ObjectKind, ObjectId)>,
-    /// 具体细节（ID、节点数等，语言无关）。
+    /// Concrete details (IDs, node counts, etc.; language-neutral).
     pub detail: String,
 }
 
@@ -172,21 +172,21 @@ impl Issue {
     }
 }
 
-/// 校验结果。
+/// Validation result.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
-    /// 问题列表（按对象 id 顺序，稳定可复现）。
+    /// Problem list (ordered by object id, stable and reproducible).
     pub issues: Vec<Issue>,
-    /// 检查的节点数。
+    /// Number of nodes checked.
     pub nodes: usize,
-    /// 检查的 way 数。
+    /// Number of ways checked.
     pub ways: usize,
-    /// 检查的 relation 数。
+    /// Number of relations checked.
     pub relations: usize,
 }
 
 impl Report {
-    /// 错误数。
+    /// Error count.
     pub fn errors(&self) -> usize {
         self.issues
             .iter()
@@ -194,7 +194,7 @@ impl Report {
             .count()
     }
 
-    /// 警告数。
+    /// Warning count.
     pub fn warnings(&self) -> usize {
         self.issues
             .iter()
@@ -202,13 +202,13 @@ impl Report {
             .count()
     }
 
-    /// 是否干净。
+    /// Whether it is clean.
     pub fn is_clean(&self) -> bool {
         self.issues.is_empty()
     }
 }
 
-/// 对本次新增或修改过的对象运行规则。未改动的下载数据不进入报告。
+/// Run the rules over objects added or modified in this pass. Untouched downloaded data does not enter the report.
 pub fn validate(data: &DataSet) -> Report {
     let mut report = Report::default();
 
@@ -429,7 +429,7 @@ pub fn validate(data: &DataSet) -> Report {
         }
     }
 
-    // 节点规则：孤立未标注节点、完全重复坐标。
+    // Node rules: isolated untagged nodes, exactly duplicate coordinates.
     let mut seen_positions: HashMap<(i32, i32), ObjectId> = HashMap::new();
     for node in data.iter_nodes() {
         let Some(view) = data.node_view(node.handle) else {

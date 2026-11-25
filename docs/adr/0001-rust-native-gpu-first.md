@@ -1,88 +1,88 @@
 # ADR-0001 · Rust Native + GPU-first
 
-- **状态**：已接受（Accepted），2026-11-15
-- **可逆性**：**低**。它决定进程模型、渲染所有权、UI 框架与 16 个 crate 的依赖 DAG，改动的代价接近重写。
-- **影响面**：`apps/neo-desktop`、`neo-ui`、`neo-render`、`neo-scene`、`neo-store`；全部性能相关文档。
-- **相关**：[01 系统架构](../01-system-architecture.md) ｜ [02 依赖规则](../02-workspace-and-dependency-rules.md) ｜ [05 渲染器](../05-renderer-wgpu.md) ｜ [16 路线图与风险](../16-roadmap-and-risks.md) ｜ [ADR-0005](0005-wgpu-egui-shared-device.md)
+- **Status**: Accepted, 2026-11-15
+- **Reversibility**: **Low**. It determines the process model, render ownership, UI framework, and the dependency DAG of 16 crates; changing it would cost nearly a rewrite.
+- **Scope**: `apps/neo-desktop`, `neo-ui`, `neo-render`, `neo-scene`, `neo-store`; all performance-related docs.
+- **Related**: [01 System Architecture](../01-system-architecture.md) | [02 Dependency Rules](../02-workspace-and-dependency-rules.md) | [05 Renderer](../05-renderer-wgpu.md) | [16 Roadmap and Risks](../16-roadmap-and-risks.md) | [ADR-0005](0005-wgpu-egui-shared-device.md)
 
-## 状态
+## Status
 
-Accepted。若后续证据（原型 Gate 指标、后端差异、维护成本）推翻其中任一子决策，另立 ADR 记录替代方案，不静默修改本文。
+Accepted. If later evidence (prototype Gate metrics, backend differences, maintenance cost) overturns any sub-decision, record the alternative in a new ADR rather than silently editing this document.
 
-## 背景
+## Background
 
-NEO 的目标是**完整替代 JOSM 的编辑工作流**，数据规模 1M–10M+ OSM 对象，原生运行在 Windows / Linux / macOS。JOSM 是 Java + Swing：功能完备、生态成熟，但堆内存与逐图元绘制模型在大数据集上有天花板，启动与输入延迟也受 JVM 影响。
+NEO aims to **fully replace JOSM's editing workflow**, with data sets of 1M–10M+ OSM objects, running natively on Windows / Linux / macOS. JOSM is Java + Swing: feature-complete with a mature ecosystem, but its heap memory and per-primitive drawing model hit a ceiling on large data sets, and startup and input latency are also affected by the JVM.
 
-摆在面前的是三个独立但互相牵制的选择：
+Three independent but coupled choices lie ahead:
 
-1. **语言与运行时**：继续 JVM（Java/Kotlin）、.NET，还是 Rust 原生？
-2. **绘制模型**：沿用 CPU immediate-mode（Swing/egui 自带绘制），还是自建 GPU 管线？
-3. **UI 外壳**：Tauri/Electron（WebView）、Qt/GTK（C++ 绑定）、还是 Rust 原生 immediate-mode（egui）？
+1. **Language and runtime**: keep the JVM (Java/Kotlin), .NET, or native Rust?
+2. **Drawing model**: keep CPU immediate-mode (Swing/egui built-in painting), or build a custom GPU pipeline?
+3. **UI shell**: Tauri/Electron (WebView), Qt/GTK (C++ bindings), or native Rust immediate-mode (egui)?
 
-三者不能分开选：选 WebView 就等于放弃自建 wgpu 管线（需要独立窗口 handle 嵌入，三平台方案不统一）；选自建管线就意味着 UI 层必须与同一个 `Device`/`Queue` 共享帧；选 Rust 原生则意味着不能复用 JOSM 的 GPL 代码（静态链接或改写都会传染许可），语义兼容只能靠行为对齐。
+They cannot be chosen separately: choosing a WebView means giving up a custom wgpu pipeline (it requires embedding an independent window handle, and the three-platform approaches differ); choosing a custom pipeline means the UI layer must share frames with the same `Device`/`Queue`; choosing native Rust means JOSM's GPL code cannot be reused (static linking or rewriting propagates the license), so semantic compatibility can only come from behavioral alignment.
 
-## 决策
+## Decision
 
-**Rust Native + GPU-first，单进程模块化单体。**
+**Rust Native + GPU-first, single-process modular monolith.**
 
-| # | 子决策 | 具体内容 |
+| # | Sub-decision | Details |
 |---|---|---|
-| D1 | 语言与运行时 | Rust stable（本机 1.100.0，MSRV 1.95），无 GC、无 JVM；`#![forbid(unsafe_code)]` 作为库 crate 默认 |
-| D2 | 进程模型 | 单进程、多线程；UI 线程是唯一写者，其余只读快照（[ADR-0006](0006-single-writer-editor.md)） |
-| D3 | UI 栈 | egui / eframe / egui-wgpu **0.36.2**（三点同版本）；版本由 `egui_dock 0.21.1` 与 `egui-phosphor 0.14.0` 的 `egui ^0.36` 约束 |
-| D4 | 渲染 | 自研 wgpu **30.0.2** 地图渲染器，与 egui 共享 `Device`/`Queue`，通过 `egui_wgpu::CallbackTrait` 在 egui 的渲染通道内绘制（[ADR-0005](0005-wgpu-egui-shared-device.md)） |
-| D5 | 不以"移植 Java 类"方式重构 | 不做 JOSM 类的一对一翻译，不做 JNI/转译桥；只按行为等价重写（parity 以工作流定义，见 [13](../13-josm-parity.md)） |
-| D6 | 不用 Tauri / Electron | 不使用 WebView 作为地图承载层，也不把数据面放进 JS/IPC |
+| D1 | Language and runtime | Rust stable (1.100.0 locally, MSRV 1.95), no GC, no JVM; `#![forbid(unsafe_code)]` is the default for library crates |
+| D2 | Process model | Single process, multi-threaded; the UI thread is the only writer, everything else reads snapshots ([ADR-0006](0006-single-writer-editor.md)) |
+| D3 | UI stack | egui / eframe / egui-wgpu **0.36.2** (all three at the same version); versions are constrained by `egui ^0.36` from `egui_dock 0.21.1` and `egui-phosphor 0.14.0` |
+| D4 | Rendering | In-house wgpu **30.0.2** map renderer, sharing `Device`/`Queue` with egui, drawing inside egui's render pass via `egui_wgpu::CallbackTrait` ([ADR-0005](0005-wgpu-egui-shared-device.md)) |
+| D5 | No refactoring by "porting Java classes" | No one-to-one translation of JOSM classes, no JNI/transpilation bridge; only rewrite with behavioral equivalence (parity is defined by workflow, see [13](../13-josm-parity.md)) |
+| D6 | No Tauri / Electron | Do not use a WebView as the map host layer, and do not put the data plane in JS/IPC |
 
-## 替代方案
+## Alternatives
 
-| 方案 | 优点 | 否决理由 |
+| Option | Pros | Why rejected |
 |---|---|---|
-| Java/Kotlin 继续演进（复刻 JOSM 架构） | 可直接参考现有实现与插件生态 | 堆内存与 GC 峰值不可控；10M 对象下 `HashSet<Node>` 式模型无法达标；GPU 管线要跨 JNI，收益被抵消 |
-| Tauri + React（WebView 前端） | Web 生态、前端人才、UI 迭代快 | WebView 无法承载自建 wgpu 管线（三平台嵌入方案不统一）；10M 图元经 IPC/JS 桥不可行 |
-| Electron | 同上，且更成熟 | 同上，外加 100 MB+ 运行时与内存开销 |
-| Qt（`qmetaobject` / `cxx` 绑定） | Dock、无障碍、IME 成熟；原生观感 | LGPL/商业双许可与静态链接合规成本；C++ 对象生命周期跨越 Rust 借用检查，FFI 成为长期 bug 源 |
-| GTK（`gtk-rs`） | Linux 原生感最好 | Windows 上观感与 IME 明显落后；三平台一致性差 |
-| 纯 CPU 渲染（egui `Mesh` 直接画地图） | 零新基础设施 | 每帧重新 tessellate 百万级线段，CPU 与内存都不可行 |
-| 直接复用 JOSM 代码（JNI / 转译 / 改写） | 语义免费对齐 | GPL-2.0+ 传染；JVM 启动与堆模型与 GPU-first 冲突；等于把性能问题搬进新进程 |
-| 浏览器 WASM 版（顺带产物） | 传播成本低 | wasm32 4 GB 地址空间装不下 10M 对象 + 索引；文件系统受限 |
+| Continue Java/Kotlin (replicating the JOSM architecture) | Can directly reference the existing implementation and plugin ecosystem | Heap memory and GC peaks are uncontrollable; a `HashSet<Node>`-style model cannot meet the target at 10M objects; the GPU pipeline would cross JNI, cancelling out the gain |
+| Tauri + React (WebView frontend) | Web ecosystem, frontend talent, fast UI iteration | A WebView cannot host a custom wgpu pipeline (three-platform embedding is non-uniform); 10M primitives over an IPC/JS bridge is infeasible |
+| Electron | Same as above, and more mature | Same as above, plus a 100 MB+ runtime and memory overhead |
+| Qt (`qmetaobject` / `cxx` bindings) | Mature dock, accessibility, IME; native look and feel | LGPL/commercial dual licensing and static-linking compliance costs; C++ object lifetimes cross Rust's borrow checker, making FFI a long-term bug source |
+| GTK (`gtk-rs`) | Best native feel on Linux | Noticeably behind on Windows in look and feel and IME; poor three-platform consistency |
+| Pure CPU rendering (draw the map directly with egui `Mesh`) | Zero new infrastructure | Re-tessellating millions of line segments every frame is infeasible for both CPU and memory |
+| Reuse JOSM code directly (JNI / transpile / rewrite) | Semantic parity for free | GPL-2.0+ is contagious; JVM startup and heap model conflict with GPU-first; it just moves the performance problem into a new process |
+| Browser WASM build (incidental artifact) | Low distribution cost | The 4 GB wasm32 address space cannot hold 10M objects plus indexes; limited filesystem |
 
-## 后果
+## Consequences
 
-**正面**
+**Positive**
 
-- 单进程单地址空间：快照切换零拷贝，拾取与渲染同帧，无 IPC 延迟。
-- 无 GC：帧时间可预测；内存布局（SoA）可显式控制，10M 对象才有可行路径。
-- 自建 wgpu 管线：批次化、实例化、GPU 拾取、文字图集都可按需设计，不被 UI 框架的 immediate-mode 限制。
-- 许可干净：MIT/Apache-2.0 双许可，不与 GPL 资产混用；JOSM 只作行为参考。
-- 依赖面可控：`neo-render` 只依赖 `wgpu` + `egui-wgpu` + `bytemuck`，不依赖 store/editor/ui。
+- Single process, single address space: snapshot swaps are zero-copy, picking and rendering happen in the same frame, no IPC latency.
+- No GC: predictable frame times; memory layout (SoA) is explicitly controllable, which is the only viable path at 10M objects.
+- Custom wgpu pipeline: batching, instancing, GPU picking, and text atlases can be designed as needed without being limited by the UI framework's immediate mode.
+- Clean licensing: MIT/Apache-2.0 dual license, no mixing with GPL assets; JOSM is a behavioral reference only.
+- Controllable dependency surface: `neo-render` depends only on `wgpu` + `egui-wgpu` + `bytemuck`, not on store/editor/ui.
 
-**负面 / 代价**
+**Negative / costs**
 
-- **生态自负**：Dock、表格、属性编辑器、i18n、无障碍都要自己在 egui 上搭；`egui_dock` 只是 Dock 的起点。
-- **GUI 栈锁版本**：0.36.2 是为兼容 `egui_dock`/`egui-phosphor` 而选的；0.36 → 0.37 是破坏性升级（入口 trait 形态、`RenderState` 字段变化），升级需专门演练（[02](../02-workspace-and-dependency-rules.md) §2.6）。
-- **受 egui 通道约束**：不能改 load op、不能跨 callback 复用深度、颜色格式必须与 swapchain 一致；管线参数错误是**运行时**校验错误而非编译错误。
-- **单进程无崩溃域**：插件/驱动崩溃会带走全部未保存编辑，只能靠 journal + autosave + WASM 沙箱兜底。
-- **不自研渲染线程**：UI 三职合一（输入 + 命令 + 提交），帧预算更紧；极端场景只能降 LOD。
+- **Own the ecosystem**: dock, tables, property editors, i18n, and accessibility all have to be built on egui by ourselves; `egui_dock` is only the starting point for docking.
+- **GUI stack version lock**: 0.36.2 was chosen for compatibility with `egui_dock`/`egui-phosphor`; 0.36 → 0.37 is a breaking upgrade (entry trait shape, `RenderState` field changes), and upgrading requires a dedicated rehearsal ([02](../02-workspace-and-dependency-rules.md) §2.6).
+- **Constrained by egui's pass**: cannot change the load op, cannot reuse depth across callbacks, color format must match the swapchain; pipeline parameter errors are **runtime** validation errors rather than compile errors.
+- **No crash domain in a single process**: a plugin/driver crash takes all unsaved edits with it; only journal + autosave + WASM sandbox provide a safety net.
+- **No dedicated render thread**: the UI thread triples as input + command + submit, so the frame budget is tighter; extreme cases can only lower LOD.
 
-## 验证
+## Verification
 
-1. **可构建**：三平台 `cargo build --workspace --no-default-features --features desktop` 成功（最小编译集）。
-2. **单一设备**：全仓源码中 `Instance::new` / `new_without_display_handle` 出现次数为 1（grep 断言）；`cargo tree -p neo-render` 不含 `neo-store`/`neo-editor`/`neo-ui`。
-3. **原型基线**：`apps/neo-prototype` 在参考机跑通"1M 对象导入 → 渲染 → 平移缩放 → 拾取"，四项基线（导入耗时、首帧、帧时间 p50/p99、峰值 RSS）测出并记录；不达标则触发 [16](../16-roadmap-and-risks.md) §2.8 的 G1 否决流程。
-4. **版本一致性**：`cargo tree -d` 中 egui / wgpu / winit / rstar 无重复大版本；`Cargo.lock` 变更出现在 PR 描述中。
-5. **许可**：`neo-render`/`neo-ui` 的依赖树不含 GPL 传染型许可（审计脚本 + 人工核对，见 [17](../17-licensing-and-governance.md)）。
-6. **行为等价的可否证性**：parity 清单（[13](../13-josm-parity.md)）里每条都是可执行检查或手工步骤，不存在"架构上应该一致"这类无法证伪的表述。
+1. **Buildable**: `cargo build --workspace --no-default-features --features desktop` succeeds on all three platforms (minimal build set).
+2. **Single device**: `Instance::new` / `new_without_display_handle` appears exactly once across the repo (grep assertion); `cargo tree -p neo-render` contains no `neo-store`/`neo-editor`/`neo-ui`.
+3. **Prototype baseline**: `apps/neo-prototype` runs "import 1M objects → render → pan/zoom → pick" on the reference machine, with the four baselines (import time, first frame, frame time p50/p99, peak RSS) measured and recorded; failing to meet them triggers the G1 veto process in [16](../16-roadmap-and-risks.md) §2.8.
+4. **Version consistency**: no duplicate major versions of egui / wgpu / winit / rstar in `cargo tree -d`; `Cargo.lock` changes appear in the PR description.
+5. **License**: the dependency tree of `neo-render`/`neo-ui` contains no GPL-contagious licenses (audit script + manual review, see [17](../17-licensing-and-governance.md)).
+6. **Falsifiability of behavioral equivalence**: every item in the parity list ([13](../13-josm-parity.md)) is an executable check or a manual step; there are no unfalsifiable statements like "architecturally it should be consistent".
 
-## 参考
+## References
 
-- JOSM 项目与源码（GPL-2.0+，仅行为参考）：https://josm.openstreetmap.de/
-- JOSM 许可说明：https://josm.openstreetmap.de/wiki/Source
-- eframe 0.36.2：https://docs.rs/eframe/0.36.2/eframe/
-- egui-wgpu 0.36.2（`CallbackTrait` / `RenderState`）：https://docs.rs/egui-wgpu/0.36.2/egui_wgpu/
-- wgpu 30.0.2：https://docs.rs/wgpu/30.0.2/wgpu/
-- `egui_dock` 0.21.1 的 `egui ^0.36` 约束：https://crates.io/api/v1/crates/egui_dock/0.21.1/dependencies
-- Qt 许可（LGPL/商业）：https://www.qt.io/licensing
-- WebGPU 规范：https://www.w3.org/TR/webgpu/
+- JOSM project and source (GPL-2.0+, behavioral reference only): https://josm.openstreetmap.de/
+- JOSM licensing: https://josm.openstreetmap.de/wiki/Source
+- eframe 0.36.2: https://docs.rs/eframe/0.36.2/eframe/
+- egui-wgpu 0.36.2 (`CallbackTrait` / `RenderState`): https://docs.rs/egui-wgpu/0.36.2/egui_wgpu/
+- wgpu 30.0.2: https://docs.rs/wgpu/30.0.2/wgpu/
+- The `egui ^0.36` constraint of `egui_dock` 0.21.1: https://crates.io/api/v1/crates/egui_dock/0.21.1/dependencies
+- Qt licensing (LGPL/commercial): https://www.qt.io/licensing
+- WebGPU specification: https://www.w3.org/TR/webgpu/
 
-> 待验证：0.37 线相对 0.36.2 的 `eframe::App`/面板 API 差异（`App::ui` 入口在 0.36 已就位，需在升级演练时逐条核对）；egui 的无障碍（accesskit）覆盖度是否满足桌面编辑器的最低要求。
+> To be verified: the `eframe::App`/panel API differences between the 0.37 line and 0.36.2 (`App::ui` is already in place in 0.36; verify item by item during the upgrade rehearsal); whether egui's accessibility (accesskit) coverage meets the minimum requirements for a desktop editor.

@@ -1,4 +1,4 @@
-//! Editor：单写者、事务、历史、日志。
+//! Editor: single writer, transactions, history, journal.
 
 use std::collections::HashMap;
 
@@ -15,36 +15,36 @@ use crate::history::History;
 use crate::journal::{Journal, JournalCommand, JournalFrame, JournalSink};
 use crate::selection::Selection;
 
-/// 命令执行上下文：数据 + 空间索引 + 反查表。
+/// Command execution context: data + spatial index + referrer table.
 pub struct EditContext<'a> {
-    /// 数据集（唯一可变入口）。
+    /// Dataset (the only mutable entry point).
     pub data: &'a mut DataSet,
-    /// 空间索引。
+    /// Spatial index.
     pub index: &'a mut SpatialIndex,
-    /// 节点世界坐标缓存（渲染热路径；随编辑增量更新）。
+    /// Node world-coordinate cache (render hot path; updated incrementally with edits).
     pub world_cache: &'a mut WorldCache,
-    /// 反向引用（只读）。
+    /// Reverse references (read-only).
     pub referrers: &'a Referrers,
-    /// 结构是否变化（需要重建反查表）。
+    /// Whether the structure changed (the referrer table needs rebuilding).
     pub referrers_dirty: &'a mut bool,
 }
 
 impl EditContext<'_> {
-    /// 节点句柄。
+    /// Node handle.
     pub fn node_handle(&self, id: ObjectId) -> Result<Handle<NodeSlot>, CommandError> {
         self.data.node_handle(id).ok_or(CommandError::NotFound {
             kind: ObjectKind::Node,
             id,
         })
     }
-    /// Way 句柄。
+    /// Way handle.
     pub fn way_handle(&self, id: ObjectId) -> Result<Handle<WaySlot>, CommandError> {
         self.data.way_handle(id).ok_or(CommandError::NotFound {
             kind: ObjectKind::Way,
             id,
         })
     }
-    /// Relation 句柄。
+    /// Relation handle.
     pub fn relation_handle(&self, id: ObjectId) -> Result<Handle<RelationSlot>, CommandError> {
         self.data.relation_handle(id).ok_or(CommandError::NotFound {
             kind: ObjectKind::Relation,
@@ -52,7 +52,7 @@ impl EditContext<'_> {
         })
     }
 
-    /// 把字符串 tag 对驻留成 TagSet。
+    /// Intern string tag pairs into a TagSet.
     pub fn intern_tags(&mut self, pairs: &[(String, String)]) -> TagSetId {
         let converted: Vec<(Sym, Sym)> = pairs
             .iter()
@@ -61,7 +61,7 @@ impl EditContext<'_> {
         self.data.add_tags(&converted)
     }
 
-    /// 读取某对象的标签（字符串对）。
+    /// Read an object's tags (string pairs).
     pub fn tags_of(&self, kind: ObjectKind, id: ObjectId) -> Result<Vec<(String, String)>, CommandError> {
         let pairs: &[(Sym, Sym)] = match kind {
             ObjectKind::Node => {
@@ -96,7 +96,7 @@ impl EditContext<'_> {
             .collect())
     }
 
-    /// 设置标签。
+    /// Set tags.
     pub fn set_tags(
         &mut self,
         kind: ObjectKind,
@@ -122,7 +122,7 @@ impl EditContext<'_> {
         Ok(())
     }
 
-    /// 移动节点，并维护空间索引 + 关联 way 的 bbox/脏标记。
+    /// Move a node, maintaining the spatial index + parent way bbox/dirty flag.
     pub fn move_node(&mut self, id: ObjectId, pos: LatLon) -> Result<LatLon, CommandError> {
         let h = self.node_handle(id)?;
         let old = self.data.set_node_position(h, pos)?;
@@ -136,13 +136,13 @@ impl EditContext<'_> {
         Ok(old)
     }
 
-    /// Way 的节点 ID 序列。
+    /// Way's node ID sequence.
     pub fn way_node_ids(&self, id: ObjectId) -> Result<Vec<ObjectId>, CommandError> {
         let h = self.way_handle(id)?;
         Ok(self.data.try_way_node_ids(h)?)
     }
 
-    /// 设置 way 的节点序列（ID 形式）。
+    /// Set the way's node sequence (ID form).
     pub fn set_way_nodes(&mut self, id: ObjectId, nodes: &[ObjectId]) -> Result<(), CommandError> {
         let way_handle = self.way_handle(id)?;
         let mut node_handles = Vec::with_capacity(nodes.len());
@@ -152,12 +152,12 @@ impl EditContext<'_> {
         self.data.set_way_nodes(way_handle, &node_handles)?;
         self.index.update_way(self.data, way_handle);
         self.data.mark_way_dirty(way_handle);
-        // 节点序列变化会改变 node→way 反查关系（共享节点判定、移动节点时的父 way）。
+        // A node-sequence change alters node->way reverse references (shared-node checks, parent ways when moving nodes).
         *self.referrers_dirty = true;
         Ok(())
     }
 
-    /// 新增 relation。
+    /// Add a relation.
     pub fn add_relation(
         &mut self,
         id: ObjectId,
@@ -191,7 +191,7 @@ impl EditContext<'_> {
         Ok(handle)
     }
 
-    /// 物理移除 relation（undo AddRelation 用）。
+    /// Physically remove a relation (used by undo of AddRelation).
     pub fn remove_relation(&mut self, id: ObjectId) -> Result<(), CommandError> {
         let handle = self.data.relation_handle(id).ok_or(CommandError::NotFound {
             kind: ObjectKind::Relation,
@@ -206,12 +206,12 @@ impl EditContext<'_> {
         Ok(())
     }
 
-    /// 读取 relation 成员（可序列化形式，供命令 undo/UI 使用）。
+    /// Read relation members (serializable form, for command undo/UI).
     pub fn relation_members(&self, id: ObjectId) -> Result<Vec<RelationMemberSpec>, CommandError> {
         relation_members_of(self.data, id)
     }
 
-    /// 替换 relation 成员（保持顺序；角色驻留后写入）。
+    /// Replace relation members (keep order; roles are interned before writing).
     pub fn set_relation_members(
         &mut self,
         id: ObjectId,
@@ -258,12 +258,12 @@ impl EditContext<'_> {
         self.data.relations.set_members(handle, &stored);
         self.data.mark_relation_dirty(handle);
         self.data.bump_version();
-        // 成员关系变化会改变 relation→relation / way→relation 反查。
+        // Member changes alter relation->relation / way->relation reverse references.
         *self.referrers_dirty = true;
         Ok(())
     }
 
-    /// 新增节点。
+    /// Add a node.
     pub fn add_node(
         &mut self,
         id: ObjectId,
@@ -281,12 +281,12 @@ impl EditContext<'_> {
             .set_change_state(ObjectKind::Node, id, ChangeState::Added);
         self.index.update_node(handle, pos);
         self.world_cache.update(handle, pos);
-        // 新节点还没有任何 way 引用，反查表无需重建（画 way 时每次点击都重建
-        // referrers 是 O(N) 的编辑卡顿主因）。
+        // A new node is not yet referenced by any way, so the referrer table need not be rebuilt (rebuilding
+        // referrers on every click while drawing a way is O(N) and the main cause of edit lag).
         Ok(handle)
     }
 
-    /// 新增 way。
+    /// Add a way.
     pub fn add_way(
         &mut self,
         id: ObjectId,
@@ -315,7 +315,7 @@ impl EditContext<'_> {
         Ok(handle)
     }
 
-    /// 物理移除节点（undo AddNode 用）。
+    /// Physically remove a node (used by undo of AddNode).
     pub fn remove_node(&mut self, id: ObjectId) -> Result<(), CommandError> {
         let h = self.node_handle(id)?;
         self.index.remove(ObjectKind::Node, h.index());
@@ -329,7 +329,7 @@ impl EditContext<'_> {
         Ok(())
     }
 
-    /// 物理移除 way。
+    /// Physically remove a way.
     pub fn remove_way(&mut self, id: ObjectId) -> Result<(), CommandError> {
         let h = self.way_handle(id)?;
         self.index.remove(ObjectKind::Way, h.index());
@@ -342,7 +342,7 @@ impl EditContext<'_> {
         Ok(())
     }
 
-    /// 标记删除（保留对象以便上传 diff / 撤销）。
+    /// Mark deleted (keep the object for upload diff / undo).
     pub fn mark_deleted(&mut self, kind: ObjectKind, id: ObjectId) -> Result<(), CommandError> {
         match kind {
             ObjectKind::Node => {
@@ -360,12 +360,12 @@ impl EditContext<'_> {
         }
         self.data
             .set_change_state_visible(kind, id, ChangeState::Deleted, false);
-        // 逻辑删除的 way/relation 不应再阻止其节点被删除；重建反查表以剔除它。
+        // Logically deleted ways/relations must no longer block deletion of their nodes; rebuild the referrer table to drop them.
         *self.referrers_dirty = true;
         Ok(())
     }
 
-    /// 对象当前的 visible 标记。
+    /// The object's current visible flag.
     pub fn visible_of(&self, kind: ObjectKind, id: ObjectId) -> bool {
         match kind {
             ObjectKind::Node => self
@@ -390,10 +390,10 @@ impl EditContext<'_> {
         }
     }
 
-    /// 恢复删除。
+    /// Restore a deletion.
     pub fn restore_deleted(&mut self, kind: ObjectKind, id: ObjectId, state: ChangeState, visible: bool) {
         self.data.set_change_state_visible(kind, id, state, visible);
-        // 恢复可见会重新建立 way→node / relation→member 引用。
+        // Restoring visibility re-establishes way->node / relation->member references.
         *self.referrers_dirty = true;
         if visible {
             match kind {
@@ -416,7 +416,7 @@ impl EditContext<'_> {
     }
 }
 
-/// 编辑器。
+/// Editor.
 pub struct Editor {
     data: DataSet,
     index: SpatialIndex,
@@ -429,7 +429,7 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// 从数据集构建（索引、世界坐标缓存与反查表立即构建）。
+    /// Build from a dataset (index, world-coordinate cache and referrer table are built immediately).
     pub fn new(data: DataSet) -> Self {
         let index = SpatialIndex::build(&data);
         let world_cache = WorldCache::build(&data);
@@ -446,67 +446,67 @@ impl Editor {
         }
     }
 
-    /// 只读数据。
+    /// Read-only data.
     pub fn data(&self) -> &DataSet {
         &self.data
     }
 
-    /// 节点世界坐标缓存（渲染层只读）。
+    /// Node world-coordinate cache (read-only for the renderer).
     pub fn world_cache(&self) -> &WorldCache {
         &self.world_cache
     }
 
-    /// 读取 relation 成员（UI 用）。
+    /// Read relation members (for the UI).
     pub fn relation_members(&self, id: ObjectId) -> Result<Vec<RelationMemberSpec>, CommandError> {
         relation_members_of(&self.data, id)
     }
 
-    /// 把一个名字驻留进数据集符号表。样式构建用它，不把 `&mut DataSet` 交出去。
+    /// Intern a name into the dataset symbol table. Used by style building so that `&mut DataSet` is not exposed.
     pub fn intern_sym(&mut self, name: &str) -> Sym {
         self.data.intern(name)
     }
 
-    /// 装入一个已有节点，不记入撤销。测试和导入基线用；普通编辑走命令。
+    /// Load an existing node without recording undo. Used by tests and import baselines; normal edits go through commands.
     pub fn import_node(&mut self, node: neo_osm::Node) -> Result<(), neo_core::NeoError> {
         self.data.push_node(node).map(|_| ())
     }
 
-    /// 空间索引。
+    /// Spatial index.
     pub fn index(&self) -> &SpatialIndex {
         &self.index
     }
 
-    /// 选择集。
+    /// Selection set.
     pub fn selection(&self) -> &Selection {
         &self.selection
     }
 
-    /// 选择集（可变）。
+    /// Selection set (mutable).
     pub fn selection_mut(&mut self) -> &mut Selection {
         &mut self.selection
     }
 
-    /// 历史。
+    /// History.
     pub fn history(&self) -> &History {
         &self.history
     }
 
-    /// 历史（可变：保存后 clear_dirty 等）。
+    /// History (mutable: clear_dirty after saving, etc.).
     pub fn history_mut(&mut self) -> &mut History {
         &mut self.history
     }
 
-    /// 绑定 journal 输出。
+    /// Bind the journal output.
     pub fn set_journal_sink(&mut self, sink: Box<dyn JournalSink>) {
         self.journal.set_sink(sink);
     }
 
-    /// 分配本地 ID。
+    /// Allocate a local ID.
     pub fn next_local_id(&mut self) -> ObjectId {
         self.data.next_local_id()
     }
 
-    /// 拖动预览：只改数据与索引，不产生历史/journal（释放时用 MoveNode 提交）。
+    /// Drag preview: only changes data and index, no history/journal (commit with MoveNode on release).
     pub fn preview_move_node(&mut self, id: ObjectId, pos: LatLon) -> Result<(), CommandError> {
         let handle = self.data.node_handle(id).ok_or(CommandError::NotFound {
             kind: ObjectKind::Node,
@@ -516,7 +516,7 @@ impl Editor {
         self.data.mark_node_dirty(handle);
         self.index.update_node(handle, pos);
         self.world_cache.update(handle, pos);
-        // 父 way 包围盒随节点移动，保证拖动中拾取/场景与几何一致。
+        // The parent way bbox follows the node so picking/scene and geometry stay consistent while dragging.
         self.ensure_referrers();
         let parents: Vec<_> = self.referrers.ways_of_node(handle).to_vec();
         for way in parents {
@@ -525,7 +525,7 @@ impl Editor {
         Ok(())
     }
 
-    /// 返回与该节点直接相连的邻居节点 ID（拖动预览画线用）。
+    /// Return the IDs of nodes directly connected to this node (for drawing drag-preview lines).
     pub fn node_neighbors(&self, node: ObjectId) -> Vec<ObjectId> {
         let Some(handle) = self.data.node_handle(node) else {
             return Vec::new();
@@ -556,13 +556,13 @@ impl Editor {
         out
     }
 
-    /// 用当前数据重建反查表（结构变化后自动发生）。
-    /// 反向引用（只读；场景构建判定共享节点等）。
+    /// Rebuild the referrer table from the current data (happens automatically after structural changes).
+    /// Reverse references (read-only; e.g. scene building needs shared-node detection).
     pub fn referrers(&self) -> &Referrers {
         &self.referrers
     }
 
-    /// 渲染前刷新反查表（`referrers()` 是只读的，脏标记由写命令设置）。
+    /// Refresh the referrer table before rendering (`referrers()` is read-only; the dirty flag is set by write commands).
     pub fn refresh_referrers(&mut self) {
         self.ensure_referrers();
     }
@@ -574,7 +574,7 @@ impl Editor {
         }
     }
 
-    /// 执行单命令。
+    /// Execute a single command.
     pub fn execute(&mut self, mut cmd: Box<dyn Command>) -> Result<(), CommandError> {
         self.ensure_referrers();
         cmd.precheck(&self.data, &self.referrers)?;
@@ -591,7 +591,7 @@ impl Editor {
             cmd.apply(&mut ctx)
         };
         if let Err(err) = applied {
-            // 命令自身可能已写了一半；best-effort undo + 恢复变更集，随后返回错误。
+            // The command itself may have written half its changes; best-effort undo + restore the change set, then return the error.
             let mut ctx = EditContext {
                 data: &mut self.data,
                 index: &mut self.index,
@@ -610,7 +610,7 @@ impl Editor {
         Ok(())
     }
 
-    /// 执行命令批（原子）。
+    /// Execute a command batch (atomic).
     pub fn execute_batch(&mut self, mut cmds: Vec<Box<dyn Command>>) -> Result<(), CommandError> {
         if cmds.is_empty() {
             return Ok(());
@@ -618,7 +618,7 @@ impl Editor {
         let changes_before = self.data.changes.clone();
         let tx = self.journal.begin();
         for idx in 0..cmds.len() {
-            // 每条命令执行前刷新反查表：批内前面的命令可能改变了引用关系。
+            // Refresh the referrer table before each command: earlier commands in the batch may have changed references.
             self.ensure_referrers();
             if let Err(err) = cmds[idx].precheck(&self.data, &self.referrers) {
                 self.rollback_batch(&mut cmds, idx, changes_before);
@@ -635,7 +635,7 @@ impl Editor {
                 cmds[idx].apply(&mut ctx)
             };
             if let Err(err) = result {
-                // 回滚失败命令自身 + 已应用部分（逆序 undo），保证事务失败零副作用。
+                // Roll back the failed command itself + the already-applied part (undo in reverse order), guaranteeing zero side effects on failure.
                 let mut ctx = EditContext {
                     data: &mut self.data,
                     index: &mut self.index,
@@ -676,7 +676,7 @@ impl Editor {
         self.data.changes = changes_before;
     }
 
-    /// 撤销。
+    /// Undo.
     pub fn undo(&mut self) -> Result<bool, CommandError> {
         self.ensure_referrers();
         let done = {
@@ -692,8 +692,8 @@ impl Editor {
         if done {
             self.data.bump_version();
             self.ensure_referrers();
-            // 用当前 undo 栈重建 journal：崩溃恢复后的状态与屏幕上一致，
-            // 已撤销的编辑不会在重启后复活。
+            // Rebuild the journal from the current undo stack: state after crash recovery matches the screen,
+            // and undone edits do not come back after a restart.
             let records = self.history.records();
             if let Err(err) = self.journal.rebase(&records) {
                 tracing::warn!("journal rebase failed: {err}");
@@ -702,7 +702,7 @@ impl Editor {
         Ok(done)
     }
 
-    /// 重做。
+    /// Redo.
     pub fn redo(&mut self) -> Result<bool, CommandError> {
         self.ensure_referrers();
         let done = {
@@ -726,27 +726,27 @@ impl Editor {
         Ok(done)
     }
 
-    /// 清空 journal 基线（打开/下载新数据集、保存后调用）。
+    /// Clear the journal baseline (called when opening/downloading a new dataset or after saving).
     pub fn reset_journal(&mut self) {
         let _ = self.journal.reset();
     }
 
-    /// 最近一次 journal 写入失败（供 UI 告警）。
+    /// Most recent journal write failure (for UI alerts).
     pub fn take_journal_failure(&mut self) -> Option<String> {
         self.journal.take_failure()
     }
 
-    /// 从 journal 帧恢复（只应用到最后一个 TxCommit）。
+    /// Recover from journal frames (apply only up to the last TxCommit).
     pub fn recover(data: DataSet, frames: &[JournalFrame]) -> Result<(Self, usize), CommandError> {
         Self::recover_with_report(data, frames).map(|(editor, report)| (editor, report.applied))
     }
 
-    /// 从 journal 恢复，并返回可展示的恢复报告（阶段 4：崩溃恢复可观测）。
+    /// Recover from the journal and return a displayable recovery report (stage 4: observable crash recovery).
     ///
-    /// 恢复语义：
-    /// * 以最后一个 `Rebase` 帧的命令为基线（没有则从 `data` 基线开始）；
-    /// * 只重放最后一个完整 `TxBegin/TxCommit` 之前的 Cmd 帧；
-    /// * 单条命令失败只计入 `skipped` 并继续，不再让一条坏帧毁掉整本日志。
+    /// Recovery semantics:
+    /// * start from the commands of the last `Rebase` frame as baseline (or from the `data` baseline if none);
+    /// * replay only Cmd frames before the last complete `TxBegin/TxCommit`;
+    /// * a single command failure only counts toward `skipped` and continues, so one bad frame no longer ruins the whole log.
     pub fn recover_with_report(
         data: DataSet,
         frames: &[JournalFrame],
@@ -790,38 +790,38 @@ impl Editor {
     }
 }
 
-/// 上传结果中的一条 ID/版本映射（与 `neo-api` 解耦，由应用层转换）。
+/// One ID/version mapping in an upload result (decoupled from `neo-api`; converted by the app layer).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiffMapping {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 上传前的本地 ID（新建对象为负数）。
+    /// Local ID before upload (negative for newly created objects).
     pub old_id: ObjectId,
-    /// 服务端 ID。
+    /// Server ID.
     pub new_id: ObjectId,
-    /// 服务端 version（服务端未返回时为 `None`，保持本地版本）。
+    /// Server version (`None` when the server did not return one; the local version is kept).
     pub new_version: Option<u32>,
 }
 
-/// journal 恢复报告。
+/// Journal recovery report.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecoveryReport {
-    /// journal 总帧数。
+    /// Total journal frame count.
     pub frames: usize,
-    /// 已提交事务的命令帧数。
+    /// Number of command frames in committed transactions.
     pub committed_transactions: usize,
-    /// 成功重放并应用的命令数。
+    /// Number of commands successfully replayed and applied.
     pub applied: usize,
-    /// 未闭合事务/无法解析等被丢弃的帧数。
+    /// Number of discarded frames (unclosed transactions, unparsable, etc.).
     pub dropped: usize,
-    /// 被截断/跳过的帧数（半事务、无法解析等）。
+    /// Number of truncated/skipped frames (half transactions, unparsable, etc.).
     pub skipped: usize,
 }
 
 impl Editor {
-    /// 冲突解决专用：把本地对象的版本对齐到服务端版本（KeepLocal 策略）。    ///
-    /// 这不是普通编辑（不写入 history/journal），只用于 409 后让“保留本地”的重传
-    /// 通过 OSM 的版本校验；调用方应把它当作冲突解决动作记录在 UI 日志中。
+    /// Conflict-resolution only: align the local object's version to the server version (KeepLocal strategy).    ///
+    /// This is not a normal edit (it writes no history/journal); it only makes the "keep local" re-upload pass
+    /// OSM's version check after a 409. Callers should record it as a conflict-resolution action in the UI log.
     pub fn set_object_version(&mut self, kind: ObjectKind, id: ObjectId, version: u32) -> bool {
         let updated = match kind {
             ObjectKind::Node => {
@@ -871,19 +871,19 @@ impl Editor {
         updated
     }
 
-    /// 应用上传结果：负 ID → 服务端 ID、写回 version、清空变更集。
+    /// Apply an upload result: negative ID -> server ID, write back version, clear the change set.
     ///
-    /// 上传成功后**必须**调用：否则新建对象永远保留负 ID/version=0，下一次上传
-    /// 会把同一批对象再次 create（重复建对象），修改也会因版本落后永久 409。
+    /// **Must** be called after a successful upload: otherwise new objects keep a negative ID/version=0, and the next upload
+    /// creates the same objects again (duplicate objects), while modifications keep returning 409 due to a stale version.
     ///
-    /// 因为 ID 变化会让历史命令与 journal 记录失效，这里同时清空历史并重置
-    /// journal 基线（当前内存数据成为新的基线）。
+    /// Because ID changes invalidate history commands and journal records, this also clears history and resets the
+    /// journal baseline (the current in-memory data becomes the new baseline).
     pub fn apply_diff_result(&mut self, entries: &[DiffMapping]) -> usize {
         self.apply_uploaded(entries, true)
     }
 
-    /// 应用已上传的映射；`complete=false` 时保留未上传对象的变更，用于分块上传
-    /// 中途失败后仍能继续提交。
+    /// Apply the uploaded mapping; with `complete=false`, keep changes for objects not yet uploaded, so a chunked upload
+    /// can continue after a mid-way failure.
     pub fn apply_uploaded(&mut self, entries: &[DiffMapping], complete: bool) -> usize {
         let mut applied = 0usize;
         for entry in entries {
@@ -898,11 +898,11 @@ impl Editor {
             applied += 1;
         }
         if complete {
-            // 整包已上传成功：其余脏标记（含本地删除）也回到基线。
+            // The whole package uploaded successfully: the remaining dirty markers (including local deletions) also return to baseline.
             self.data.changes.clear();
         }
-        // 分块上传中途失败时，已上传部分的历史不能再用于 undo（否则会改到
-        // 服务端已接受的对象）；保留剩余 changes 供下次提交。
+        // If a chunked upload fails midway, the history of the uploaded part can no longer be used for undo (otherwise it
+        // would modify objects already accepted by the server); keep the remaining changes for the next submit.
         self.history.clear();
         self.selection.clear();
         self.data.bump_version();
@@ -913,8 +913,8 @@ impl Editor {
         applied
     }
 
-    /// 用服务端对象覆盖本地冲突对象（“采用远端”）。远端数据来自独立 DataSet，
-    /// `Sym` 不可跨池，因此标签/角色按字符串重新驻留。
+    /// Overwrite a local conflicting object with the server object ("take remote"). Remote data comes from a separate DataSet,
+    /// and `Sym` values cannot cross pools, so tags/roles are re-interned from strings.
     pub fn replace_from_remote(
         &mut self,
         kind: ObjectKind,
@@ -1032,7 +1032,7 @@ impl Editor {
         Ok(())
     }
 
-    /// 采用远端几何/成员，但保留本地标签。
+    /// Take remote geometry/members but keep local tags.
     pub fn merge_geometry_from_remote(
         &mut self,
         kind: ObjectKind,
@@ -1087,7 +1087,7 @@ impl Editor {
         Ok(())
     }
 
-    /// 合并远端标签：本地已有 key 保留，远端独有 key 补入；几何/成员保留本地。
+    /// Merge remote tags: keys already present locally are kept; keys unique to remote are added; geometry/members stay local.
     pub fn merge_from_remote(
         &mut self,
         kind: ObjectKind,
@@ -1203,11 +1203,11 @@ impl Editor {
         Ok(())
     }
 
-    /// 把远端数据集合并进当前图层（下载 / 图层合并共用）。
+    /// Merge a remote dataset into the current layer (shared by download / layer merge).
     ///
-    /// * 正 ID：按 OSM id 合并——本地无则新增并保留远端 meta；本地未改则更新；本地已脏则跳过
-    /// * 负 ID：始终分配新本地 ID（图层间本地对象不会误并）
-    /// * 不清空历史，用户未保存编辑可继续撤销
+    /// * Positive ID: merge by OSM id -- add if missing locally and keep remote meta; update if unmodified locally; skip if locally dirty
+    /// * Negative ID: always allocate a new local ID (local objects are never wrongly merged across layers)
+    /// * History is not cleared, so unsaved user edits can still be undone
     pub fn merge_from_dataset(&mut self, remote: &DataSet) -> Result<MergeStats, CommandError> {
         let mut stats = MergeStats::default();
         let mut mapping: HashMap<(ObjectKind, ObjectId), ObjectId> = HashMap::new();
@@ -1433,15 +1433,15 @@ impl Editor {
         Ok(stats)
     }
 
-    /// 从另一个 DataSet 复制选中对象到当前数据集；分配新负 ID、重映射内部引用、可选偏移。
-    /// 返回实际创建的对象数。对象按 node→way→relation 顺序加入一个命令批。
+    /// Copy selected objects from another DataSet into the current dataset; allocate new negative IDs, remap internal references, optionally offset.
+    /// Returns the number of objects actually created. Objects are added in one command batch in node->way->relation order.
     pub fn import_from_dataset(
         &mut self,
         remote: &DataSet,
         selected: &[(ObjectKind, ObjectId)],
         offset_m: f64,
     ) -> Result<usize, CommandError> {
-        // 第一遍：跳过 remote 中不存在的选中项、去重，并为每类对象分配新负 ID。
+        // First pass: skip selected items absent from remote, deduplicate, and allocate new negative IDs per object kind.
         let mut mapping: HashMap<(ObjectKind, ObjectId), ObjectId> = HashMap::new();
         let mut node_ids: Vec<ObjectId> = Vec::new();
         let mut way_ids: Vec<ObjectId> = Vec::new();
@@ -1451,7 +1451,7 @@ impl Editor {
                 ObjectKind::Node => remote.node_handle(id).is_some(),
                 ObjectKind::Way => remote.way_handle(id).is_some(),
                 ObjectKind::Relation => remote.relation_handle(id).is_some(),
-                // changeset 不是可复制的图元。
+                // changeset is not a copyable primitive.
                 ObjectKind::Changeset => false,
             };
             if !exists || mapping.contains_key(&(kind, id)) {
@@ -1469,7 +1469,7 @@ impl Editor {
 
         let mut cmds: Vec<Box<dyn Command>> = Vec::with_capacity(mapping.len());
 
-        // 节点：位置在 WebMercator 米制下偏移，标签按字符串跨池重新驻留。
+        // Nodes: positions are offset in WebMercator metres; tags are re-interned across pools.
         for id in node_ids {
             let handle = remote.node_handle(id).ok_or(CommandError::NotFound {
                 kind: ObjectKind::Node,
@@ -1485,7 +1485,7 @@ impl Editor {
             cmds.push(Box::new(cmd));
         }
 
-        // Way：被复制的节点引用映射到新 ID，未复制的保留远端 ID（precheck 校验）。
+        // Ways: copied node references are mapped to new IDs; uncopied ones keep the remote ID (validated by precheck).
         for id in way_ids {
             let handle = remote.way_handle(id).ok_or(CommandError::NotFound {
                 kind: ObjectKind::Way,
@@ -1514,7 +1514,7 @@ impl Editor {
             cmds.push(Box::new(cmd));
         }
 
-        // Relation：成员同样映射；若成员是被复制的 relation，先加入被引用者。
+        // Relations: members are mapped the same way; if a member is a copied relation, it is added before its referrers.
         for id in order_relations_for_import(remote, &relation_ids, &mapping) {
             let handle = remote.relation_handle(id).ok_or(CommandError::NotFound {
                 kind: ObjectKind::Relation,
@@ -1554,7 +1554,7 @@ impl Editor {
     }
 }
 
-/// 在 WebMercator 米制下平移经纬度；`offset_m == 0` 时原样返回，避免浮点往返误差。
+/// Translate lat/lon in WebMercator metres; return as-is when `offset_m == 0` to avoid floating-point round-trip error.
 fn offset_latlon(pos: LatLon, offset_m: f64) -> LatLon {
     if offset_m == 0.0 {
         return pos;
@@ -1564,7 +1564,7 @@ fn offset_latlon(pos: LatLon, offset_m: f64) -> LatLon {
         .to_latlon()
 }
 
-/// 把远端 tag 集合解析成 (key, value) 字符串对（`Sym` 不可跨池）。
+/// Parse a remote tag set into (key, value) string pairs (`Sym` cannot cross pools).
 fn remote_tag_strings(remote: &DataSet, tags: TagSetId) -> Vec<(String, String)> {
     remote
         .tag_pairs(tags)
@@ -1573,9 +1573,9 @@ fn remote_tag_strings(remote: &DataSet, tags: TagSetId) -> Vec<(String, String)>
         .collect()
 }
 
-/// relation 导入顺序：被复制的 relation 成员先于引用者加入（保持选择顺序稳定）。
+/// Relation import order: copied relation members are added before their referrers (keeps the selection order stable).
 ///
-/// 循环引用无法在批内建立，保持原顺序交由 `execute_batch` 的 precheck 报错并整体回滚。
+/// Cyclic references cannot be established within a batch; keep the original order and let `execute_batch`'s precheck report an error and roll back.
 fn order_relations_for_import(
     remote: &DataSet,
     ids: &[ObjectId],
@@ -1612,7 +1612,7 @@ fn order_relations_for_import(
     ordered
 }
 
-/// 某个 relation 成员中「也被复制」的 relation ID 列表。
+/// List of relation IDs among a relation's members that are "also being copied".
 fn copied_relation_members(
     remote: &DataSet,
     id: ObjectId,
@@ -1646,7 +1646,7 @@ fn intern_remote_tags(data: &mut DataSet, remote: &DataSet, tags: TagSetId) -> T
     data.add_tags(&pairs)
 }
 
-/// 读取 relation 成员为可序列化描述（Editor 与 EditContext 共用）。
+/// Read relation members as serializable descriptions (shared by Editor and EditContext).
 fn relation_members_of(data: &DataSet, id: ObjectId) -> Result<Vec<RelationMemberSpec>, CommandError> {
     let handle = data.relation_handle(id).ok_or(CommandError::NotFound {
         kind: ObjectKind::Relation,
@@ -1679,14 +1679,14 @@ fn relation_members_of(data: &DataSet, id: ObjectId) -> Result<Vec<RelationMembe
     Ok(out)
 }
 
-/// 合并结果计数。
+/// Merge result counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MergeStats {
-    /// 新并入的对象数。
+    /// Number of objects newly merged in.
     pub added: usize,
-    /// 用远端覆盖的未修改对象数。
+    /// Number of unmodified objects overwritten with remote.
     pub updated: usize,
-    /// 因本地已修改而跳过的对象数。
+    /// Number of objects skipped because they were modified locally.
     pub skipped: usize,
 }
 
@@ -1795,7 +1795,7 @@ fn relation_members_with_roles(
         .collect()
 }
 
-/// 便捷：世界坐标（供工具/UI 使用）。
+/// Convenience: world coordinates (for tools/UI).
 pub fn world_of(data: &DataSet, node: ObjectId) -> Option<WorldPoint> {
     let h = data.node_handle(node)?;
     let pos = data.nodes.position(h)?;

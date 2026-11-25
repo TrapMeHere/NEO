@@ -1,4 +1,4 @@
-//! NeoApp::session 方法。行为与拆分前的 app.rs 相同。
+//! NeoApp::session methods. Same behavior as before the app.rs split.
 
 use anyhow::Result;
 use neo_core::{ObjectId, ObjectKind};
@@ -13,16 +13,16 @@ use super::{
 };
 
 impl NeoApp {
-    /// 面板所需的只读状态快照
-    /// 周期性把 journal 复制
-    /// `out/autosave/`（保留最
-    /// N 代）
+    /// Read-only state snapshot needed by the panel
+    /// Periodically copies the journal into
+    /// `out/autosave/` (keeping the most
+    /// recent N generations)
     ///
-    /// journal 本身已经持久化每条命令；autosave
-    /// *快照副本**，用于磁盘损
-    /// 误删
-    /// 仍能找回最近的编辑记录（阶
-    /// 4：自动保存与保留代数）
+    /// The journal already persists every command; autosave is a
+    /// **snapshot copy**, so after disk corruption /
+    /// accidental deletion the most recent editing records
+    /// can still be recovered (stage
+    /// 4: autosave and retention generations)
     pub(super) fn maybe_autosave(&mut self) {
         if self.last_autosave.elapsed().as_secs() < self.settings.autosave_secs.max(10) {
             return;
@@ -43,10 +43,8 @@ impl NeoApp {
             self.editor.data().relation_count(),
         );
         let busy = self.autosave_busy.clone();
-        // 整份 journal
-        // copy/read + SQLite 写入放到后台，避免在 UI 线程
-        //
-        // journal 增长而变慢的 IO
+        // Copy/read of the whole journal + the SQLite write go to the background, avoiding IO on the UI thread
+        // that would slow down as the journal grows.
         std::thread::spawn(move || {
             let _ = std::fs::create_dir_all(&dir);
             let mut entries: Vec<String> = std::fs::read_dir(&dir)
@@ -144,7 +142,7 @@ impl NeoApp {
             return Ok(());
         }
         if self.editor.history().is_dirty() {
-            // 不允许静默丢弃当前未保存编辑
+            // Never silently discard the current unsaved edits
             self.status = t("app.error.recover_dirty").into();
             return Ok(());
         }

@@ -1,13 +1,13 @@
-//! # neo-osm — OSM 领域模型
+//! # neo-osm — OSM domain model
 //!
-//! 这一层只表达 **OSM 语义**，不关心存储布局、渲染格式或 UI：
+//! This layer expresses **OSM semantics** only; it does not care about storage layout, render format, or UI:
 //!
-//! * [`Tags`]：驻留符号对组成的 tag 集合；
-//! * [`Node`] / [`Way`] / [`Relation`]：IO、API、剪贴板、命令参数使用的 DTO；
-//! * [`ChangeState`] / [`ChangeAction`]：本地编辑状态与上传动作语义。
+//! * [`Tags`]: a tag set made of interned symbol pairs;
+//! * [`Node`] / [`Way`] / [`Relation`]: DTOs used by IO, API, clipboard, and command parameters;
+//! * [`ChangeState`] / [`ChangeAction`]: local edit state and upload action semantics.
 //!
-//! 物理存储（SoA、句柄、索引）在 `neo-store`；两者刻意分离，见
-//! `docs/03-osm-data-model-and-store.md` 与 ADR-0004。
+//! Physical storage (SoA, handles, indexes) lives in `neo-store`; the two are deliberately separated, see
+//! `docs/03-osm-data-model-and-store.md` and ADR-0004.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

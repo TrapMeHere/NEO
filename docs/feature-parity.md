@@ -1,142 +1,155 @@
-# NEO 功能完成度与 iD / JOSM 对比（2026-11-21）
+# NEO feature completeness vs. iD / JOSM (2026-11-21)
 
-> 目的：把"功能有没有"从 README 的口号变成可核对的矩阵。状态定义：
-> **✅ 完成** = 有 UI 入口 + 命令/事务 + 往返/测试；**🟡 部分** = 后端或单路径可用，
-> 缺关键交互/边界；**❌ 缺失** = 无实现；**—** = 明确不做/不在范围。
-> iD/JOSM 列只记其**默认**能力，不展开插件市场。
+> Purpose: turn "is the feature there?" from a README slogan into a verifiable matrix.
+> Status definitions: **✅ Done** = UI entry point + command/transaction + round-trip/tests;
+> **🟡 Partial** = backend or a single path works, missing key interactions/edge cases;
+> **❌ Missing** = no implementation; **—** = explicitly out of scope / not planned.
+> The iD/JOSM columns record only their **default** capabilities, without expanding the plugin market.
 
-## 1. 结论
+## 1. Conclusion
 
-NEO 已经覆盖"打开数据 → 选择/绘制/编辑 → 校验 → 保存/导出 → 下载/上传/冲突"的主链，
-本轮补上了 **关系成员编辑、框选、复制/粘贴/副本、查找、GPX 导入导出、way 简化、
-节点粘合**，并把校验规则从 12 条扩到 17 条。
+NEO already covers the main chain "open data → select/draw/edit → validate → save/export →
+download/upload/conflict". This round added **relation member editing, rectangular selection,
+copy/paste/duplicate, search, GPX import/export, way simplification, and node gluing**, and
+expanded the validation rules from 12 to 24.
 
-与成熟编辑器相比，剩余差距集中在四类：
+Compared with mature editors, the remaining gaps fall into four categories:
 
-1. **几何工具深度**（JOSM 的 orthogonalize/align/distribute/mirror/extrude/unglue/
-   join areas/multipolygon 等）；
-2. **图层与影像**（多数据图层、TMS/WMS 影像图层、偏移校准）；
-3. **上传工作流细节**（上传选中、分块、手合并、changeset 历史、notes）；
-4. **生态**（插件未接入桌面、MapCSS text/icon、历史视图、音频/地籍/打印）。
+1. **Depth of geometry tools** (JOSM's orthogonalize/align/distribute/mirror/extrude/unglue/
+   join areas/multipolygon, etc.);
+2. **Layers and imagery** (multiple data layers, TMS/WMS imagery layers, offset calibration);
+3. **Upload workflow details** (upload selection, chunking, manual merging, changeset history, notes);
+4. **Ecosystem** (plugins not wired into the desktop app, MapCSS text/icon, history view, audio/cadastre/printing).
 
-这些不是"不能用"，而是"专业制图者连续一周工作会撞到的墙"。逐项登记在 §4。
+These are not "unusable", but "walls a professional mapper will hit after working for a week".
+Each item is recorded in §4.
 
-## 2. 总览矩阵
+## 2. Overview matrix
 
-图例：✅ 完成；🟡 部分；❌ 缺失；— 不在范围。
+Legend: ✅ done; 🟡 partial; ❌ missing; — out of scope.
 
-| 领域 | 能力 | NEO | iD | JOSM | 备注 |
+| Area | Capability | NEO | iD | JOSM | Notes |
 |---|---|---|---|---|---|
-| 数据 | OSM XML 读/写 | ✅ | ✅ | ✅ | 含 ISO 时间戳、action、visible、负 ID |
-| 数据 | PBF 读/写 | ✅ | 🟡（读为主） | ✅ | 写侧自研 encoder；无 DenseNodes |
-| 数据 | osmChange 读/写 | ✅ | ✅ | ✅ | delete 依赖序、if-unused、负 ID 折叠 |
-| 数据 | GPX 读/写 | ✅ | 🟡 | ✅ | 无 ele/time/rte 语义 |
-| 数据 | `.jos/.joz` 会话 | ✅ | — | ✅ | zip 安全解压、图层外置 |
-| 数据 | 多数据图层 | ✅ | 🟡 | ✅ | 活动编辑 + 停靠只读渲染/切换/显隐/新建/打开/持久化/整层复制 |
-| 数据 | 跨层复制 | 🟡 | 🟡 | ✅ | 停靠层整层复制到活动层（ID 重映射）；对象级复制未做 |
-| 编辑 | 选择/多选/框选 | ✅ | ✅ | ✅ | 本轮新增框选、Shift 累加 |
-| 编辑 | 绘制 way/闭合 | ✅ | ✅ | ✅ | 双击/Enter 完成 |
-| 编辑 | 删除（引用检查） | ✅ | ✅ | ✅ | 被引用时拒绝，需先处理引用 |
-| 编辑 | 移动节点/整条 way | ✅ | ✅ | ✅ | 拖拽批移动 = 一条历史 |
-| 编辑 | 标签表格/预设/NSI | ✅ | ✅ | ✅ | schema + 品牌建议搜索；多选可批量添加/删除标签 |
-| 编辑 | 分割/合并/反转 way | ✅ | ✅ | ✅ | 分割支持选中节点 |
-| 编辑 | 简化 way | ✅ | — | ✅ | RDP，按屏幕像素容差 |
-| 编辑 | 粘合节点（glue） | ✅ | ✅ | ✅ | 本轮新增，way/relation 引用同步迁移 |
-| 编辑 | 复制/粘贴/副本 | ✅ | ✅ | ✅ | 本轮新增，跨文档字符串剪贴板 |
-| 编辑 | 正交化/对齐/分布/镜像 | ✅ | 🟡 | ✅ | 对齐/分布/镜像/解粘/平行/正交化；join areas/extrude 缺 |
-| 编辑 | 解粘（unglue）/平行 way | ✅ | — | ✅ | 本轮实现 |
-| 编辑 | 多边形组合/多面关系 | 🟡 | 🟡 | ✅ | multipolygon outer/inner + earcut 洞；未闭合成员不拼接 |
-| 编辑 | 关系成员增删/排序/角色 | ✅ | ✅ | ✅ | 本轮新增；无手合并 |
-| 编辑 | 撤销/重做 | ✅ | ✅ | ✅ | 命令批、合并、journal rebase |
-| 查找 | 按 ID/标签/文本查找 | ✅ | ✅ | ✅ | 本轮新增；最多 500 条 |
-| 查找 | 历史/命令栈面板 | ✅ | — | ✅ | 右侧面板显示可撤销命令，点击撤销到该步 |
-| 校验 | 内置规则 | 🟡 25 条 | 🟡 | ✅ 100+ | 新增 area 未闭合、非相邻重复节点、oneway 非法、空 name、layer 越界、multipolygon no-outer/outer 未闭合 |
-| 校验 | 可配置/忽略/自动修复 | ❌ | 🟡 | ✅ | |
-| 渲染 | 矢量地图/节点 LOD | ✅ | ✅ | ✅ | 按 OSM `layer` 分桶排序；节点 LOD；无 text/icon/shield 全量 |
-| 渲染 | MapCSS 子集 | 🟡 | —（自有样式） | ✅ | fill/color/width/opacity/zoom/dashes/text/text-color/font-size/icon-image(PNG) |
-| 渲染 | 影像图层（TMS/WMS） | ✅ | ✅ | ✅ | TMS 瓦片 + WMS 单图、异步、透明度、X/Y 偏移、偏移库导入/导出/应用 |
-| 同步 | OAuth2+PKCE/多账户 | ✅ | ✅ | ✅ | token 刷新已接 |
-| 同步 | bbox 下载 | ✅ | ✅ | ✅ | 0.25° 上限未切块 |
-| 同步 | 上传 changeset/diff | ✅ | ✅ | ✅ | diffResult 回写、变更清理 |
-| 同步 | 409 冲突 | 🟡 | ✅ | ✅ | KeepLocal/重下载 + 采用远端/合并标签；无位置/成员字段级选择 |
-| 同步 | 上传选中/分块 | 🟡 | 🟡 | ✅ | 选中上传 + 依赖分组切块/部分成功；混合大变更拒绝切块 |
-| 持久化 | journal 崩溃恢复 | ✅ | 🟡 | ✅ | 恢复写新基线；无 fsync 目录 |
-| 持久化 | 自动保存/快照 | ✅ | ✅ | ✅ | journal + SQLite 快照 |
-| 同步 | Notes | ✅ | ✅ | 🟡 | 当前区域列表/新建/评论/关闭/定位 |
-| 平台 | 中文界面/i18n | ✅ | ✅ | ✅ | zh/en |
-| 平台 | 设置/关于 | ✅ | ✅ | ✅ | 常规/编辑/校验/网络/存储/账户/快捷键（可重绑，持久化） |
-| 平台 | 插件 | ✅ | — | ✅ | 安装/列表/启用/删除 + WAT/WASM 执行；签名信任根未做 |
-| 平台 | CLI/无头 | ✅ | — | ✅ | CLI/prototype |
-| 平台 | 三平台发布 | 🟡 | ✅ | ✅ | Windows 主支持，Linux/mac 脚本有 assets |
+| Data | OSM XML read/write | ✅ | ✅ | ✅ | Includes ISO timestamps, action, visible, negative IDs |
+| Data | PBF read/write | ✅ | 🟡 (read-focused) | ✅ | Self-built encoder on the write side; no DenseNodes |
+| Data | osmChange read/write | ✅ | ✅ | ✅ | delete follows dependency order, if-unused, negative ID folding |
+| Data | GPX read/write | ✅ | 🟡 | ✅ | No ele/time/rte semantics |
+| Data | `.jos/.joz` sessions | ✅ | — | ✅ | Safe zip extraction, external layer files |
+| Data | Multiple data layers | ✅ | 🟡 | ✅ | Active edit + docked read-only rendering/switch/show-hide/new/open/persist/full-layer copy |
+| Data | Cross-layer copy | 🟡 | 🟡 | ✅ | Full-layer copy from a docked layer to the active layer (ID remapping); object-level copy not done |
+| Edit | Select/multi-select/box select | ✅ | ✅ | ✅ | This round adds rectangular selection and Shift to accumulate |
+| Edit | Draw way/close | ✅ | ✅ | ✅ | Double-click/Enter to finish |
+| Edit | Delete (reference check) | ✅ | ✅ | ✅ | Refused when referenced; references must be handled first |
+| Edit | Move node/whole way | ✅ | ✅ | ✅ | Drag batch move = one history entry |
+| Edit | Tag table/presets/NSI | ✅ | ✅ | ✅ | schema + brand suggestion search; multi-select can add/delete tags in bulk |
+| Edit | Split/merge/reverse way | ✅ | ✅ | ✅ | Split supports selected nodes |
+| Edit | Simplify way | ✅ | — | ✅ | RDP, tolerance in screen pixels |
+| Edit | Glue nodes | ✅ | ✅ | ✅ | New this round; way/relation references migrate in sync |
+| Edit | Copy/paste/duplicate | ✅ | ✅ | ✅ | New this round; cross-document string clipboard |
+| Edit | Orthogonalize/align/distribute/mirror | ✅ | 🟡 | ✅ | Align/distribute/mirror/unglue/parallel/orthogonalize; join areas/extrude missing |
+| Edit | Unglue/parallel way | ✅ | — | ✅ | Implemented this round |
+| Edit | Polygon assembly/multipolygon relations | 🟡 | 🟡 | ✅ | multipolygon outer/inner + earcut holes; unclosed members are not stitched |
+| Edit | Relation member add/remove/order/role | ✅ | ✅ | ✅ | New this round; no manual merge |
+| Edit | Undo/redo | ✅ | ✅ | ✅ | Command batches, coalescing, journal rebase |
+| Search | Find by ID/tag/text | ✅ | ✅ | ✅ | New this round; up to 500 results |
+| Search | History/command stack panel | ✅ | — | ✅ | Right panel shows undoable commands; click to undo to that step |
+| Validation | Built-in rules | 🟡 24 rules | 🟡 | ✅ 100+ | Added since the 12-rule baseline: way too long, closed way with too few nodes, relation missing `type`, duplicate relation members, invalid `layer`, unclosed area, non-adjacent duplicate nodes, invalid `oneway`, empty `name`, `layer` out of range, multipolygon no-outer/outer unclosed |
+| Validation | Configurable/ignore/auto-fix | ❌ | 🟡 | ✅ | |
+| Rendering | Vector map/node LOD | ✅ | ✅ | ✅ | Bucketed and sorted by OSM `layer`; node LOD; no full text/icon/shield |
+| Rendering | MapCSS subset | 🟡 | — (own styling) | ✅ | fill/color/width/opacity/zoom/dashes/text/text-color/font-size/icon-image(PNG) |
+| Rendering | Imagery layers (TMS/WMS) | ✅ | ✅ | ✅ | TMS tiles + WMS single image, async, opacity, X/Y offset, offset DB import/export/apply |
+| Sync | OAuth2+PKCE/multiple accounts | ✅ | ✅ | ✅ | Token refresh wired up |
+| Sync | bbox download | ✅ | ✅ | ✅ | 0.25° cap is not chunked |
+| Sync | Upload changeset/diff | ✅ | ✅ | ✅ | diffResult written back, change cleanup |
+| Sync | 409 conflict | 🟡 | ✅ | ✅ | KeepLocal/re-download + take remote/merge tags; no position/member field-level selection |
+| Sync | Upload selection/chunking | 🟡 | 🟡 | ✅ | Upload selection + dependency-group chunking/partial success; oversized mixed changes refuse chunking |
+| Persistence | journal crash recovery | ✅ | 🟡 | ✅ | Recovery writes a new baseline; no fsync of the directory |
+| Persistence | Autosave/snapshot | ✅ | ✅ | ✅ | journal + SQLite snapshot |
+| Sync | Notes | ✅ | ✅ | 🟡 | List/create/comment/close/locate in the current area |
+| Platform | Chinese UI/i18n | ✅ | ✅ | ✅ | zh/en |
+| Platform | Settings/About | ✅ | ✅ | ✅ | General/edit/validation/network/storage/accounts/shortcuts (rebindable, persisted) |
+| Platform | Plugins | ✅ | — | ✅ | Install/list/enable/delete + WAT/WASM execution; no signature trust root |
+| Platform | CLI/headless | ✅ | — | ✅ | CLI/prototype |
+| Platform | Three-platform release | 🟡 | ✅ | ✅ | Windows is the primary target; Linux/mac scripts have assets |
 
-## 3. 本轮新增/完善（可验收）
+## 3. New/improved this round (verifiable)
 
-| 能力 | 入口 | 实现 |
+| Capability | Entry point | Implementation |
 |---|---|---|
-| 关系成员编辑 | 右侧成员面板：↑ ↓ ✕、角色编辑、加入选中 | `SetRelationMembers` 命令 + undo/journal；批量刷新反查表 |
-| 框选 | 选择工具在空白处左键拖矩形，Shift 累加 | 空间索引查询 + 任意节点在框内即选 way |
-| 复制/粘贴/副本 | 编辑菜单 / Ctrl+C、Ctrl+V、Ctrl+D | 字符串剪贴板，跨文档；批内重映射节点/way/relation ID |
-| 查找 | 编辑 → 查找… / Ctrl+F | `id:123`、`key=value`、文本；点击选中并定位 |
-| GPX | 文件 → 导入/导出 GPX… | 通过命令批导入，保持单写者 |
-| way 简化 | 工具 → 简化 way | RDP，按当前缩放 1.5px 容差 |
-| 节点粘合 | 工具 → 粘合节点 | 事务：合并标签、改 way/relation 引用 → 删除多余节点 |
-| 几何工具 | 工具菜单 | 对齐、等距分布、水平/垂直镜像、解粘、平行复制 way |
-| 上传选中 | 上传窗口 | 只上传选中对象，自动带上新建依赖 |
-| 设置/关于 | 帮助 → 设置/关于 | 7 类设置页；关于移除字体示例，只留版本/许可 |
-| 影像图层 | 视图 → 影像图层… | TMS URL 模板、异步瓦片、缓存、透明度、持久化 |
-| 命令历史 | 右侧“命令历史”面板 | 显示可撤销命令，点击撤销到该步之前 |
-| 校验规则 +5 | 校验面板 | way>2000、闭合 way<4、relation 缺 type、重复成员、非法 layer |
-| 只读/隐藏图层 | 图层面板 | 画布、菜单、快捷键、标签、删除统一拦截 |
-| 后台导入/自动保存 | 打开文件/60s | PBF/XML 导入与 autosave 移出 UI 线程 |
+| Relation member editing | Right-side member panel: ↑ ↓ ✕, role editing, add to selection | `SetRelationMembers` command + undo/journal; batch refresh of reverse lookup tables |
+| Rectangular selection | With the select tool, drag a rectangle on empty space; Shift accumulates | Spatial index query + select a way if any node falls inside the rectangle |
+| Copy/paste/duplicate | Edit menu / Ctrl+C, Ctrl+V, Ctrl+D | String clipboard, cross-document; remaps node/way/relation IDs within the batch |
+| Search | Edit → Find… / Ctrl+F | `id:123`, `key=value`, text; click to select and center |
+| GPX | File → Import/Export GPX… | Imported through command batches, keeping a single writer |
+| Way simplification | Tools → Simplify way | RDP, 1.5 px tolerance at the current zoom |
+| Node gluing | Tools → Glue nodes | Transaction: merge tags, update way/relation references → delete redundant nodes |
+| Geometry tools | Tools menu | Align, evenly distribute, mirror horizontally/vertically, unglue, parallel-copy way |
+| Upload selection | Upload window | Upload only selected objects, automatically including new dependencies |
+| Settings/About | Help → Settings/About | 7 settings pages; About drops the font example and keeps only version/license |
+| Imagery layers | View → Imagery layers… | TMS URL template, async tiles, cache, opacity, persistence |
+| Command history | Right-side "Command history" panel | Shows undoable commands; clicking undoes to before that step |
+| Validation rules +5 | Validation panel | way>2000, closed way<4, relation missing type, duplicate members, invalid layer |
+| Read-only/hidden layers | Layers panel | Canvas, menus, shortcuts, tags, and delete are all intercepted consistently |
+| Background import/autosave | Open file/60s | PBF/XML import and autosave moved off the UI thread |
 
-## 4. 与 JOSM/iD 的差距清单（按优先级）
+## 4. Gap list vs. JOSM/iD (by priority)
 
-### P0：专业用户一周工作会撞墙
+### P0: walls a professional user hits within a week
 
-1. **多数据图层 + 活动图层语义**：活动图层可编辑，停靠图层只读渲染；新建空图层、
-   打开为图层、切换、显隐、删除；停靠图层保存到 `%LOCALAPPDATA%/NEO/layers/*.osm`，
-   启动自动恢复。
-2. **影像图层 TMS/WMS + 偏移校准**：TMS 瓦片与 WMS 单图均已接入（异步、缓存/单图、
-   透明度、X/Y 像素偏移、持久化）；偏移数据库共享未做。
-3. **上传选中/分块/after-upload 清理**：上传选中已实现；变更按 4000 元素自动切块，
-   新建对象按引用组切分、部分成功会应用已上传映射并保留剩余变更。混合 create+modify
-   的超大变更会拒绝切块（避免跨 diff 负 ID 引用错误）；413 退避/after-upload 清理未做。
-4. **冲突逐字段手合并**：已实现逐对象“采用远端”“合并标签”“合并几何”（采用远端位置/
-   节点/成员、保留本地标签）+“保留本地”；单字段勾选仍未做。
-5. **正交化/对齐/分布/镜像**：对齐、等距分布、水平/垂直镜像、解粘、平行复制已实现；
-   JOSM 的 orthogonalize / join areas / extrude / move node onto way 仍缺。
-6. **multipolygon 组装与洞**：`type=multipolygon/boundary` 的 outer/inner 成员已组装，
-   洞用 earcut 真正挖掉；未闭合成员暂不自动拼接。
+1. **Multiple data layers + active layer semantics**: the active layer is editable, docked layers
+   are rendered read-only; create an empty layer, open as layer, switch, show/hide, delete; docked
+   layers are saved to `%LOCALAPPDATA%/NEO/layers/*.osm` and restored automatically on startup.
+2. **Imagery layers TMS/WMS + offset calibration**: TMS tiles and WMS single images are both wired
+   up (async, cache/single image, opacity, X/Y pixel offset, persistence); sharing of the offset
+   database is not done.
+3. **Upload selection/chunking/after-upload cleanup**: upload selection is implemented; changes are
+   automatically chunked at 4000 elements, new objects are split by reference groups, and partial
+   success applies the uploaded mappings while keeping the remaining changes. Oversized mixed
+   create+modify changes refuse chunking (to avoid negative-ID reference errors across diffs);
+   413 backoff/after-upload cleanup is not done.
+4. **Per-field manual conflict merging**: per-object "take remote", "merge tags", "merge geometry"
+   (take remote positions/nodes/members, keep local tags) + "keep local" are implemented; per-field
+   checkboxes are still missing.
+5. **Orthogonalize/align/distribute/mirror**: align, evenly distribute, mirror horizontally/vertically,
+   unglue, and parallel copy are implemented; JOSM's orthogonalize / join areas / extrude / move node
+   onto way are still missing.
+6. **multipolygon assembly and holes**: outer/inner members of `type=multipolygon/boundary` are
+   assembled and holes are really carved out with earcut; unclosed members are not automatically
+   stitched for now.
 
-### P1：日常会抱怨但可绕过
+### P1: daily complaints but workable around
 
-7. 命令栈/历史面板（已实现基础版：显示可撤销命令并点击回退；缺 redo 树/合并展示）。
-8. 查找仍是 UI 线程全表扫描，10M 数据首次搜索会停顿；需要后台 worker + 倒排索引。
-9. 上传前 validator gate（已实现；可在设置中关闭）。
-10. Notes 与 changeset：Notes 列表/新建/评论/关闭/定位已完成；Changeset 查看器可加载
-    服务端 changeset（用户/时间/评论/标签/变更数）；用户资料页未做。
-11. MapCSS `text`/`icon-image`/`dashes`：`dashes`、`text`（标签键）、`text-color`、
-    `font-size`、`icon-image`（assets 下 PNG）已绘制；SVG/远程图标未支持。
-12. 插件接入桌面（安装/列表/启用/删除 + WAT/WASM 执行；启用时按清单能力加载、
-    执行 on_load 命令；签名仍是清单内自哈希）。
-13. 音频/地籍/打印/OSM 数据检查（JOSM 长尾）。
-14. 三平台安装包与签名。
+7. Command stack/history panel (a basic version is implemented: shows undoable commands and rolls
+   back on click; lacks a redo tree/coalescing display).
+8. Search is still a full-table scan on the UI thread; the first search over 10M objects will stall;
+   a background worker + inverted index is needed.
+9. Pre-upload validator gate (implemented; can be disabled in settings).
+10. Notes and changesets: Notes list/create/comment/close/locate are done; the changeset viewer can
+    load server-side changesets (user/time/comments/tags/change count); the user profile page is not done.
+11. MapCSS `text`/`icon-image`/`dashes`: `dashes`, `text` (label key), `text-color`, `font-size`,
+    `icon-image` (PNG under assets) are drawn; SVG/remote icons are unsupported.
+12. Plugins wired into the desktop app (install/list/enable/delete + WAT/WASM execution; on enable,
+    load the capabilities declared in the manifest and run the on_load command; signing is still a
+    self-hash inside the manifest).
+13. Audio/cadastre/printing/OSM data checks (JOSM's long tail).
+14. Installers and signing for the three platforms.
 
-### P2：专家/长尾
+### P2: expert/long tail
 
-15. 平行 way、follow line、extrude、join areas、unglue、move node onto way
-    （平行、解粘、正交化、join areas、move onto、extrude 已实现；follow line 仍缺）。
-16. 自定义快捷键/预设编辑/样式编辑器（设置窗口已扩为常规/编辑/校验/网络/存储等页）。
-17. 大文件增量校验、LOD 缓存、GPU 分块。
-18. 10M 内存压缩（arena compact、tag 去重、索引去重）。
+15. Parallel way, follow line, extrude, join areas, unglue, move node onto way (parallel, unglue,
+    orthogonalize, join areas, move onto, extrude are implemented; follow line is still missing).
+16. Custom shortcuts/preset editing/style editor (the settings window has been expanded to pages for
+    general/edit/validation/network/storage etc.).
+17. Incremental validation of large files, LOD caching, GPU chunking.
+18. 10M memory reduction (arena compact, tag dedup, index dedup).
 
-## 5. 验收建议（下一轮）
+## 5. Suggested acceptance walkthrough (next round)
 
-- 用真实城市数据（Bremen/Monaco）走：打开 → 框选 → 复制/粘贴 → 关系成员编辑 →
-  简化/粘合 → 校验 → 上传 → 409 → 重下载；
-- 用 JOSM 打开 NEO 导出的 `.osm/.osc`，比对 tags/version/timestamp/action；
-- 用 iD 的 `id-tagging-schema` 预设做 100 个常见地物的标签往返；
-- 记录每次操作的撤销步数与 journal 恢复结果。
+- With real city data (Bremen/Monaco), walk through: open → box select → copy/paste → relation
+  member editing → simplify/glue → validate → upload → 409 → re-download;
+- Open NEO-exported `.osm/.osc` in JOSM and compare tags/version/timestamp/action;
+- Round-trip tags for 100 common features using iD's `id-tagging-schema` presets;
+- Record the undo step count and journal recovery result for each operation.
 
-> 本文是活文档：每完成一项把状态改为 ✅ 并在 CHANGELOG/TODO 留记录，避免再次出现
-> "README 说完成、代码里没有"的漂移。
+> This document is a living document: when an item is finished, flip its status to ✅ and leave a
+> record in CHANGELOG/TODO, to avoid the drift of "README says done, code has nothing" happening again.

@@ -1,4 +1,4 @@
-# Cargo 构建缓存实际在 out/cargo（.cargo/config.toml）。这条只挡住误生成的旧路径。
+# Cargo build cache actually lives in out/cargo (.cargo/config.toml); this only blocks the old accidental path.
 /target
 
 # Preset packages (package-lock.json is committed)
@@ -17,6 +17,10 @@
 /out
 *.png.tmp
 *.log
+
+# Python bytecode
+__pycache__/
+*.pyc
 
 # mdBook build output
 /book

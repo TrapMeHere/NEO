@@ -1,13 +1,13 @@
-//! OSM XML 0.6 读写。
+//! OSM XML 0.6 reading and writing.
 //!
-//! 覆盖两种"合规模式"（docs/08 §2.6、docs/13 §3.2）：
+//! Covers the two "conformance modes" (docs/08 §2.6, docs/13 §3.2):
 //!
-//! * **Server-conformant**：与 OSM API 交换用的标准 XML（`visible` 表示删除）；
-//! * **JOSM-conformant**：本地 `.osm` 文件用 `action="modify|delete"` 表达未上传修改。
+//! * **Server-conformant**: standard XML exchanged with the OSM API (`visible` marks deletions);
+//! * **JOSM-conformant**: local `.osm` files express unsaved modifications with `action="modify|delete"`.
 //!
-//! 读取是流式的（quick-xml），不把整个文件读进内存；元素按出现顺序写入 [`DataSet`]。
-//! 注意：XML 里 node 必须先于引用它的 way，否则 way 会被记为 skipped —— 这与 OSM
-//! 官方导出顺序一致。
+//! Reading is streaming (quick-xml) and never loads the whole file into memory; elements are written to [`DataSet`] in order of appearance.
+//! Note: in XML a node must come before the way that references it, otherwise the way is recorded as skipped — this matches
+//! the official OSM export order.
 
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -19,10 +19,10 @@ use quick_xml::Reader as EventReader;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event};
 
-/// XML 读取选项。
+/// XML read options.
 #[derive(Clone, Copy, Debug)]
 pub struct XmlReadOptions {
-    /// 引用缺失时跳过对象还是报错。
+    /// Whether to skip objects with missing references or raise an error.
     pub policy: MissingPolicy,
 }
 impl Default for XmlReadOptions {
@@ -33,20 +33,20 @@ impl Default for XmlReadOptions {
     }
 }
 
-/// XML 导入统计。
+/// XML import statistics.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct XmlImportReport {
-    /// 节点数。
+    /// Node count.
     pub nodes: u64,
-    /// Way 数。
+    /// Way count.
     pub ways: u64,
-    /// Relation 数。
+    /// Relation count.
     pub relations: u64,
-    /// 被跳过的 Way（引用缺失）。
+    /// Skipped Ways (missing references).
     pub skipped_ways: u64,
-    /// 被跳过的 Relation。
+    /// Skipped Relations.
     pub skipped_relations: u64,
-    /// 遇到的 `<bounds>`（min_lat, min_lon, max_lat, max_lon）。
+    /// Encountered `<bounds>` (min_lat, min_lon, max_lat, max_lon).
     pub bounds: Option<[f64; 4]>,
 }
 
@@ -60,17 +60,17 @@ impl core::fmt::Display for XmlImportReport {
     }
 }
 
-/// 写出模式。
+/// Write mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum XmlWriteMode {
-    /// OSM API 风格：`visible="false"` 表示删除，不写 `action`。
+    /// OSM API style: `visible="false"` marks deletions and no `action` is written.
     Server,
-    /// JOSM 风格：`action="modify|delete"` 表达未上传修改。
+    /// JOSM style: `action="modify|delete"` expresses unsaved modifications.
     Josm,
 }
 
 // ---------------------------------------------------------------------------
-// 读取
+// Reading
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -107,7 +107,7 @@ struct PendingRelation {
     action: Option<Action>,
 }
 
-/// JOSM `.osm` 的未上传动作。
+/// Unsaved action of a JOSM `.osm` file.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
     Modify,
@@ -136,7 +136,7 @@ enum Pending {
     Relation(PendingRelation),
 }
 
-/// 从 XML 读取器导入 OSM 数据。
+/// Imports OSM data from an XML reader.
 pub fn read_osm_xml<R: BufRead>(
     data: &mut DataSet,
     reader: R,
@@ -281,7 +281,7 @@ pub fn read_osm_xml<R: BufRead>(
     Ok(report)
 }
 
-/// 从文件读取。
+/// Reads from a file.
 pub fn read_osm_xml_file(data: &mut DataSet, path: impl AsRef<Path>) -> Result<XmlImportReport, NeoError> {
     let file = std::fs::File::open(path.as_ref())?;
     let reader = std::io::BufReader::new(file);
@@ -311,8 +311,8 @@ fn finish_node(
     if deleted {
         data.set_change_state(neo_core::ObjectKind::Node, id, ChangeState::Deleted);
     } else if id.is_local() {
-        // JOSM 的 `.osm` 里负 ID 表示未上传的新对象；不标 Added 会导致导出
-        // osmChange 时完全看不到它（新对象永远传不上去）。
+        // In JOSM's `.osm` a negative id means an unsaved new object; not marking it Added means it is
+        // completely invisible when exporting osmChange (new objects would never be uploaded).
         data.set_change_state(neo_core::ObjectKind::Node, id, ChangeState::Added);
     } else if n.action == Some(Action::Modify) {
         data.set_change_state(neo_core::ObjectKind::Node, id, ChangeState::Modified);
@@ -417,8 +417,9 @@ fn parse_node(e: &BytesStart) -> Result<PendingNode, NeoError> {
     let id = attr_i64(e, "id").ok_or_else(|| NeoError::Parse("node missing id".into()))?;
     let visible = attr_bool(e, "visible").unwrap_or(true);
     let action = attr_str(e, "action").as_deref().and_then(Action::parse);
-    // 删除片段可以省略坐标；可见节点必须提供合法坐标。缺省会静默落到 (0,0)，
-    // 在真实数据里表现为"内罗毕湾多了一个点"，比直接报错危险得多。
+    // Delete fragments may omit coordinates; visible nodes must provide valid ones. A missing coordinate
+    // would silently land at (0,0), which in real data looks like "an extra point in the Gulf of Nairobi" —
+    // far more dangerous than an outright error.
     let deleted = !visible || action == Some(Action::Delete);
     let (lat, lon) = match (attr_f64(e, "lat"), attr_f64(e, "lon")) {
         (Some(lat), Some(lon)) => {
@@ -469,7 +470,7 @@ fn parse_relation(e: &BytesStart) -> Result<PendingRelation, NeoError> {
 }
 
 fn parse_meta(e: &BytesStart) -> Result<Meta, NeoError> {
-    // OSM XML 的时间戳是 ISO-8601；旧实现按整数解析，真实文件全部静默变 0。
+    // OSM XML timestamps are ISO-8601; the old implementation parsed them as integers, so real files all silently became 0.
     let timestamp = match attr_str(e, "timestamp") {
         Some(text) if !text.trim().is_empty() => crate::time::parse_timestamp(text.trim())
             .ok_or_else(|| NeoError::Parse(format!("invalid timestamp {text:?}")))?,
@@ -533,14 +534,14 @@ fn attr_bool(e: &BytesStart, key: &str) -> Option<bool> {
     }
 }
 
-// 属性值由 quick-xml 的 `normalized_value` 解码（含 XML 属性值归一化），
-// 不再手写实体解码：手写版本不处理 `\t/\n/\r` 归一化，也未限制实体嵌套深度。
+// Attribute values are decoded by quick-xml's `normalized_value` (including XML attribute-value normalization);
+// no more hand-written entity decoding: the hand-written version ignored `\t/\n/\r` normalization and put no bound on entity nesting depth.
 
 // ---------------------------------------------------------------------------
-// 写出
+// Writing
 // ---------------------------------------------------------------------------
 
-/// 把数据集写成 OSM XML 0.6。
+/// Writes a dataset as OSM XML 0.6.
 pub fn write_osm_xml<W: Write>(data: &DataSet, out: &mut W, mode: XmlWriteMode) -> std::io::Result<()> {
     writeln!(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")?;
     writeln!(out, "<osm version=\"0.6\" generator=\"NEO\">")?;
@@ -630,10 +631,10 @@ pub fn write_osm_xml<W: Write>(data: &DataSet, out: &mut W, mode: XmlWriteMode) 
     Ok(())
 }
 
-/// 写到文件。
+/// Writes to a file.
 ///
-/// 先写同目录临时文件再 rename：写一半失败/磁盘满时不会把已有文件截断成垃圾
-/// （Windows 上 rename 覆盖需要先删除目标；这里在 rename 失败时回退到该路径）。
+/// Writes a temp file in the same directory first, then renames: a failed half-write or a full disk never
+/// truncates an existing file into garbage (on Windows rename-over needs the target deleted first; here we fall back to that path when rename fails).
 pub fn write_osm_xml_file(data: &DataSet, path: impl AsRef<Path>, mode: XmlWriteMode) -> std::io::Result<()> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
@@ -665,7 +666,7 @@ pub(crate) fn finish_atomic_rename(tmp: &Path, path: &Path) -> std::io::Result<(
     match std::fs::rename(tmp, path) {
         Ok(()) => Ok(()),
         Err(first) => {
-            // Windows 的 rename 不覆盖已存在文件：退化为"删除目标后重命名"。
+            // Windows rename does not overwrite existing files: degrade to "delete target, then rename".
             if std::fs::remove_file(path).is_ok() {
                 std::fs::rename(tmp, path)
             } else {
@@ -689,7 +690,7 @@ fn write_meta<W: Write>(
     if meta.changeset > 0 {
         write!(out, " changeset=\"{}\"", meta.changeset)?;
     }
-    // OSM XML 0.6 要求 ISO-8601；写 Unix 秒会让 JOSM/API 拒绝解析。
+    // OSM XML 0.6 requires ISO-8601; writing Unix seconds makes JOSM/the API refuse to parse it.
     if meta.timestamp != 0 {
         write!(
             out,
@@ -747,7 +748,7 @@ fn escape_xml(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            // XML 1.0 不允许的码位：直接丢弃，避免写出非法文件。
+            // Code points not allowed by XML 1.0: drop them so we never write an invalid file.
             '\u{0}'..='\u{8}' | '\u{B}' | '\u{C}' | '\u{E}'..='\u{1F}' | '\u{FFFE}' | '\u{FFFF}' => {}
             _ => out.push(ch),
         }

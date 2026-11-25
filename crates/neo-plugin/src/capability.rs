@@ -1,46 +1,46 @@
-//! 能力白名单。运行时放行的是「清单声明 ∩ 用户授权」。
+//! Capability allowlist. What is allowed at runtime is "manifest declaration ∩ user grant".
 
 use crate::manifest::ManifestCaps;
 
-/// 一项能力。`Read` 是隐式的，不出现在清单里。
+/// A capability. `Read` is implicit and does not appear in the manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Capability {
-    /// 只读快照。
+    /// Read-only snapshot.
     Read,
-    /// 提交编辑命令。
+    /// Submits edit commands.
     Command,
-    /// 订阅事件。
+    /// Subscribes to events.
     Events,
-    /// 注册面板。
+    /// Registers panels.
     Ui,
-    /// 出站 HTTPS。
+    /// Outbound HTTPS.
     Network,
-    /// 读插件目录里的文件。
+    /// Reads files in the plugin directory.
     Filesystem,
-    /// 登记影像源。
+    /// Registers imagery sources.
     Imagery,
 }
 
-/// 实际放行的能力。
+/// Capabilities actually allowed.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct CapabilitySet {
-    /// 允许 `submit-command`。
+    /// Allows `submit-command`.
     pub command: bool,
-    /// 允许注册面板。
+    /// Allows registering panels.
     pub ui: bool,
-    /// 允许的事件主题。`*` 表示清单里声明的全部主题。
+    /// Allowed event topics. `*` means all topics declared in the manifest.
     pub events: Vec<String>,
-    /// 允许的 HTTPS 主机名（不含协议）。
+    /// Allowed HTTPS host names (without scheme).
     pub network_hosts: Vec<String>,
-    /// 允许读插件目录。
+    /// Allows reading the plugin directory.
     pub filesystem: bool,
-    /// 允许影像命令。
+    /// Allows imagery commands.
     pub imagery: bool,
 }
 
 impl CapabilitySet {
-    /// 测试和开发者模式用的全开授权。网络主机仍要显式列出。
+    /// Fully-open grant for tests and developer mode. Network hosts still must be listed explicitly.
     pub fn grant_all(network_hosts: &[&str]) -> Self {
         Self {
             command: true,
@@ -52,7 +52,7 @@ impl CapabilitySet {
         }
     }
 
-    /// 声明与授权求交。
+    /// Intersects the declaration with the grant.
     pub fn intersect(&self, declared: &ManifestCaps) -> Self {
         let events = if self.events.iter().any(|topic| topic == "*") {
             declared.events.clone()
@@ -84,24 +84,24 @@ impl CapabilitySet {
         }
     }
 
-    /// 这个主题是否可以派发。
+    /// Whether this topic can be dispatched.
     pub fn allows_event(&self, topic: &str) -> bool {
         self.events.iter().any(|item| item == "*" || item == topic)
     }
 
-    /// 只允许 HTTPS，并且主机名在白名单里。
+    /// Only HTTPS is allowed, and the host name must be on the allowlist.
     pub fn allows_url(&self, url: &str) -> bool {
         let Some(rest) = url.strip_prefix("https://") else {
             return false;
         };
         let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-        // `https://allowed.com@evil.com/` 的 authority 是 `allowed.com@evil.com`，
-        // 旧实现按 ':' 截断后会错误放行。userinfo 一律拒绝。
+        // The authority of `https://allowed.com@evil.com/` is `allowed.com@evil.com`;
+        // the old implementation truncated at ':' and wrongly allowed it. userinfo is always rejected.
         if authority.is_empty() || authority.contains('@') {
             return false;
         }
         let host = if let Some(stripped) = authority.strip_prefix('[') {
-            // IPv6：[::1]:443
+            // IPv6: [::1]:443
             stripped.split(']').next().unwrap_or("")
         } else {
             authority.split(':').next().unwrap_or(authority)
@@ -114,7 +114,7 @@ impl CapabilitySet {
     }
 }
 
-/// 把 `https://host/path` 或 `host` 收成主机名。
+/// Reduces `https://host/path` or `host` to a host name.
 pub fn normalize_host(entry: &str) -> String {
     let trimmed = entry.trim().trim_matches('"');
     let trimmed = trimmed.strip_prefix("https://").unwrap_or(trimmed);

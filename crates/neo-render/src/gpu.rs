@@ -1,58 +1,58 @@
-//! wgpu 设备初始化（headless）与错误类型。
+//! wgpu device initialization (headless) and error types.
 //!
-//! 窗口/表面（surface）由 eframe/egui-wgpu 管理；这里只创建"无窗口"设备用于：
+//! Window/surface handling lives in eframe/egui-wgpu; here we only create a "windowless" device for:
 //!
-//! * 性能验证原型的离屏渲染（PNG 输出）；
-//! * 基准测试（GPU 帧时间）；
-//! * CI 里的 GPU 测试。
+//! * offscreen rendering for the performance verification prototype (PNG output);
+//! * benchmarks (GPU frame time);
+//! * GPU tests in CI.
 //!
-//! 适配器选择：优先独显（HighPerformance），可用环境变量覆盖：
-//! `WGPU_BACKEND`（dx12/vulkan/gl）、`WGPU_ADAPTER_NAME`（名字子串）。
+//! Adapter selection: prefer the discrete GPU (HighPerformance), overridable via environment variables:
+//! `WGPU_BACKEND` (dx12/vulkan/gl), `WGPU_ADAPTER_NAME` (name substring).
 
 use wgpu::util::DeviceExt as _;
 
-/// 渲染层错误。
+/// Render-layer error.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RenderError {
-    /// 找不到可用的 GPU 适配器。
+    /// No usable GPU adapter found.
     #[error("no GPU adapter available: {0}")]
     NoAdapter(String),
-    /// 创建设备失败。
+    /// Device creation failed.
     #[error("device creation failed: {0}")]
     Device(String),
-    /// wgpu 校验/后端错误。
+    /// wgpu validation/backend error.
     #[error("wgpu backend error: {0}")]
     Backend(String),
-    /// 读回映射失败。
+    /// Readback mapping failed.
     #[error("buffer map failed: {0}")]
     Map(String),
-    /// PNG 写入失败。
+    /// PNG write failed.
     #[error("png write failed: {0}")]
     Image(String),
-    /// IO 错误。
+    /// IO error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
 
-/// headless GPU 上下文。
+/// Headless GPU context.
 pub struct GpuContext {
-    /// wgpu 实例。
+    /// wgpu instance.
     pub instance: wgpu::Instance,
-    /// 适配器。
+    /// Adapter.
     pub adapter: wgpu::Adapter,
-    /// 设备。
+    /// Device.
     pub device: wgpu::Device,
-    /// 队列。
+    /// Queue.
     pub queue: wgpu::Queue,
-    /// 适配器信息（名字/后端/驱动）。
+    /// Adapter info (name/backend/driver).
     pub info: wgpu::AdapterInfo,
-    /// 设备是否支持时间戳查询（GPU 计时）。
+    /// Whether the device supports timestamp queries (GPU timing).
     pub timestamp_query_supported: bool,
 }
 
 impl GpuContext {
-    /// 创建 headless 上下文（离屏渲染不需要 surface）。
+    /// Create a headless context (offscreen rendering does not need a surface).
     pub fn new_headless() -> Result<Self, RenderError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
@@ -85,7 +85,7 @@ impl GpuContext {
         })
     }
 
-    /// 一行描述（用于日志/基准报告）。
+    /// One-line description (for logs/benchmark reports).
     pub fn describe(&self) -> String {
         format!(
             "{} | backend={:?} | device_type={:?} | driver={} {} | timestamp_query={}",
@@ -98,9 +98,9 @@ impl GpuContext {
         )
     }
 
-    /// 创建只读 staging buffer 并读回内容（同步等待）。
+    /// Create a read-only staging buffer and read its contents back (synchronous wait).
     ///
-    /// 调用方负责保证 buffer 的 usage 含 `COPY_DST`。
+    /// The caller is responsible for ensuring the buffer usage includes `COPY_DST`.
     pub fn read_buffer(&self, buffer: &wgpu::Buffer, size: u64) -> Result<Vec<u8>, RenderError> {
         let slice = buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -113,7 +113,7 @@ impl GpuContext {
         rx.recv()
             .map_err(|e| RenderError::Map(e.to_string()))?
             .map_err(|e| RenderError::Map(e.to_string()))?;
-        // 复制出来，避免 BufferView 与 unmap 冲突。
+        // Copy it out to avoid conflicting with unmap through BufferView.
         let mapped = slice
             .get_mapped_range()
             .map_err(|e| RenderError::Map(e.to_string()))?;
@@ -124,7 +124,7 @@ impl GpuContext {
     }
 }
 
-/// 便捷：创建一个可初始化的顶点/索引 buffer。
+/// Convenience: create a vertex/index buffer that can be initialized.
 pub fn create_buffer_init(
     device: &wgpu::Device,
     label: &str,

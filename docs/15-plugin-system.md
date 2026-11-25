@@ -1,42 +1,42 @@
-# 15 · 插件系统（Plugin System）
+# 15 · Plugin system
 
-本篇定义 `neo-plugin`：以 **WASM Component Model**（wasmtime 50 + wit-bindgen 0.63）承载第三方扩展，插件只能"读快照、交命令、收事件、注册面板"，永不直接触碰 `neo-store`。核心决策是**放弃 Rust 动态库 ABI**——Rust 没有稳定 ABI，`abi_stable 0.11.3` 只能缓解、不能消除工具链与依赖版本耦合；WASM 用一层显式 WIT 契约把"兼容性"变成可版本化、可测试的工程问题。
+This document defines `neo-plugin`: it hosts third-party extensions on the **WASM Component Model** (wasmtime 50 + wit-bindgen 0.63). Plugins can only "read snapshots, submit commands, receive events, and register panels", and never touch `neo-store` directly. The core decision is to **abandon the Rust dynamic-library ABI** — Rust has no stable ABI, and `abi_stable 0.11.3` can only mitigate, not eliminate, coupling to the toolchain and dependency versions; WASM uses an explicit WIT contract to turn "compatibility" into a versionable, testable engineering problem.
 
-## 1 目标与范围
+## 1 Goals and scope
 
-| 编号 | 目标 | 判定 |
+| # | Goal | Criterion |
 |---|---|---|
-| G1 | 第三方不重编译 NEO 即可扩展 | `.wasm` 跨 NEO minor 版本可用 |
-| G2 | 恶意/有缺陷插件不能破坏数据或拖垮 UI | 越权报错、超预算被杀、主进程不崩 |
-| G3 | 能力可审计、可最小化授权 | manifest 声明 + 运行时双重检查 |
-| G4 | JOSM 插件作者有可执行迁移路径 | 能力映射表 + 等价实现示例 |
-| G5 | 故障隔离到单插件 | 禁用/卸载粒度 = 单插件 |
+| G1 | Third parties can extend NEO without recompiling it | `.wasm` works across NEO minor versions |
+| G2 | Malicious/defective plugins cannot corrupt data or bring down the UI | Unauthorized access errors, killed when over budget, main process does not crash |
+| G3 | Capabilities are auditable and can be granted with least privilege | manifest declaration + runtime double-check |
+| G4 | JOSM plugin authors have an executable migration path | capability mapping table + equivalent implementation examples |
+| G5 | Faults are isolated to a single plugin | disable/uninstall granularity = a single plugin |
 
-**范围外**：JVM/Java 二进制兼容（不做、不承诺）、插件市场后端、进程外隔离（v1 为 in-process wasmtime，高危插件可选子进程模式）、插件 GPU 直通。
-**依赖**：`neo-plugin → neo-core, neo-editor`，feature 门控 `wasm-plugins`（默认关；关闭时只剩 manifest 解析与类型定义，不引入 wasmtime）。只读地图查询需要一层 trait 缝（见 §2.7，本文指出的架构缺口）。
+**Out of scope**: JVM/Java binary compatibility (not done, not promised), plugin marketplace backend, out-of-process isolation (v1 is in-process wasmtime; high-risk plugins may optionally use subprocess mode), plugin GPU passthrough.
+**Dependencies**: `neo-plugin → neo-core, neo-editor`, feature-gated by `wasm-plugins` (off by default; when off, only manifest parsing and type definitions remain, and wasmtime is not pulled in). Read-only map queries need a trait seam (see §2.7, an architectural gap pointed out in this document).
 
-## 2 设计
+## 2 Design
 
-### 2.1 为什么不是 Rust 动态库
+### 2.1 Why not a Rust dynamic library
 
-| 方案 | 兼容性 | 安全性 | 分发 | 结论 |
+| Option | Compatibility | Safety | Distribution | Verdict |
 |---|---|---|---|---|
-| `cdylib` + 手写 `extern "C"` | 每个类型都要约定 `Vec`/`String` 生命周期；跨边界即 UB 风险 | 进程内任意代码，无沙箱 | 每平台每架构一份 | ❌ |
-| `abi_stable 0.11.3` | `StableAbi` 稳定布局，但**仍绑定 rustc 版本与依赖 Major 版本** | 无沙箱 | 必须与宿主同编译器构建 | ❌ |
-| WASM core module | 稳定、跨语言 | 沙箱 | 单文件 | ⚠️ 只能传数字/线性内存，需手写 ABI |
-| **WASM Component** | WIT 接口 + 语义化版本，类型安全 | 沙箱 + 能力模型 | 单文件 | ✅ |
+| `cdylib` + hand-written `extern "C"` | Every type needs an agreed `Vec`/`String` lifetime contract; crossing the boundary is a UB risk | Arbitrary in-process code, no sandbox | One per platform per architecture | ❌ |
+| `abi_stable 0.11.3` | `StableAbi` gives a stable layout, but **still binds the rustc version and the dependencies' Major versions** | No sandbox | Must be built with the same compiler as the host | ❌ |
+| WASM core module | Stable, cross-language | Sandbox | Single file | ⚠️ Can only pass numbers/linear memory, needs a hand-written ABI |
+| **WASM Component** | WIT interfaces + semantic versioning, type-safe | Sandbox + capability model | Single file | ✅ |
 
-`abi_stable` 的失败模式值得记录：它保证"布局稳定"，不保证"依赖单例唯一"。插件与宿主各自静态链接 `tracing` 时两套 subscriber 互相覆盖；链接 `wgpu` 时两个实例争抢同一 `Instance`。WASM 把插件放进独立线性内存与独立实例，这类问题从"偶发崩溃"变成"编译期不允许"。
+`abi_stable`'s failure modes are worth recording: it guarantees "layout stability", not "dependency singleton uniqueness". When a plugin and the host each statically link `tracing`, two sets of subscribers overwrite each other; when linking `wgpu`, two instances fight over the same `Instance`. WASM puts plugins in separate linear memories and separate instances, turning such problems from "occasional crashes" into "not allowed at compile time".
 
-### 2.2 WIT 契约与版本化
+### 2.2 WIT contract and versioning
 
-宿主与插件之间只有一份契约：`wit/neo-plugin.wit`（`wit-bindgen 0.63` 生成两侧绑定），按 `package neo:plugin@1.0.0` 版本化：
+There is only one contract between host and plugin: `wit/neo-plugin.wit` (`wit-bindgen 0.63` generates bindings for both sides), versioned as `package neo:plugin@1.0.0`:
 
-| 变更 | 版本位 | 宿主行为 |
+| Change | Version slot | Host behavior |
 |---|---|---|
-| 新增可选导出/事件主题/capability | minor | 兼容，继续加载 |
-| 新增必填导入、改字段类型或语义、删函数 | major | 拒绝加载旧插件并提示"需要更新" |
-| 仅注释/文档 | patch | 无影响 |
+| Adding optional exports/event topics/capabilities | minor | Compatible, keeps loading |
+| Adding required imports, changing field types or semantics, deleting functions | major | Refuses to load old plugins and prompts "update required" |
+| Comments/docs only | patch | No effect |
 
 ```wit
 package neo:plugin@1.0.0;
@@ -44,7 +44,7 @@ package neo:plugin@1.0.0;
 interface types {
   enum object-kind { node, way, relation }
   record object-ref { kind: object-kind, id: u64 }
-  record bbox { min-lon: s32, min-lat: s32, max-lon: s32, max-lat: s32 }  // 1e-7 度
+  record bbox { min-lon: s32, min-lat: s32, max-lon: s32, max-lat: s32 }  // 1e-7 degrees
   record tag { key: string, value: string }
   record object-view { ref: object-ref, version: u32, deleted: bool, tags: list<tag>,
     lat: option<s32>, lon: option<s32>, members: list<object-ref>, member-roles: list<string> }
@@ -55,11 +55,11 @@ interface types {
 
 interface host-api {
   use types.{object-ref, object-view, bbox, log-level, host-error};
-  snapshot-version: func() -> u64;                                   // 只读查询面
+  snapshot-version: func() -> u64;                                   // read-only query surface
   lookup: func(refs: list<object-ref>) -> list<option<object-view>>;
   query-bbox: func(area: bbox, tag-filter: option<string>, limit: u32) -> list<object-ref>;
   parents-of: func(r: object-ref) -> list<object-ref>;
-  submit-command: func(name: string, args-json: string) -> result<u64, host-error>;  // 唯一写路径
+  submit-command: func(name: string, args-json: string) -> result<u64, host-error>;  // the only write path
   subscribe: func(topics: list<string>) -> result<u64, host-error>;
   register-panel: func(id: string, title: string, preferred-width: u32) -> result<u32, host-error>;
   set-panel-status: func(panel: u32, text: string) -> result<_, host-error>;
@@ -77,43 +77,43 @@ world neo-plugin {
 }
 ```
 
-`render-panel` 返回**声明式绘制列表**（文本/按钮/表/滑块），由宿主用 egui 渲染。插件拿不到 GPU 句柄、拿不到 `egui::Context`，因此不可能插入任意绘制或阻塞帧。
+`render-panel` returns a **declarative draw list** (text/buttons/tables/sliders), which the host renders with egui. Plugins get no GPU handle and no `egui::Context`, so they cannot inject arbitrary drawing or block a frame.
 
-### 2.3 能力模型与权限清单
+### 2.3 Capability model and permission list
 
-| 能力 | 允许的 WIT 调用 | 默认 | 说明 |
+| Capability | Allowed WIT calls | Default | Notes |
 |---|---|---|---|
-| `read` | `snapshot-version`/`lookup`/`query-bbox`/`parents-of` | ✅ 隐式 | 只读，隐私低风险 |
-| `command` | `submit-command` | ❌ | 命令仍走 `neo-editor` 校验 |
-| `events` | `subscribe` + `on-event` | ❌ | 主题白名单 |
-| `ui` | `register-panel`/`set-panel-status`/`render-panel` | ❌ | 面板数上限 8 |
-| `network` | `http-request` | ❌ | 域名白名单 + 仅 HTTPS + 禁自定义头（防令牌外泄） |
-| `filesystem` | `read-file` | ❌ | 仅插件自身目录、只读、禁 `..` |
-| `imagery` | 经 `command` 间接添加影像层 | ❌ | 单列便于审计 |
+| `read` | `snapshot-version`/`lookup`/`query-bbox`/`parents-of` | ✅ implicit | Read-only, low privacy risk |
+| `command` | `submit-command` | ❌ | Commands still go through `neo-editor` validation |
+| `events` | `subscribe` + `on-event` | ❌ | Topic allowlist |
+| `ui` | `register-panel`/`set-panel-status`/`render-panel` | ❌ | Max 8 panels |
+| `network` | `http-request` | ❌ | Domain allowlist + HTTPS only + custom headers forbidden (to prevent token leakage) |
+| `filesystem` | `read-file` | ❌ | Plugin's own directory only, read-only, `..` forbidden |
+| `imagery` | Add imagery layers indirectly via `command` | ❌ | Listed separately for auditability |
 
-**双重检查**：manifest 的 `[capabilities]` 决定"安装时展示给用户的权限清单"；运行时 `CapabilitySet` 决定"实际放行"。两者求交——即使声明了 `network`，用户未授予仍返回 `permission-denied`。这防止"安装即全权"。
+**Double-check**: the manifest's `[capabilities]` determines "the permission list shown to the user at install time"; the runtime `CapabilitySet` decides "what is actually allowed". The intersection of the two is used — even if `network` is declared, if the user has not granted it, the call still returns `permission-denied`. This prevents "installing means full power".
 
-### 2.4 沙箱资源限制
+### 2.4 Sandbox resource limits
 
-| 维度 | 机制（wasmtime 50） | 默认 | 失败表现 |
+| Dimension | Mechanism (wasmtime 50) | Default | Failure behavior |
 |---|---|---|---|
-| CPU | `Config::consume_fuel(true)` + `Store::set_fuel` | 1e8 fuel/事件 | `Trap::OutOfFuel` ⇒ 记 `quota-exceeded`，插件禁用而非反复重试 |
-| 墙钟 | `Config::epoch_interruption(true)` + `Store::set_epoch_deadline(1)` + 线程 `Engine::increment_epoch()` | epoch 1ms、deadline 100ms | 超时 trap |
-| 内存 | `ResourceLimiter` / `StoreLimitsBuilder` | 64 MiB 线性内存、表 10k | 分配失败 ⇒ trap，插件禁用 |
-| 文件/网络 | 不链接 WASI p2 的 `filesystem`/`sockets` | — | 只能走受控 host 函数 |
-| 重入 | 单插件单实例，事件串行 | — | 插件内不可递归调宿主命令 |
-| 编译 | `Engine::precompile_component` + `Config::cache` | 缓存到 `<cache>/wasm/` | 冷启动成本【待实测，见 docs/14-performance-and-verification.md】 |
+| CPU | `Config::consume_fuel(true)` + `Store::set_fuel` | 1e8 fuel/event | `Trap::OutOfFuel` ⇒ record `quota-exceeded`, plugin disabled rather than retried repeatedly |
+| Wall clock | `Config::epoch_interruption(true)` + `Store::set_epoch_deadline(1)` + thread `Engine::increment_epoch()` | epoch 1ms, deadline 100ms | Timeout trap |
+| Memory | `ResourceLimiter` / `StoreLimitsBuilder` | 64 MiB linear memory, 10k table | Allocation failure ⇒ trap, plugin disabled |
+| Files/network | Does not link WASI p2 `filesystem`/`sockets` | — | Can only go through controlled host functions |
+| Re-entrancy | One instance per plugin, serialized events | — | Plugins cannot recursively call host commands |
+| Compilation | `Engine::precompile_component` + `Config::cache` | Cached to `<cache>/wasm/` | Cold-start cost [to be measured, see docs/14-performance-and-verification.md] |
 
-`fuel` 与 `epoch` 必须**同时**开：fuel 防死循环（确定性、可计费），epoch 防"合法但长"的调用（如 10 万次 `lookup`）。
+`fuel` and `epoch` must **both** be on: fuel prevents infinite loops (deterministic, billable), while epoch prevents "legal but long" calls (e.g. 100k `lookup`s).
 
-### 2.5 打包、签名与分发
+### 2.5 Packaging, signing, and distribution
 
 ```text
 cool-plugin-1.2.0.neopkg  (= zip)
-├── manifest.toml          # 权限清单，安装时展示
-├── component.wasm         # 可选：precompile 后的组件
+├── manifest.toml          # permission list, shown at install time
+├── component.wasm         # optional: precompiled component
 ├── assets/icon.png
-└── signature.ed25519      # 对 manifest + component 的 SHA-256 做 detached 签名
+└── signature.ed25519      # detached signature over the SHA-256 of manifest + component
 ```
 
 ```toml
@@ -121,7 +121,7 @@ schema = 1
 id = "org.example.coolplugin"
 name = "Cool Plugin"
 version = "1.2.0"
-api = "1.0"                        # 宿主 WIT 版本，语义化兼容区间 1.x
+api = "1.0"                        # host WIT version, semver-compatible range 1.x
 min_neo_version = "0.1.0"
 entry = "component.wasm"
 
@@ -134,65 +134,65 @@ filesystem = false
 imagery = false
 ```
 
-校验顺序：zip 完整性（列表 + 无路径穿越）→ 签名 → manifest 反序列化与字段校验 → `api` 兼容 → `Component::from_file` → 能力协商 → `on-load`。未签名插件仅"开发者模式"可加载，UI 必须持续显示风险标记；正式分发要求签名（验签库选型见 §2.7）。
+Validation order: zip integrity (listing + no path traversal) → signature → manifest deserialization and field validation → `api` compatibility → `Component::from_file` → capability negotiation → `on-load`. Unsigned plugins can only be loaded in "developer mode", and the UI must continuously show a risk marker; official distribution requires a signature (signature-verification library selection in §2.7).
 
-### 2.6 宿主生命周期与事件
+### 2.6 Host lifecycle and events
 
 ```text
 PluginHost::load_all()
- ├─ 扫描 <config>/plugins/*.neopkg → 校验 + 解析 manifest
- │    （失败 ⇒ LoadReport::Rejected，不影响其他插件）
+ ├─ scan <config>/plugins/*.neopkg → verify + parse manifest
+ │    (failure ⇒ LoadReport::Rejected, other plugins unaffected)
  ├─ Engine::new(Config{consume_fuel, epoch_interruption, cache})
- ├─ Component::from_file → Linker::instantiate（注入 HostApiImpl 的 StoreData）
- └─ on-load(manifest_json) → 记录 topics 订阅
-事件循环（UI 帧边界，非帧内）
- ├─ 收集本帧事件，按 topic 去重合并（同 topic 只派发最新状态，防事件风暴）
+ ├─ Component::from_file → Linker::instantiate (inject HostApiImpl's StoreData)
+ └─ on-load(manifest_json) → record topic subscriptions
+Event loop (UI frame boundary, not within a frame)
+ ├─ collect this frame's events, dedupe/merge by topic (only the latest state per topic is dispatched, preventing event storms)
  ├─ set_fuel + set_epoch_deadline → on-event(topic, json)
- │    └─ 插件只能 submit-command（入队，真正提交发生在下一次编辑管线）
- └─ 面板：render-panel → 声明式列表 → egui 绘制
+ │    └─ plugins can only submit-command (queued; the real commit happens in the next edit pipeline)
+ └─ panels: render-panel → declarative list → egui drawing
 ```
 
-| topic | 载荷要点 | 典型用途 |
+| topic | Payload points | Typical use |
 |---|---|---|
-| `project.*` / `layer.*`（opened、closed、added、removed、visibility） | project/layer id, kind | 初始化、图层工具 |
-| `selection.changed` | refs[]（>1000 只给 count） | 上下文面板 |
-| `edit.committed` / `edit.undone` / `edit.redone` | txn id, version, changed refs[] | 自动校验、撤销感知 |
-| `snapshot.published` | snapshot version | 增量重算 |
-| `viewport.changed` | bbox, zoom | 懒加载 |
-| `upload.started` / `upload.finished` / `upload.failed` | changeset id, counts, conflict summary | 上传后动作 |
-| `tool.activated` / `tool.deactivated` | tool id | 工具协作 |
+| `project.*` / `layer.*` (opened, closed, added, removed, visibility) | project/layer id, kind | Initialization, layer tools |
+| `selection.changed` | refs[] (>1000 gives only the count) | Context panels |
+| `edit.committed` / `edit.undone` / `edit.redone` | txn id, version, changed refs[] | Automatic validation, undo awareness |
+| `snapshot.published` | snapshot version | Incremental recomputation |
+| `viewport.changed` | bbox, zoom | Lazy loading |
+| `upload.started` / `upload.finished` / `upload.failed` | changeset id, counts, conflict summary | After-upload actions |
+| `tool.activated` / `tool.deactivated` | tool id | Tool collaboration |
 
-事件是**只读通知**：在 `on-event` 中调 `submit-command` 允许，但它只是入队，`EditCommand` 的校验、journal、undo 全部照常生效——插件不享有任何绕过编辑器的特权。
+Events are **read-only notifications**: calling `submit-command` inside `on-event` is allowed, but it only enqueues; `EditCommand` validation, journal, and undo all still apply — plugins enjoy no privilege that bypasses the editor.
 
-### 2.7 版本兼容与架构缺口
+### 2.7 Version compatibility and architectural gap
 
-宿主侧 `HostApi` 的实现需要三样东西：**当前只读快照**、**命令提交入口**、**面板注册表**。前两者的能力在 `neo-store` 与 `neo-editor`，而 `neo-plugin` 只允许依赖 `neo-core, neo-editor`。可选解法：
+The host-side implementation of `HostApi` needs three things: **the current read-only snapshot**, **a command submission entry point**, and **a panel registry**. The capabilities for the first two live in `neo-store` and `neo-editor`, while `neo-plugin` may only depend on `neo-core, neo-editor`. Possible solutions:
 
-| 方案 | 说明 | 取舍 |
+| Option | Description | Trade-off |
 |---|---|---|
-| A. `MapQuery` trait 下沉 `neo-core` | `neo-store` 实现、`neo-plugin` 只依赖 trait | ✅ 成本最低，但查询语义下沉到叶子 crate，需 02 白名单与概念归属评审 |
-| B. 新增 `neo-query` 叶子 crate（trait + DTO） | 概念更干净 | ✅ 多一个 crate 与一条依赖边 |
-| C. `neo-editor` 再导出 `neo-store` 类型 | 最省事 | ❌ 事实让 `neo-plugin` 传递依赖 `neo-store`，破坏依赖可审计性 |
+| A. Move the `MapQuery` trait down into `neo-core` | implemented by `neo-store`, `neo-plugin` depends only on the trait | ✅ Lowest cost, but query semantics sink into a leaf crate and need the 02 allowlist and concept-ownership review |
+| B. Add a new `neo-query` leaf crate (trait + DTO) | Cleaner concepts | ✅ One more crate and one more dependency edge |
+| C. `neo-editor` re-exports `neo-store` types | Least effort | ❌ In effect makes `neo-plugin` transitively depend on `neo-store`, breaking dependency auditability |
 
-**本文建议 A**，并把"`neo-plugin` 缺少只读查询缝"记为架构缺口：当前 workspace 中没有任何 `neo-plugin` 可依赖的 crate 拥有空间查询与交叉引用能力，这条缝**尚未存在**，实现前必须补齐，否则 `query-bbox` 无法实现，插件只能看到 `neo-editor` 已暴露的选择集。签名验签库同样未在依赖清单内，需单列选型（Ed25519）。
+**This document recommends A**, and records "`neo-plugin` lacks a read-only query seam" as an architectural gap: currently no crate in the workspace that `neo-plugin` could depend on owns spatial query and cross-reference capabilities; that seam **does not yet exist** and must be filled before implementation, otherwise `query-bbox` cannot be implemented and plugins can only see the selection set already exposed by `neo-editor`. The signature-verification library is likewise not in the dependency list and needs a separate selection (Ed25519).
 
-### 2.8 JOSM 插件迁移：等价能力映射
+### 2.8 JOSM plugin migration: equivalent capability mapping
 
-JOSM 插件是 Java 字节码，直接访问 `org.openstreetmap.josm.*` 内部 API（`MapView`/`DataSet` 被大量直接引用），**无法直接移植**。可行路径是"能力重述"：
+JOSM plugins are Java bytecode that directly access the internal APIs under `org.openstreetmap.josm.*` (`MapView`/`DataSet` are referenced directly in many places), so they **cannot be ported directly**. The feasible path is "capability restatement":
 
-| JOSM 能力（典型插件） | JOSM 形态 | NEO 等价物 | 成本 |
+| JOSM capability (typical plugin) | JOSM form | NEO equivalent | Cost |
 |---|---|---|---|
-| 输入模式（绘制/拖拽） | 继承 `MapMode` | `neo-tools` 的 `Tool` + `command` 提交编辑 | 中：交互需重写 |
-| 数据图层/自定义绘制 | `Layer` + `PaintVisitor` | ❌ 不允许自定义渲染；提供只读"数据源层"由宿主绘制 | 高：能力有意裁剪 |
-| 校验规则 | `Validator` 测试集 | `neo-validate` 声明式规则（插件描述，宿主执行） | 低–中 |
-| 上传挂钩 | `UploadHook` | `upload.*` 事件 + `command` | 低 |
-| 影像源 / 远程 API | `ImageryInfo` 提供者 / `HttpURLConnection` | `imagery` 能力 + 配置项 / `network`（域名白名单） | 低 |
-| 首选项面板 | `PreferenceSetting` | `ui` + 声明式面板 | 中 |
-| 脚本（JSR-223/GraalJS） | 运行时执行 JS | v1 不内嵌 JS 引擎；收敛为小型 WASM 插件 | 高 |
+| Input modes (draw/drag) | Subclass `MapMode` | `neo-tools`'s `Tool` + `command` to submit edits | Medium: interaction must be rewritten |
+| Data layers/custom drawing | `Layer` + `PaintVisitor` | ❌ Custom rendering not allowed; provide a read-only "data source layer" drawn by the host | High: capability deliberately trimmed |
+| Validation rules | `Validator` test sets | `neo-validate` declarative rules (plugin describes, host executes) | Low–Medium |
+| Upload hooks | `UploadHook` | `upload.*` events + `command` | Low |
+| Imagery sources / remote APIs | `ImageryInfo` providers / `HttpURLConnection` | `imagery` capability + config entries / `network` (domain allowlist) | Low |
+| Preference panels | `PreferenceSetting` | `ui` + declarative panels | Medium |
+| Scripting (JSR-223/GraalJS) | Run JS at runtime | v1 does not embed a JS engine; narrowed to small WASM plugins | High |
 
-**关于脚本插件**：JOSM 生态有一类插件本质是"JS/Groovy 小逻辑"。NEO v1 不内嵌 JS 引擎（依赖清单无此组件，引入 QuickJS/GraalJS 会带来新沙箱面与体积）。替代路径两条，均需显式立项：(1) 声明式规则——把"条件 → 动作"收敛进 `neo-validate` 规则 DSL，覆盖多数 tag 检查类脚本；(2) WIT 生成模板——`cargo generate` 模板把 20 行 JS 变成 60 行 Rust/WASM，成本可控且获得类型安全。若要支持 GraalJS 兼容层，需评估在 wasmtime 上运行 QuickJS-WASM 的预算，当前不做承诺。
+**On script plugins**: one class of plugins in the JOSM ecosystem is essentially "small JS/Groovy logic". NEO v1 does not embed a JS engine (not in the dependency list; adding QuickJS/GraalJS would bring new sandbox surface and size). There are two alternative paths, both requiring an explicit project: (1) declarative rules — fold "condition → action" into the `neo-validate` rule DSL, covering most tag-check scripts; (2) WIT-generated templates — a `cargo generate` template turns 20 lines of JS into 60 lines of Rust/WASM, with controllable cost and type safety. To support a GraalJS compatibility layer, the budget of running QuickJS-WASM on wasmtime would need evaluation; no promise is made at present.
 
-## 3 关键接口
+## 3 Key interfaces
 
 ```rust
 // neo-plugin/src/lib.rs
@@ -200,13 +200,13 @@ pub struct PluginHostConfig { pub plugin_dir: PathBuf, pub cache_dir: PathBuf,
     pub fuel_per_event: u64, pub epoch_deadline_ms: u64, pub memory_limit_bytes: usize,
     pub max_panels: usize, pub developer_mode: bool }
 
-pub struct PluginHost { /* Engine + 每插件 Store/Instance + 权限表 */ }
+pub struct PluginHost { /* Engine + per-plugin Store/Instance + permission table */ }
 impl PluginHost {
     pub fn new(cfg: PluginHostConfig) -> Result<Self, PluginError>;
     pub fn load_all(&mut self) -> Result<Vec<LoadReport>, PluginError>;
     pub fn load(&mut self, pkg: &Path, granted: CapabilitySet) -> Result<PluginId, PluginError>;
     pub fn dispatch(&mut self, events: &[HostEvent]) -> DispatchReport;
-    pub fn drain_commands(&mut self) -> Vec<PendingCommand>;   // 交给编辑管线
+    pub fn drain_commands(&mut self) -> Vec<PendingCommand>;   // hand off to the edit pipeline
     pub fn panels(&self) -> Vec<PanelDescriptor>;
     pub fn shutdown(self);
 }
@@ -220,14 +220,14 @@ pub struct ManifestCaps { pub command: bool, pub ui: bool, pub events: Vec<Strin
     pub network: Vec<String>, pub filesystem: bool, pub imagery: bool }
 
 #[derive(Debug, Clone, Default)]
-pub struct CapabilitySet { /* bitflags 风格；manifest ∩ 用户授权 */ }
+pub struct CapabilitySet { /* bitflags style; manifest ∩ user grants */ }
 impl CapabilitySet {
     pub fn grants(&self, need: Capability) -> bool;
     pub fn intersect(self, declared: &ManifestCaps) -> Self;
 }
 
-/// 宿主的全部可见面：只读查询 + 命令提交 + UI 注册。
-/// 实现放在 app 层（apps/neo-desktop），从而不破坏 neo-plugin 的依赖集合。
+/// The host's entire visible surface: read-only query + command submission + UI registration.
+/// The implementation lives at the app layer (apps/neo-desktop), so as not to break neo-plugin's dependency set.
 pub trait HostApi: Send {
     fn snapshot_version(&self) -> u64;
     fn lookup(&self, refs: &[ObjectRef]) -> Vec<Option<ObjectView>>;
@@ -242,7 +242,7 @@ pub trait HostApi: Send {
 pub enum LoadReport {
     Loaded { id: PluginId, name: String, caps: CapabilitySet },
     Rejected { path: PathBuf, reason: RejectReason },
-    Disabled { id: PluginId, reason: DisableReason },   // 预算超限后
+    Disabled { id: PluginId, reason: DisableReason },   // after the budget is exceeded
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -256,65 +256,65 @@ pub enum PluginError {
 }
 ```
 
-## 4 数据流与时序
+## 4 Data flow and sequence
 
 ```text
-UI      PluginHost         Manifest/签名     wasmtime Engine     HostApi(app 层)
- │ 安装    │                   │                 │                    │
- │────────▶│ open .neopkg → unzip + 校验 ──────▶│                    │
+UI      PluginHost         Manifest/signature  wasmtime Engine     HostApi(app layer)
+ │ install │                  │                 │                    │
+ │────────▶│ open .neopkg → unzip + verify ────▶│                    │
  │         │◀─ ok / SignatureInvalid             │                    │
- │         │── api 兼容（1.x）→ Component::from_file ──────────────▶│
- │         │── Linker::instantiate ─────────────▶│ 独立 Store/内存    │
- │         │── on-load(manifest_json) ──────────▶│ fuel/epoch 已设    │
- │◀ 权限清单│（manifest ∩ 用户授权）              │                    │
- │ 选择变化 │── dispatch([selection.changed]) ───▶│ on-event           │
- │         │                                    │─ lookup → 快照 ───▶│
- │         │                                    │─ submit-command ──▶│ 入队
- │         │◀── PendingCommand（下一帧提交）─────│                    │
- │         │── drain_commands → neo-editor 管线 ────────────────────▶│
- │         │── render-panel → 声明式列表 → egui 绘制                 │
+ │         │── api compatible (1.x) → Component::from_file ─────────▶│
+ │         │── Linker::instantiate ─────────────▶│ separate Store/memory
+ │         │── on-load(manifest_json) ──────────▶│ fuel/epoch set     │
+ │◀ perm list│ (manifest ∩ user grants)           │                    │
+ │ selection change │── dispatch([selection.changed]) ───▶│ on-event  │
+ │         │                                    │─ lookup → snapshot ▶│
+ │         │                                    │─ submit-command ──▶│ queued
+ │         │◀── PendingCommand (submitted next frame) ──│              │
+ │         │── drain_commands → neo-editor pipeline ────────────────▶│
+ │         │── render-panel → declarative list → egui drawing        │
 ```
 
-预算超限：`on-event` 死循环 ⇒ fuel 耗尽 ⇒ `Trap::OutOfFuel` ⇒ 记 `quota-exceeded`；连续 3 次自动 `Disabled`（可手动重置）；该帧其他插件与其各自实例不受影响。
+Budget exceeded: an infinite loop in `on-event` ⇒ fuel exhausted ⇒ `Trap::OutOfFuel` ⇒ record `quota-exceeded`; after 3 consecutive occurrences the plugin is automatically `Disabled` (can be manually reset); other plugins and their own instances in that frame are unaffected.
 
-## 5 权衡与替代方案
+## 5 Trade-offs and alternatives
 
-| 决策 | 选择 | 替代 | 放弃原因 |
+| Decision | Choice | Alternative | Why rejected |
 |---|---|---|---|
-| 插件格式 | WASM Component | `cdylib`/`abi_stable` | 无稳定 ABI、依赖单例冲突、无沙箱 |
-| 隔离级别 | 进程内 wasmtime | 子进程 + IPC | 每次查询要序列化往返，交互面板延迟不可接受；留作高危插件可选模式 |
-| UI 扩展 | 声明式绘制列表 | 暴露 `egui::Ui` | 任意绘制可破坏布局/阻塞帧；声明式可限制、可审计 |
-| 资源限制 | fuel + epoch + 内存上限 | 仅超时 / 仅 fuel | 仅超时不可计费；仅 fuel 挡不住"合法长调用" |
-| 网络 | 域名白名单 + 禁自定义头 | 全放行 | 防插件窃取 OAuth 令牌（令牌只存在于宿主 HTTP 层） |
-| 签名 | detached Ed25519 | 无签名 | 插件能提交编辑，供应链攻击面过大 |
+| Plugin format | WASM Component | `cdylib`/`abi_stable` | No stable ABI, dependency singleton conflicts, no sandbox |
+| Isolation level | In-process wasmtime | Subprocess + IPC | Every query needs a serialization round trip, and interactive panel latency is unacceptable; kept as an optional mode for high-risk plugins |
+| UI extension | Declarative draw list | Expose `egui::Ui` | Arbitrary drawing can break layout/block frames; declarative is restrictable and auditable |
+| Resource limits | fuel + epoch + memory cap | Timeout only / fuel only | Timeout alone is not billable; fuel alone cannot stop "legal long calls" |
+| Network | Domain allowlist + custom headers forbidden | Allow everything | Prevents plugins from stealing OAuth tokens (tokens only exist in the host HTTP layer) |
+| Signing | Detached Ed25519 | No signature | Plugins can submit edits, so the supply-chain attack surface is too large |
 
-## 6 风险
+## 6 Risks
 
-| 风险 | 影响 | 缓解 |
+| Risk | Impact | Mitigation |
 |---|---|---|
-| WIT 契约演进破坏旧插件 | 插件集体失效 | semver 规则 + 双版本 `Linker` 并行；CI 保留 v1 golden 插件 |
-| fuel 预算过紧 | 正常插件被误杀 | 按 topic 分级 + 用户可调 + `Disabled` 可恢复 |
-| 事件风暴 | 帧时间抖动 | 帧边界派发 + 同 topic 合并 + 每插件每帧一次 |
-| 高频提交命令 | 编辑历史污染 | 命令速率限制（默认 20 次/秒）+ 全部可撤销 |
-| wasm 冷启动 | 首次打开慢 | `precompile_component` + 编译缓存 + 懒实例化 |
-| 签名密钥被盗 / 插件读到敏感数据 | 无法撤销 / 隐私泄露 | manifest `revoked_after` + 本地撤销列表；`read` 仅暴露快照内容，notes/GPX 层需额外能力 |
+| WIT contract evolution breaks old plugins | Plugins fail en masse | semver rules + dual-version `Linker` in parallel; CI keeps v1 golden plugins |
+| fuel budget too tight | Normal plugins are wrongly killed | Per-topic tiers + user-adjustable + `Disabled` is recoverable |
+| Event storms | Frame-time jitter | Frame-boundary dispatch + same-topic coalescing + once per plugin per frame |
+| High-frequency command submission | Edit history pollution | Command rate limit (default 20/s) + everything undoable |
+| wasm cold start | Slow first open | `precompile_component` + compilation cache + lazy instantiation |
+| Signing key stolen / plugin reads sensitive data | No revocation / privacy leak | manifest `revoked_after` + local revocation list; `read` only exposes snapshot content, notes/GPX layers need additional capabilities |
 
-## 7 验收标准
+## 7 Acceptance criteria
 
-- [ ] 加载 WIT `1.0` 示例插件：读快照、按 bbox 查询、提交一条 `AddNode`、渲染一个面板。
-- [ ] 未声明 `command` 的插件调 `submit-command` 返回 `permission-denied`，且不产生任何编辑。
-- [ ] 死循环插件在 100ms 内被 trap，宿主帧循环不阻塞，其他插件继续工作。
-- [ ] 申请超 64MiB 内存被限流，宿主不 OOM；`read-file("../x")` 返回 `permission-denied`。
-- [ ] 未签名插件在 `developer_mode=false` 下被拒；`true` 下加载但界面带风险标记。
-- [ ] `api = "2.0"` 的插件被拒绝并给出可读错误。
-- [ ] `wasm-plugins` 关闭时 `neo-plugin` 不引入 wasmtime（`cargo tree` 断言）；`cargo test -p neo-plugin` 与 `clippy -D warnings` 通过。
+- [ ] Load the WIT `1.0` sample plugin: read a snapshot, query by bbox, submit one `AddNode`, render one panel.
+- [ ] A plugin without declared `command` calling `submit-command` returns `permission-denied` and produces no edits.
+- [ ] An infinite-loop plugin is trapped within 100ms, the host frame loop does not block, and other plugins keep working.
+- [ ] Requesting more than 64MiB of memory is throttled and the host does not OOM; `read-file("../x")` returns `permission-denied`.
+- [ ] Unsigned plugins are rejected with `developer_mode=false`; with `true` they load, but the UI shows a risk marker.
+- [ ] A plugin with `api = "2.0"` is rejected with a readable error.
+- [ ] With `wasm-plugins` off, `neo-plugin` does not pull in wasmtime (`cargo tree` assertion); `cargo test -p neo-plugin` and `clippy -D warnings` pass.
 
-## 8 参考
+## 8 References
 
-- wasmtime 50 组件模型（`Component::from_file`、`Linker::instantiate`、`bindgen!`）：<https://docs.rs/wasmtime/50.0.1/wasmtime/component/>
-- wasmtime 资源限制（`consume_fuel`、`epoch_interruption`、`increment_epoch`、`set_fuel`、`set_epoch_deadline`、`ResourceLimiter`）：<https://docs.rs/wasmtime/50.0.1/wasmtime/struct.Config.html>
-- 预编译与编译缓存（`Engine::precompile_component`、`Config::cache`）：<https://docs.rs/wasmtime/50.0.1/wasmtime/struct.Engine.html#method.precompile_component>
-- WIT 语言与包版本化：<https://component-model.bytecodealliance.org/design/wit.html>
-- `wit-bindgen 0.63`：<https://docs.rs/wit-bindgen/0.63.0/wit_bindgen/>
-- JOSM 插件清单字段（`Plugin-Mainversion`、`Plugin-Class`、`Plugin-Version`、`Plugin-Description`、`Plugin-Stage` 等）：<https://wiki.openstreetmap.org/wiki/JOSM/Plugins>
-- 相关：[Workspace 与依赖规则](./02-workspace-and-dependency-rules.md) · [编辑核心与撤销](./06-editing-core-and-undo.md) · [系统架构](./01-system-architecture.md) · [ADR-0007](./adr/0007-wasm-plugins.md)
+- wasmtime 50 component model (`Component::from_file`, `Linker::instantiate`, `bindgen!`): <https://docs.rs/wasmtime/50.0.1/wasmtime/component/>
+- wasmtime resource limits (`consume_fuel`, `epoch_interruption`, `increment_epoch`, `set_fuel`, `set_epoch_deadline`, `ResourceLimiter`): <https://docs.rs/wasmtime/50.0.1/wasmtime/struct.Config.html>
+- Precompilation and compilation cache (`Engine::precompile_component`, `Config::cache`): <https://docs.rs/wasmtime/50.0.1/wasmtime/struct.Engine.html#method.precompile_component>
+- WIT language and package versioning: <https://component-model.bytecodealliance.org/design/wit.html>
+- `wit-bindgen 0.63`: <https://docs.rs/wit-bindgen/0.63.0/wit_bindgen/>
+- JOSM plugin manifest fields (`Plugin-Mainversion`, `Plugin-Class`, `Plugin-Version`, `Plugin-Description`, `Plugin-Stage`, etc.): <https://wiki.openstreetmap.org/wiki/JOSM/Plugins>
+- Related: [Workspace and dependency rules](./02-workspace-and-dependency-rules.md) · [Editing core and undo](./06-editing-core-and-undo.md) · [System architecture](./01-system-architecture.md) · [ADR-0007](./adr/0007-wasm-plugins.md)

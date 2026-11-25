@@ -1,80 +1,80 @@
-# ADR-0005：与 egui 共享同一个 wgpu 设备（不另建渲染后端）
+# ADR-0005: Share the same wgpu device with egui (no separate render backend)
 
-- **状态**：已接受（Accepted）
-- **日期**：2026-11-15
-- **决策范围**：`apps/neo-desktop`（启动）、`neo-render`（全部绘制）、`neo-ui`（paint 顺序）
-- **版本基线**：egui / eframe / egui-wgpu **0.36.2**、wgpu **30.0.2**、winit 0.30.13
-- **相关**：[05-renderer-wgpu.md](../05-renderer-wgpu.md) ｜ [01-system-architecture.md](../01-system-architecture.md) ｜ [ADR-0010](0010-mapcss-compatibility.md)
+- **Status**: Accepted
+- **Date**: 2026-11-15
+- **Decision scope**: `apps/neo-desktop` (startup), `neo-render` (all drawing), `neo-ui` (paint order)
+- **Version baseline**: egui / eframe / egui-wgpu **0.36.2**, wgpu **30.0.2**, winit 0.30.13
+- **Related**: [05-renderer-wgpu.md](../05-renderer-wgpu.md) | [01-system-architecture.md](../01-system-architecture.md) | [ADR-0010](0010-mapcss-compatibility.md)
 
-## 背景
+## Background
 
-NEO 的界面（面板、菜单、对话框、属性表）用 egui；地图本身有 1M–10M 对象的矢量批次，必须有自己的 wgpu 管线、buffer pool、文字图集与拾取通道。两条路线：
+NEO's UI (panels, menus, dialogs, property tables) uses egui; the map itself has vector batches of 1M–10M objects and must have its own wgpu pipeline, buffer pool, text atlas, and picking pass. Two routes:
 
-1. **共享** eframe 创建的 `Instance`/`Device`/`Queue`，通过 `egui_wgpu::CallbackTrait` 在 egui 的渲染通道里绘制地图；
-2. **自建** 第二个 `Instance` + `Surface` + 事件循环（或离屏纹理合成），地图与 UI 各自 present。
+1. **Share** the `Instance`/`Device`/`Queue` created by eframe and draw the map inside egui's render pass via `egui_wgpu::CallbackTrait`;
+2. **Build a second** `Instance` + `Surface` + event loop (or offscreen texture composition), with the map and UI presenting separately.
 
-这不是品味问题，而是被几个硬事实约束的：同一进程两个 `wgpu::Instance` 意味着两套适配器枚举、两块 swapchain、两个 present 时序；而 winit 的窗口事件、DPI 变化、IME、无障碍都已经被 eframe 接管，自己再接管一次会出现输入延迟与焦点竞争。
+This is not a matter of taste but is constrained by hard facts: two `wgpu::Instance`s in the same process mean two sets of adapter enumeration, two swapchains, and two present timings; meanwhile winit's window events, DPI changes, IME, and accessibility are already owned by eframe, and taking them over again causes input latency and focus contention.
 
-同时，共享方案的代价是**必须服从 egui 的渲染通道**，而这些约束是运行时错误而非编译错误（最典型的：管线 `MultisampleState.count` / `ColorTargetState.format` / `DepthStencilState.format` 与通道不一致时，只有在 draw 时才报校验错误）。
+At the same time, the cost of sharing is that **we must obey egui's render pass**, and these constraints are runtime errors rather than compile errors (the most typical: when pipeline `MultisampleState.count` / `ColorTargetState.format` / `DepthStencilState.format` do not match the pass, validation errors are only reported at draw time).
 
-## 决策
+## Decision
 
-**采用方案 1**，并接受下列具体约束：
+**Adopt option 1**, and accept the following concrete constraints:
 
-| # | 约束 | 依据 |
+| # | Constraint | Rationale |
 |---|---|---|
-| D1 | 只使用 `eframe::egui_wgpu::RenderState` 提供的 `adapter` / `instance` / `device` / `queue` / `target_format` / `renderer`；**不创建第二个 `Instance`** | 单队列、单 present；`RenderState` 是 `Clone` 且字段全公开 |
-| D2 | 地图绘制实现 `egui_wgpu::CallbackTrait`：`prepare(&self, &Device, &Queue, &ScreenDescriptor, &mut CommandEncoder, &mut CallbackResources) -> Vec<CommandBuffer>` 与 `paint(&self, PaintCallbackInfo, &mut RenderPass<'static>, &CallbackResources)` | `paint` 里已在通道内，禁止新建 pass / `submit`；需要 encoder 的工作放 `prepare` 并把 `CommandBuffer` 返回给 egui |
-| D3 | 持久 GPU 资源（管线、`BufferPool`、atlas、拾取纹理）存 `Renderer::callback_resources`（`type_map`），用 `get_mut` / 否则 `insert` | 生命周期与 `Renderer` 绑定；不要跨帧持有 `Renderer` 写锁（会与 paint 回调里的读锁死锁） |
-| D4 | 所有管线的颜色格式取 `RenderState::target_format`；`RendererOptions` 里显式设置 `msaa_samples` 与（如需）`depth_stencil_format` | egui 默认无深度且深度 `store = Discard`；MSAA 由 egui 统一 resolve |
-| D5 | 顶点与颜色在**预乘 alpha** 下与 egui 混用同一套混合状态 | 与 egui 自身一致；避免 UI 与地图重叠处的暗边 |
-| D6 | 每帧只写 32 B 的 camera uniform；几何 buffer 仅在 `SceneFrame.version` 变化时按脏区间上传 | 稳态零重传，见 [05](../05-renderer-wgpu.md) §2.8 |
-| D7 | 拾取回读绝不阻塞 UI 线程；`PollType::wait_indefinitely()` 只允许出现在导出/测试路径 | 一次等待 = 全流水线 flush，会让 hover 掉帧（[07](../07-concurrency-and-tasks.md) §D10） |
-| D8 | 自建离屏渲染（导出 PNG、golden 图）也要用同一个 `Device`，并显式处理 `CurrentSurfaceTexture::Lost` / 256 B row pitch | wgpu 30 的 `get_current_texture` 返回枚举、`Queue::present(tex)` 才呈现 |
+| D1 | Only use the `adapter` / `instance` / `device` / `queue` / `target_format` / `renderer` provided by `eframe::egui_wgpu::RenderState`; **do not create a second `Instance`** | Single queue, single present; `RenderState` is `Clone` and all fields are public |
+| D2 | Map drawing implements `egui_wgpu::CallbackTrait`: `prepare(&self, &Device, &Queue, &ScreenDescriptor, &mut CommandEncoder, &mut CallbackResources) -> Vec<CommandBuffer>` and `paint(&self, PaintCallbackInfo, &mut RenderPass<'static>, &CallbackResources)` | In `paint` we are already inside the pass, so creating a new pass / `submit` is forbidden; work that needs an encoder goes in `prepare` and returns the `CommandBuffer` to egui |
+| D3 | Persistent GPU resources (pipelines, `BufferPool`, atlas, picking textures) are stored in `Renderer::callback_resources` (`type_map`), using `get_mut` or otherwise `insert` | Lifetime is bound to `Renderer`; do not hold a `Renderer` write lock across frames (it deadlocks with the read lock in the paint callback) |
+| D4 | All pipelines use `RenderState::target_format` for the color format; explicitly set `msaa_samples` and (if needed) `depth_stencil_format` in `RendererOptions` | egui has no depth by default and depth `store = Discard`; MSAA is resolved uniformly by egui |
+| D5 | Vertices and colors use the same blend state as egui under **premultiplied alpha** | Consistent with egui itself; avoids dark edges where UI and map overlap |
+| D6 | Write only a 32 B camera uniform per frame; geometry buffers are uploaded only by dirty ranges when `SceneFrame.version` changes | Zero re-uploads in steady state, see [05](../05-renderer-wgpu.md) §2.8 |
+| D7 | Pick readback must never block the UI thread; `PollType::wait_indefinitely()` may only appear on export/test paths | One wait = whole-pipeline flush, causing hover frame drops ([07](../07-concurrency-and-tasks.md) §D10) |
+| D8 | Self-built offscreen rendering (PNG export, golden images) must also use the same `Device`, and explicitly handle `CurrentSurfaceTexture::Lost` / 256 B row pitch | wgpu 30's `get_current_texture` returns an enum, and only `Queue::present(tex)` presents it |
 
-## 替代方案（已评估并放弃）
+## Alternatives (evaluated and rejected)
 
-| 方案 | 优点 | 放弃理由 |
+| Option | Pros | Why rejected |
 |---|---|---|
-| 自建 `Instance` + `Surface` + 自管 winit 循环 | 完全控制 present 时机与 load op | 输入/DPI/IME/无障碍要与 eframe 争所有权；两套 present 会互相撕裂；显存与适配器枚举翻倍 |
-| 地图渲染到离屏纹理，再作为 egui 纹理贴上来 | 不需要 `CallbackTrait`，与 egui 解耦 | 多一次全屏合成（带宽 = 视口像素 × 4 B × 帧率），且拾取/视口/DPI 要自己对齐；10M 对象场景下这笔带宽不可忽略 |
-| 用 `egui` 的 `Mesh` 直接画地图（不走 wgpu） | 零新基础设施 | 每帧重新 tessellate 百万级线段，CPU 与内存都不可行（egui 的 mesh 是 immediate 的） |
-| 等 egui 提供多 viewport 的官方 3D 集成 | 未来更干净 | 现状未提供；`CallbackTrait` 是官方支持的扩展点，已有稳定签名 |
+| Build a separate `Instance` + `Surface` + self-managed winit loop | Full control over present timing and load op | Input/DPI/IME/accessibility would contend with eframe for ownership; the two presents tear against each other; VRAM and adapter enumeration double |
+| Render the map to an offscreen texture, then upload it as an egui texture | No `CallbackTrait`, decoupled from egui | One extra full-screen composition (bandwidth = viewport pixels × 4 B × frame rate), and picking/viewport/DPI must be aligned manually; this bandwidth is non-negligible in 10M-object scenes |
+| Draw the map directly with egui's `Mesh` (bypassing wgpu) | Zero new infrastructure | Re-tessellating millions of line segments every frame is infeasible for both CPU and memory (egui's mesh is immediate) |
+| Wait for official 3D integration with multiple viewports from egui | Cleaner in the future | Not available today; `CallbackTrait` is the officially supported extension point with a stable signature |
 
-## 后果
+## Consequences
 
-**正面**
+**Positive**
 
-- 单设备单队列，UI 与地图共享同一个 present，无撕裂、无第二块 swapchain。
-- DPI/缩放/窗口生命周期由 eframe 处理；我们只需把 `PaintCallbackInfo::viewport_in_pixels()` 当视口、把 `pixels_per_point` 当 UI 尺寸。
-- 拾取、hover、选择高亮与 UI 同帧，无 1 帧输入延迟。
-- 依赖面小：`neo-render` 只依赖 `wgpu` + `egui-wgpu` + `bytemuck`，不依赖 `neo-store`/`neo-editor`/`neo-ui`。
+- Single device, single queue; UI and map share the same present, with no tearing and no second swapchain.
+- DPI/scaling/window lifecycle are handled by eframe; we only need to treat `PaintCallbackInfo::viewport_in_pixels()` as the viewport and `pixels_per_point` as the UI scale.
+- Picking, hover, and selection highlights are in the same frame as the UI, with no 1-frame input latency.
+- Small dependency surface: `neo-render` depends only on `wgpu` + `egui-wgpu` + `bytemuck`, not on `neo-store`/`neo-editor`/`neo-ui`.
 
-**负面 / 代价**
+**Negative / costs**
 
-- 受 egui 通道约束：不能改 load op、不能跨 callback 复用深度、MSAA 由 `RendererOptions` 决定、颜色格式必须与 swapchain 完全一致（含 sRGB 分支）。
-- 管线创建参数与运行期通道必须由**单一来源**（`GpuCaps`）派生，否则会出现只在某些后端触发的校验错误。
-- 帧内顺序被 egui 的图元顺序决定：必须把地图 callback 加在正确的 `ui` 层级，才能保证覆盖层（选中框、手柄）画在地图之上。
-- egui 版本升级是**破坏性**的：`eframe::App` 的入口在 0.36 已是 `ui()`（`update` 被移除），0.36 → 0.37 又带来 `RenderState`/面板 API 变化；升级点必须收敛在 `apps/neo-desktop` 与 `neo-render` 两处。
+- Constrained by egui's pass: cannot change the load op, cannot reuse depth across callbacks, MSAA is decided by `RendererOptions`, and the color format must exactly match the swapchain (including the sRGB branch).
+- Pipeline creation parameters and the runtime pass must be derived from a **single source** (`GpuCaps`), otherwise validation errors appear that trigger only on certain backends.
+- In-frame order is decided by egui's primitive order: the map callback must be added at the correct `ui` level so that overlays (selection boxes, handles) are drawn above the map.
+- egui version upgrades are **breaking**: in 0.36 the `eframe::App` entry point is `ui()` (`update` was removed), and 0.36 → 0.37 brings further `RenderState`/panel API changes; upgrade points must be confined to `apps/neo-desktop` and `neo-render`.
 
-**约束（必须写进 CI）**
+**Constraints (must be encoded in CI)**
 
-1. `cargo tree -p neo-render` 不含 `neo-store` / `neo-editor` / `neo-ui`。
-2. 全仓只允许出现一个 `wgpu::Instance`（源码 grep `Instance::new` / `new_without_display_handle`）。
-3. 管线创建只允许经 `MapRenderer::new`，禁止在 `paint` 中创建资源。
+1. `cargo tree -p neo-render` contains no `neo-store` / `neo-editor` / `neo-ui`.
+2. Only one `wgpu::Instance` is allowed across the repo (source grep for `Instance::new` / `new_without_display_handle`).
+3. Pipelines may only be created via `MapRenderer::new`; creating resources in `paint` is forbidden.
 
-## 验证
+## Verification
 
-- **启动自检**：首帧校验每条管线的 `format` / `sample_count` / `depth` 与当前通道一致（不一致立刻 panic，带可读信息），替代"跑几分钟才黑屏"。
-- **稳态断言**：静置与平移 60 帧，`PrepareStats.uploaded_bytes ≤ 128 B/帧`（只有 uniform）。
-- **颜色**：`Bgra8Unorm` 与 `Bgra8UnormSrgb` 两种 `target_format` 下同一 golden 图像素差 ≤ 2/255。
-- **拾取**：任何帧都不调用 `PollType::wait_*`（源码 grep + 单测）；GPU 与 CPU 拾取一致率 ≥ 99%。
-- **降级**：WARP / 无 MSAA / 无 timestamp 组合可启动、可交互、无 panic。
-- 帧时间验收数字见 [14](../14-performance-and-verification.md)【待实测】。
+- **Startup self-check**: on the first frame, validate each pipeline's `format` / `sample_count` / `depth` against the current pass (panic immediately with a readable message if mismatched), replacing "black screen after a few minutes".
+- **Steady-state assertion**: idle and panning for 60 frames, `PrepareStats.uploaded_bytes ≤ 128 B/frame` (uniform only).
+- **Color**: the pixel difference of the same golden image under `Bgra8Unorm` and `Bgra8UnormSrgb` `target_format` is ≤ 2/255.
+- **Picking**: no frame calls `PollType::wait_*` (source grep + unit test); GPU and CPU picking agreement ≥ 99%.
+- **Degradation**: combinations of WARP / no MSAA / no timestamp can start, interact, and do not panic.
+- Frame-time acceptance numbers see [14](../14-performance-and-verification.md) [to be measured].
 
-## 参考
+## References
 
-- `egui-wgpu` 0.36.2 的 `CallbackTrait` / `RenderState` / `RendererOptions`：<https://docs.rs/egui-wgpu/0.36.2/egui_wgpu/>
-- egui 渲染通道的深度 `Clear(1.0)` / `StoreOp::Discard` 与 MSAA resolve：`egui-wgpu` 的 `paint_and_update_textures`
-- wgpu 30 破坏性变更（`Maintain` 移除 → `PollType`、`DeviceDescriptor`、`multiview_mask`）：<https://github.com/gfx-rs/wgpu/blob/trunk/CHANGELOG.md>
-- `egui_dock` 0.21.1 要求 `egui ^0.36`（本项目因此钉 0.36.2）：<https://crates.io/api/v1/crates/egui_dock/0.21.1/dependencies>
+- `egui-wgpu` 0.36.2's `CallbackTrait` / `RenderState` / `RendererOptions`: <https://docs.rs/egui-wgpu/0.36.2/egui_wgpu/>
+- The depth `Clear(1.0)` / `StoreOp::Discard` and MSAA resolve of egui's render pass: `egui-wgpu`'s `paint_and_update_textures`
+- wgpu 30 breaking changes (`Maintain` removal → `PollType`, `DeviceDescriptor`, `multiview_mask`): <https://github.com/gfx-rs/wgpu/blob/trunk/CHANGELOG.md>
+- `egui_dock` 0.21.1 requires `egui ^0.36` (this project therefore pins 0.36.2): <https://crates.io/api/v1/crates/egui_dock/0.21.1/dependencies>

@@ -1,64 +1,64 @@
-# 架构总览
+# Architecture Overview
 
-NEO 是**模块化单体**（modular monolith），不是微服务。核心原则：
+NEO is a **modular monolith**, not a microservice architecture. Core principles:
 
-1. **业务逻辑不依赖 GUI**：编辑/IO/查询可在无 UI 下测试与运行。
-2. **地图渲染不依赖 UI 控件**：渲染层只接收不可变 `SceneFrame`。
-3. **数据模型不依赖渲染格式**：`DataSet` 是 SoA + Arena，GPU 顶点由 `neo-scene` 单独构建。
-4. **单写者**：所有修改经 `neo-editor` 的 Command/Transaction，GUI 不得直接改 `DataSet`。
-5. **增量**：几何/索引/GPU 上传都是增量的，平移缩放只更新 uniform。
+1. **Business logic does not depend on the GUI**: editing/IO/querying can be tested and run without a UI.
+2. **Map rendering does not depend on UI widgets**: the render layer only receives an immutable `SceneFrame`.
+3. **The data model does not depend on the render format**: `DataSet` is SoA + Arena, and GPU vertices are built separately by `neo-scene`.
+4. **Single writer**: all modifications go through `neo-editor`'s Command/Transaction; the GUI must not modify `DataSet` directly.
+5. **Incremental**: geometry/index/GPU upload are all incremental; panning and zooming only update uniforms.
 
-## 分层
-
-```
-apps/neo-desktop        eframe + wgpu 集成、输入翻译、面板编排
-      │
-crates/neo-ui           egui 面板（纯函数：只读数据 + UiActions）
-crates/neo-tools        EditController：选择/绘制/删除/拖拽/分割/反转/合并
-      │
-crates/neo-editor       命令、事务、历史、journal、选择集、Editor
-      │
-crates/neo-io  neo-persist  neo-api（阶段 5）
-      │
-crates/neo-scene        SceneBuilder、LOD、批处理
-crates/neo-render       wgpu 管线、GpuScene、headless 渲染
-crates/neo-validate / neo-query / neo-plugin / neo-style（阶段 4–6）
-      │
-crates/neo-store        DataSet（SoA + Arena）、索引、反向引用、完整性
-crates/neo-osm          OSM 实体/变更类型/tag 模型
-crates/neo-geo          世界坐标、相机、拾取、几何
-crates/neo-core         ID、坐标、分代句柄、Meta、错误
-crates/neo-i18n         界面文本目录（编译期嵌入）
-```
-
-## 一次编辑的数据流
+## Layers
 
 ```
-egui 输入
-  → neo-tools::EditController（pick + command）
-  → neo-editor::Command（事务/历史/journal）
-  → DataSet 变更（version++）
-  → neo-scene::SceneBuilder（增量重建）
-  → neo-render::GpuScene 上传
-  → wgpu draw（egui paint callback）
+apps/neo-desktop        eframe + wgpu integration, input translation, panel orchestration
+      │
+crates/neo-ui           egui panels (pure functions: read-only data + UiActions)
+crates/neo-tools        EditController: select/draw/delete/drag/split/reverse/merge
+      │
+crates/neo-editor       commands, transactions, history, journal, selection, Editor
+      │
+crates/neo-io  neo-persist  neo-api (phase 5)
+      │
+crates/neo-scene        SceneBuilder, LOD, batching
+crates/neo-render       wgpu pipeline, GpuScene, headless rendering
+crates/neo-validate / neo-query / neo-plugin / neo-style (phases 4–6)
+      │
+crates/neo-store        DataSet (SoA + Arena), indexes, backreferences, integrity
+crates/neo-osm          OSM entities/change types/tag model
+crates/neo-geo          world coordinates, camera, picking, geometry
+crates/neo-core         IDs, coordinates, generational handles, Meta, errors
+crates/neo-i18n         UI text catalogs (embedded at compile time)
 ```
 
-拾取独立于渲染：`neo-geo::HitTester` 用同一份索引，按屏幕外边距选出节点/way。
+## Data flow of one edit
 
-## 关键不变量
+```
+egui input
+  → neo-tools::EditController (pick + command)
+  → neo-editor::Command (transaction/history/journal)
+  → DataSet change (version++)
+  → neo-scene::SceneBuilder (incremental rebuild)
+  → neo-render::GpuScene upload
+  → wgpu draw (egui paint callback)
+```
 
-- 句柄带 generation，删除后旧句柄失效（不会指向新对象）。
-- `DataSet::version` 每次结构性变更递增；场景缓存以它和 (origin, zoom) 为 key。
-- 被 way/relation 引用的节点不能直接删除（命令返回 `Referenced`）。
-- 拖拽预览不写数据；松开鼠标才产生一次批量移动命令。
-- 图层只读时：picking/拖拽/绘制/测距全部禁用，选择被清空。
+Picking is independent of rendering: `neo-geo::HitTester` uses the same index and selects nodes/ways by screen-space margin.
 
-## 深入阅读
+## Key invariants
 
-- [01 系统架构](../01-system-architecture.md)
-- [02 Workspace 与依赖规则](../02-workspace-and-dependency-rules.md)
-- [03 数据模型与存储](../03-osm-data-model-and-store.md)
-- [04 空间索引与几何](../04-spatial-index-and-geometry.md)
-- [05 wgpu 渲染器](../05-renderer-wgpu.md)
-- [06 编辑核心与 Undo](../06-editing-core-and-undo.md)
-- [ADR 列表](../SUMMARY.md)
+- Handles carry a generation; after deletion the old handle is invalid (it will not point to a new object).
+- `DataSet::version` increments on every structural change; the scene cache is keyed by it and (origin, zoom).
+- A node referenced by a way/relation cannot be deleted directly (the command returns `Referenced`).
+- Drag previews do not write data; only on mouse release is one batch-move command produced.
+- When the layer is read-only: picking/dragging/drawing/measuring are all disabled, and the selection is cleared.
+
+## Further reading
+
+- [01 System Architecture](../01-system-architecture.md)
+- [02 Workspace and Dependency Rules](../02-workspace-and-dependency-rules.md)
+- [03 Data Model and Storage](../03-osm-data-model-and-store.md)
+- [04 Spatial Index and Geometry](../04-spatial-index-and-geometry.md)
+- [05 wgpu Renderer](../05-renderer-wgpu.md)
+- [06 Editing Core and Undo](../06-editing-core-and-undo.md)
+- [ADR List](../SUMMARY.md)

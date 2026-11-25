@@ -1,67 +1,67 @@
-//! Tag 集合（驻留符号对）。
+//! Tag set (interned symbol pairs).
 //!
-//! 与 `HashMap<String, String>` 相比：
+//! Compared with `HashMap<String, String>`:
 //!
-//! * 每个 tag 只占 8 字节（两个 `Sym`），且共享文本；
-//! * 小集合用 `SmallVec` 内联，避免每个对象一次堆分配；
-//! * 顺序保留（OSM 的 tag 顺序在 XML/OSC 往返和握手协议里都需要保真）。
+//! * each tag takes only 8 bytes (two `Sym`s) and shares the text;
+//! * small sets are inlined with `SmallVec`, avoiding one heap allocation per object;
+//! * order is preserved (OSM tag order must round-trip faithfully through XML/OSC and the handshake protocol).
 
 use neo_core::Sym;
 use smallvec::SmallVec;
 
-/// 一个 OSM 对象的 tag 集合。
+/// Tag set of one OSM object.
 ///
-/// 不变量：key 唯一（同一 key 只保留最后一次设置的值）。
+/// Invariant: keys are unique (only the last value set for a key is kept).
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Tags {
     pairs: SmallVec<[(Sym, Sym); 6]>,
 }
 
 impl Tags {
-    /// 空 tag 集合（不分配）。
+    /// Empty tag set (no allocation).
     #[inline]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 预分配容量。
+    /// Preallocated capacity.
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             pairs: SmallVec::with_capacity(cap),
         }
     }
 
-    /// tag 数量。
+    /// Number of tags.
     #[inline]
     pub fn len(&self) -> usize {
         self.pairs.len()
     }
 
-    /// 是否为空。
+    /// Whether the set is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.pairs.is_empty()
     }
 
-    /// 取 key 对应的 value。
+    /// Get the value for a key.
     #[inline]
     pub fn get(&self, key: Sym) -> Option<Sym> {
         self.pairs.iter().find_map(|&(k, v)| (k == key).then_some(v))
     }
 
-    /// 是否包含 key。
+    /// Whether the key is present.
     #[inline]
     pub fn contains_key(&self, key: Sym) -> bool {
         self.get(key).is_some()
     }
 
-    /// 按插入顺序迭代。
+    /// Iterate in insertion order.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (Sym, Sym)> + '_ {
         self.pairs.iter().copied()
     }
 
-    /// 插入或覆盖。返回旧值。
+    /// Insert or overwrite. Returns the old value.
     pub fn set(&mut self, key: Sym, value: Sym) -> Option<Sym> {
         if let Some(slot) = self.pairs.iter_mut().find(|(k, _)| *k == key) {
             let old = slot.1;
@@ -73,27 +73,27 @@ impl Tags {
         }
     }
 
-    /// 删除 key，返回旧值。
+    /// Remove a key; returns the old value.
     pub fn remove(&mut self, key: Sym) -> Option<Sym> {
         let idx = self.pairs.iter().position(|(k, _)| *k == key)?;
         Some(self.pairs.remove(idx).1)
     }
 
-    /// 清空。
+    /// Clear the set.
     pub fn clear(&mut self) {
         self.pairs.clear();
     }
 
-    /// 规范化视图：按 key 排序后的 (key, value) 列表。
+    /// Canonical view: a (key, value) list sorted by key.
     ///
-    /// 用于计算内容哈希、diff、以及"相同 tag 集"判定（不依赖插入顺序）。
+    /// Used for content hashing, diffing, and the "same tag set" check (independent of insertion order).
     pub fn canonical(&self) -> SmallVec<[(Sym, Sym); 6]> {
         let mut out = self.pairs.clone();
         out.sort_unstable_by_key(|(k, _)| *k);
         out
     }
 
-    /// 与顺序无关的内容哈希（用于样式/几何缓存 key）。
+    /// Order-independent content hash (used as a style/geometry cache key).
     pub fn content_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let canonical = self.canonical();
@@ -106,13 +106,13 @@ impl Tags {
         h.finish()
     }
 
-    /// 原始列表访问（顺序即插入顺序）。
+    /// Raw list access (order is insertion order).
     #[inline]
     pub fn raw(&self) -> &[(Sym, Sym)] {
         &self.pairs
     }
 
-    /// 从迭代器构造。
+    /// Build from an iterator.
     pub fn from_pairs<I: IntoIterator<Item = (Sym, Sym)>>(iter: I) -> Self {
         let mut tags = Self::new();
         for (k, v) in iter {
@@ -121,9 +121,9 @@ impl Tags {
         tags
     }
 
-    /// 估算堆内存（超出内联容量时）。
+    /// Estimate heap usage (only when the inline capacity is exceeded).
     pub fn mem_bytes(&self) -> usize {
-        // SmallVec 内联容量为 6 对；更长的才分配。
+        // SmallVec inline capacity is 6 pairs; only longer sets allocate.
         if self.pairs.spilled() {
             self.pairs.capacity() * std::mem::size_of::<(Sym, Sym)>()
         } else {

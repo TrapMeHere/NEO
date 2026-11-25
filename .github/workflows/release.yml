@@ -107,9 +107,9 @@ jobs:
           body: |
             ## NEO ${{ github.ref_name }}
 
-            Windows x64 构建（无控制台 GUI 程序）。
+            Windows x64 build (console-less GUI application).
 
-            - 下载 `neo-desktop-${{ github.ref_name }}-windows-x86_64.zip` 解压后运行 `neo-desktop.exe`
-            - 校验：`Get-FileHash .\*.zip -Algorithm SHA256` 与 `.sha256` 文件对比
-            - 使用教程与开发指南：https://novolife.github.io/neo/
-            - 完整变更见 `CHANGELOG.md`
+            - Download `neo-desktop-${{ github.ref_name }}-windows-x86_64.zip`, extract it, and run `neo-desktop.exe`
+            - Verify: compare `Get-FileHash .\*.zip -Algorithm SHA256` against the `.sha256` file
+            - User guide and developer guide: https://novolife.github.io/neo/
+            - Full changelog: `CHANGELOG.md`

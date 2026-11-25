@@ -1,198 +1,198 @@
-# 14 · 性能与验证
+# 14 · Performance and verification
 
-> 本文只放**实测**数字；每条都可用 `scripts/bench.ps1` 复现。方法与判据写在前面，结果表在 §4，Gate 结论在 §5。
+> This document contains **measured** numbers only; each one can be reproduced with `scripts/bench.ps1`. The method and criteria come first, the results tables are in §4, and the Gate conclusion is in §5.
 >
-> 数据来源：`apps/neo-prototype`（同一份生产代码路径：`neo-io` 导入 → `neo-store` SoA → `neo-geo` 索引/几何 → `neo-scene` 批次 → `neo-render` wgpu 离屏渲染），由 `pwsh scripts/bench.ps1` 跑 3 轮取中位数。
+> Data source: `apps/neo-prototype` (the same production code path: `neo-io` import → `neo-store` SoA → `neo-geo` index/geometry → `neo-scene` batches → `neo-render` wgpu offscreen rendering), run by `pwsh scripts/bench.ps1` over 3 rounds, taking the median.
 
-## 1 测量环境
+## 1 Measurement environment
 
-| 项 | 值 |
+| Item | Value |
 |---|---|
-| 机器 | Intel Core i5-12400F（6C/12T） |
-| 内存 | 31.8 GB |
+| Machine | Intel Core i5-12400F (6C/12T) |
+| Memory | 31.8 GB |
 | GPU | NVIDIA GeForce RTX 3070 8 GB |
-| GPU 后端 | **Vulkan**（wgpu 30.0.2；DX12 适配器同样可用，脚本当前枚举到 Vulkan） |
-| 驱动 | NVIDIA 621.14 |
-| OS | Windows 11（10.0.26100），MSVC 14.43 |
-| Rust | 1.100.0 stable（MSRV 1.95） |
-| 编译 | `--release`（opt-level 3，thin LTO，codegen-units 1） |
-| 输入数据 | Monaco（Geofabrik，0.68 MiB，41,844 节点/6,281 way/222 关系）；Bremen（20.3 MiB，**1,668,778 节点/329,676 way/5,053 关系**）；合成网格城市（1M/10M 对象） |
+| GPU backend | **Vulkan** (wgpu 30.0.2; the DX12 adapter also works, but the script currently enumerates Vulkan) |
+| Driver | NVIDIA 621.14 |
+| OS | Windows 11 (10.0.26100), MSVC 14.43 |
+| Rust | 1.100.0 stable (MSRV 1.97) |
+| Compilation | `--release` (opt-level 3, thin LTO, codegen-units 1) |
+| Input data | Monaco (Geofabrik, 0.68 MiB, 41,844 nodes/6,281 ways/222 relations); Bremen (20.3 MiB, **1,668,778 nodes/329,676 ways/5,053 relations**); synthetic grid city (1M/10M objects) |
 
-**测量口径**：交互类指标取 P50/P95/P99（同一次运行内的样本分位数）；吞吐类指标取 3 轮中位数；内存取进程 `PeakWorkingSetSize`（Win32 API，进程内自报）。
+**Measurement methodology**: interactive metrics use P50/P95/P99 (sample quantiles within a single run); throughput metrics use the median of 3 rounds; memory uses the process `PeakWorkingSetSize` (Win32 API, self-reported in-process).
 
-## 2 测量方法
+## 2 Measurement method
 
-`scripts/bench.ps1` 依次跑：
+`scripts/bench.ps1` runs in order:
 
-1. `neo-prototype gpu-info` —— 记录适配器/后端/驱动/时间戳查询支持。
-2. `import --pbf` —— 真实 PBF 导入（含"缺失成员跳过"处理，bbox 提取必然出现不完整 relation）。
-3. `render --pbf ... --out out/*.png` —— 完整链路：导入 → 索引 → 场景 → **wgpu 离屏渲染 → PNG 读回**（证明 GPU 管线真的工作，而不是只测 CPU）。
-4. `bench --synth 1_000_000 --iterations 30` —— 六个基准：
-   - `id lookup`：随机 20 万次 `ObjectId → Handle` 查找（ns/op，含 `Instant::now` 开销）；
-   - `bbox query`：随机 2000 个 1200×800@z16 视口的空间索引查询（µs/op，含返回集平均 7,922 条）；
-   - `scene build (fit-all)`：整城视角下全量重建场景（最坏情况）；
-   - `scene build (z16)`：编辑尺度视口（1600×1000）重建场景；
-   - `move node + rebuild parent ways`：移动节点 → 查父 way → 重建 bbox/索引（增量编辑路径）；
-   - `pick`：随机屏幕点拾取（节点/way 命中测试）；
-   - `gpu frame`：离屏 pass 编码 + 提交 + 等 GPU 完成（不含 PNG 读回）。
+1. `neo-prototype gpu-info` — records adapter/backend/driver/timestamp query support.
+2. `import --pbf` — real PBF import (including handling of "skip missing members", since bbox extraction necessarily produces incomplete relations).
+3. `render --pbf ... --out out/*.png` — full chain: import → index → scene → **wgpu offscreen render → PNG readback** (proving that the GPU pipeline really works, rather than only testing the CPU).
+4. `bench --synth 1_000_000 --iterations 30` — six benchmarks:
+   - `id lookup`: 200k random `ObjectId → Handle` lookups (ns/op, including `Instant::now` overhead);
+   - `bbox query`: 2000 random spatial index queries for 1200×800@z16 viewports (µs/op, including an average of 7,922 returned entries);
+   - `scene build (fit-all)`: full scene rebuild at whole-city view (worst case);
+   - `scene build (z16)`: scene rebuild at editing-scale viewport (1600×1000);
+   - `move node + rebuild parent ways`: move a node → find parent ways → rebuild bbox/index (incremental edit path);
+   - `pick`: random screen-point picking (node/way hit testing);
+   - `gpu frame`: offscreen pass encoding + submit + wait for GPU completion (excluding PNG readback).
 
-## 3 场景构建的两次关键优化（数据可复现）
+## 3 Two key optimizations in scene building (data reproducible)
 
-优化前后都用同一份 1M 合成数据、同一相机、30 次迭代：
+Both before and after use the same 1M synthetic data, the same camera, and 30 iterations:
 
-| 版本 | scene build (fit-all) P50 | 说明 |
+| Version | scene build (fit-all) P50 | Notes |
 |---|---|---|
-| 初始实现 | **157.7 ms** | 每 way 堆分配 + 先建几何再 LOD + 遍历 node+way 混合树（视口覆盖全城时扫描 131 万条目） |
-| + bbox 预裁剪 + 零分配 scratch | **89.5 ms** | 用索引 bbox 在生成几何前砍掉 88% 的 way；复用顶点/索引缓冲 |
-| + 零分配 R-tree 遍历 + 密度 LOD + 世界坐标缓存 | **17.4 ms** | node/way 分树；亚像素 way 按 stride 抽样（绘制量≈常数/屏幕面积）；节点投影只算一次 |
+| Initial implementation | **157.7 ms** | Per-way heap allocation + build geometry before LOD + traverse a mixed node+way tree (scanning 1.31M entries when the viewport covers the whole city) |
+| + bbox pre-culling + zero-allocation scratch | **89.5 ms** | Use the index bbox to cut 88% of ways before generating geometry; reuse vertex/index buffers |
+| + zero-allocation R-tree traversal + density LOD + world-coordinate cache | **17.4 ms** | Separate trees for node/way; sample sub-pixel ways by stride (draw amount ≈ constant per screen area); project nodes only once |
 
-同样的优化让 **z16 编辑视口** 从 ~15 ms 降到 **1.29 ms P50**（4,164 way + 12,638 节点可见）。
+The same optimizations bring the **z16 editing viewport** from ~15 ms down to **1.29 ms P50** (4,164 ways + 12,638 nodes visible).
 
-这三次优化对应 ADR-0009 的三个层次：**先裁剪、再复用、最后增量**。
+These three optimizations correspond to the three levels of ADR-0009: **cull first, then reuse, finally incremental**.
 
-## 4 实测结果
+## 4 Measured results
 
-### 4.1 导入（单线程顺序解码，真实 PBF）
+### 4.1 Import (single-threaded sequential decode, real PBF)
 
-| 数据 | 对象数 | 导入耗时 | 吞吐 | 索引构建 | 反向引用 | 峰值 RSS |
+| Data | Objects | Import time | Throughput | Index build | Reverse references | Peak RSS |
 |---|---|---|---|---|---|---|
-| Monaco | 41,844 N / 6,281 W / 222 R | 0.03 s | 1.70 M elem/s（23.8 MiB/s） | 18.3 ms | 0.6 ms | 26.2 MiB |
-| Bremen | 1,668,778 N / 329,676 W / 5,053 R | **1.12 s** | **1.79 M elem/s**（18.1 MiB/s） | **~1.2 s** | ~14 ms | 【见 10M/内存表】 |
+| Monaco | 41,844 N / 6,281 W / 222 R | 0.03 s | 1.70 M elem/s (23.8 MiB/s) | 18.3 ms | 0.6 ms | 26.2 MiB |
+| Bremen | 1,668,778 N / 329,676 W / 5,053 R | **1.12 s** | **1.79 M elem/s** (18.1 MiB/s) | **~1.2 s** | ~14 ms | [see 10M/memory table] |
 
-- Bremen 有 958 个 relation 因 bbox 提取不完整被跳过（预期行为，记录在 `ImportReport.skipped_relations`）。
-- 内存估算：Bremen 数据集 `mem=274 MiB`（SoA + tag arena + 索引估算），1M 合成数据 138.7 MiB。
-- PBF 解码目前是单线程；`osmpbf` 的 blob 级并行（`par_map_reduce`）是阶段 2 任务（docs/08 §2.4），预期可再用满 12 线程。
+- 958 relations in Bremen are skipped because bbox extraction is incomplete (expected behavior, recorded in `ImportReport.skipped_relations`).
+- Memory estimate: the Bremen dataset is `mem=274 MiB` (SoA + tag arena + index estimate), and 1M synthetic data is 138.7 MiB.
+- PBF decoding is currently single-threaded; `osmpbf`'s blob-level parallelism (`par_map_reduce`) is a stage 2 task (docs/08 §2.4), expected to use all 12 threads again.
 
-### 4.2 交互（1M 合成对象，30 次迭代，P50/P95/P99）
+### 4.2 Interaction (1M synthetic objects, 30 iterations, P50/P95/P99)
 
-| 指标 | mean | P50 | P95 | P99 | 预算（阶段 1） |
+| Metric | mean | P50 | P95 | P99 | Budget (stage 1) |
 |---|---|---|---|---|---|
 | id lookup | 164 ns | 100 ns | 300 ns | 700 ns | < 1 µs |
-| bbox query（z16 视口） | 272 µs | 273 µs | 417 µs | 516 µs | < 1 ms |
-| **scene build（z16 编辑视口）** | 1.44 ms | **1.29 ms** | 2.33 ms | 2.63 ms | **< 16 ms ✅** |
-| scene build（fit-all 最坏） | 18.6 ms | 17.4 ms | 19.5 ms | 52.2 ms | 参考值（重建只在数据变化/大幅跳转时发生） |
-| move node + 重建父 way + 索引 | 17.8 µs | 17 µs | 27 µs | 42 µs | < 1 ms ✅ |
-| pick（节点/way） | 8.1 µs | 12 µs | 17 µs | 22 µs | < 16 ms ✅ |
-| **GPU frame（缓存命中，encode+submit+wait）** | 0.245 ms | **0.083 ms** | 0.38 ms | 4.52 ms | 60 FPS = 16.6 ms ✅ |
+| bbox query (z16 viewport) | 272 µs | 273 µs | 417 µs | 516 µs | < 1 ms |
+| **scene build (z16 editing viewport)** | 1.44 ms | **1.29 ms** | 2.33 ms | 2.63 ms | **< 16 ms ✅** |
+| scene build (fit-all worst case) | 18.6 ms | 17.4 ms | 19.5 ms | 52.2 ms | Reference value (rebuilds only happen on data change/large jump) |
+| move node + rebuild parent ways + index | 17.8 µs | 17 µs | 27 µs | 42 µs | < 1 ms ✅ |
+| pick (node/way) | 8.1 µs | 12 µs | 17 µs | 22 µs | < 16 ms ✅ |
+| **GPU frame (cache hit, encode+submit+wait)** | 0.245 ms | **0.083 ms** | 0.38 ms | 4.52 ms | 60 FPS = 16.6 ms ✅ |
 
-关键结论：
+Key conclusions:
 
-1. **编辑视口下 60 FPS 有充足余量**：场景重建 1.29 ms + GPU 0.08 ms ≈ 1.4 ms/帧。
-2. **平移/缩放不重建几何**：只写 32 字节相机 uniform（docs/05），所以交互帧成本 ≈ GPU 帧 + UI；场景重建只在"数据变化 / 跳转超过 25% 视口 / 离开批次原点 4 km"时发生。
-3. 全城视角（fit-all）重建 17 ms：由密度 LOD 控制绘制量（28,600 way / 57k 三角形），属于一次性开销，不是每帧成本。
+1. **There is ample headroom for 60 FPS in the editing viewport**: scene rebuild 1.29 ms + GPU 0.08 ms ≈ 1.4 ms/frame.
+2. **Panning/zooming does not rebuild geometry**: only a 32-byte camera uniform is written (docs/05), so the interactive frame cost ≈ GPU frame + UI; scene rebuild only happens on "data change / jump over 25% of the viewport / leaving the batch origin by 4 km".
+3. Whole-city view (fit-all) rebuild takes 17 ms: the draw amount is controlled by density LOD (28,600 ways / 57k triangles); it is a one-time cost, not a per-frame cost.
 
-### 4.3 GPU（真实 wgpu 离屏渲染）
+### 4.3 GPU (real wgpu offscreen rendering)
 
-| 场景 | 绘制内容 | 上传 | GPU 帧（含等待） | PNG |
+| Scenario | Drawn content | Upload | GPU frame (incl. wait) | PNG |
 |---|---|---|---|---|
-| Monaco @ z11，1600×1000 | 659 way / 4,622 三角形 / 2 draw calls | 128 KB / 0.11 ms | 4.95 ms（首次含管线初始化） | 8.0 ms（渲染+读回+编码） |
-| Bremen @ z9.21，1920×1200 | 20,237 way / 142,300 三角形 / 2 draw calls | 3.99 MB / 0.88 ms | 4.39 ms | 11.9 ms |
-| 1M 合成 @ z16，1600×1000 | 4,164 way + 12,638 节点 / 33,604 三角形 | 缓存命中（0 B） | 0.083 ms（P50） | — |
+| Monaco @ z11, 1600×1000 | 659 ways / 4,622 triangles / 2 draw calls | 128 KB / 0.11 ms | 4.95 ms (first frame includes pipeline initialization) | 8.0 ms (render+readback+encode) |
+| Bremen @ z9.21, 1920×1200 | 20,237 ways / 142,300 triangles / 2 draw calls | 3.99 MB / 0.88 ms | 4.39 ms | 11.9 ms |
+| 1M synthetic @ z16, 1600×1000 | 4,164 ways + 12,638 nodes / 33,604 triangles | Cache hit (0 B) | 0.083 ms (P50) | — |
 
-- 同一帧内 node/way/fill 三个批次 → **2–3 个 draw call**，而不是每对象一个。
-- 相机平移/缩放时几何不重传：`upload 0 B` 是预期结果（缓存命中）。
-- 支持 `TIMESTAMP_QUERY`（可做 GPU 计时），本阶段先用 CPU 侧 submit+wait 测量。
+- Three batches (node/way/fill) within the same frame → **2–3 draw calls**, instead of one per object.
+- Geometry is not re-uploaded when the camera pans/zooms: `upload 0 B` is the expected result (cache hit).
+- Supports `TIMESTAMP_QUERY` (GPU timing is possible); at this stage we measure with CPU-side submit+wait.
 
-### 4.4 内存（1M 合成对象）
+### 4.4 Memory (1M synthetic objects)
 
-| 项 | 数值 |
+| Item | Value |
 |---|---|
-| SoA + tag arena + ID 索引（`DataSet::mem_bytes`） | 138.7 MiB |
-| 节点世界坐标缓存（`WorldCache`，16 B/节点） | ~16 MiB |
-| 空间索引（rstar 两棵树 + entries 映射） | ~120 MiB（条目 1,312,250） |
-| **进程峰值 RSS** | **566.8 MiB** |
-| 每对象估算 | ~139 B（SoA 部分） |
+| SoA + tag arena + ID index (`DataSet::mem_bytes`) | 138.7 MiB |
+| Node world-coordinate cache (`WorldCache`, 16 B/node) | ~16 MiB |
+| Spatial index (two rstar trees + entries map) | ~120 MiB (1,312,250 entries) |
+| **Process peak RSS** | **566.8 MiB** |
+| Per-object estimate | ~139 B (SoA part) |
 
-> 峰值 RSS 远高于 `mem_bytes` 估算的原因：rstar 节点块、场景批次（顶点/索引）、PNG 缓冲与分配器碎片。10M 对象的峰值见 §4.5（若未跑则标 `【待实测】`）。
+> Why peak RSS is much higher than the `mem_bytes` estimate: rstar node blocks, scene batches (vertices/indices), PNG buffers, and allocator fragmentation. For the peak with 10M objects see §4.5 (mark `[to be measured]` if not run).
 
-### 4.5 10M 对象压力（实测）
+### 4.5 10M object stress (measured)
 
-`neo-prototype bench --synth 10000000 --iterations 5`（合成网格城市，node:way ≈ 3.2:1）：
+`neo-prototype bench --synth 10000000 --iterations 5` (synthetic grid city, node:way ≈ 3.2:1):
 
-| 项 | 数值 |
+| Item | Value |
 |---|---|
-| 对象数 | **10,001,406 节点 / 3,129,589 way / 78,210 关系** |
-| 构建（生成） | 3.31 s |
-| 空间索引构建 | 9,154.8 ms（13,130,995 条目） |
-| 反向引用构建 | 147.3 ms |
-| `DataSet::mem_bytes` 估算 | 1,693.1 MiB |
-| **进程峰值 RSS** | **4,159.1 MiB（4.06 GiB）** ✅（阶段 1 建议预算 ≤ 6 GB） |
-| 场景重建（z16 编辑视口） | **2.03 ms P50** / 2.71 ms P99 |
-| 场景重建（fit-all 最坏） | 143 ms P50（97,800 way 抽样绘制 / 195,600 三角形） |
+| Objects | **10,001,406 nodes / 3,129,589 ways / 78,210 relations** |
+| Build (generate) | 3.31 s |
+| Spatial index build | 9,154.8 ms (13,130,995 entries) |
+| Reverse reference build | 147.3 ms |
+| `DataSet::mem_bytes` estimate | 1,693.1 MiB |
+| **Process peak RSS** | **4,159.1 MiB (4.06 GiB)** ✅ (stage 1 suggested budget ≤ 6 GB) |
+| Scene rebuild (z16 editing viewport) | **2.03 ms P50** / 2.71 ms P99 |
+| Scene rebuild (fit-all worst case) | 143 ms P50 (97,800 ways sampled for drawing / 195,600 triangles) |
 | id lookup | 300 ns P50 |
 | pick | 195 µs P50 |
-| GPU 帧（缓存命中） | 0.23 ms P50 |
+| GPU frame (cache hit) | 0.23 ms P50 |
 
-结论：
+Conclusions:
 
-- **千万对象可导入、可索引、可交互**；编辑视口 2 ms 的场景重建成本随规模基本不变（因为绘制量由视口与 LOD 决定，而不是由总量决定）——这正是"绘制量由视口决定"设计目标的实测证据。
-- 主要随规模变差的项是**索引构建（9.2 s）**与**fit-all 重建（143 ms）**，两者都在阶段 2 的优化清单里。
-- 内存 4.06 GiB 中约 1.7 GiB 是 SoA + tag arena + ID 索引，其余是 rstar 节点块、世界坐标缓存、场景批次与分配器碎片。
+- **Ten million objects can be imported, indexed, and interacted with**; the 2 ms scene rebuild cost in the editing viewport is essentially constant with scale (because the draw amount is determined by the viewport and LOD, not by the total) — this is the measured evidence for the design goal "draw amount determined by the viewport".
+- The items that degrade most with scale are **index build (9.2 s)** and **fit-all rebuild (143 ms)**, both on the stage 2 optimization list.
+- Of the 4.06 GiB memory, about 1.7 GiB is SoA + tag arena + ID index; the rest is rstar node blocks, world-coordinate cache, scene batches, and allocator fragmentation.
 
-## 5 Gate-1 判定（详见 `docs/prototypes/gate-1-prototype.md`）
+## 5 Gate-1 verdict (see `docs/prototypes/gate-1-prototype.md` for details)
 
-| G1 判定项 | 结果 | 判定 |
+| G1 criterion | Result | Verdict |
 |---|---|---|
-| ① 1M 对象导入 | Bremen 真实 PBF 1.79M elem/s；1M 合成 0.19 s | ✅ |
-| ② 首帧时间（导入→可见） | Monaco 全链路 < 100 ms；Bremen 导入 1.12 s + 索引 1.2 s + 场景 90 ms | ⚠️ 需阶段 2 优化索引构建/并行解码 |
-| ③ 平移/缩放帧时间 | 场景重建 z16 = 1.29 ms P50 / 2.63 ms P99；平移不重建 | ✅ |
-| ④ 峰值 RSS（1M） | 566.8 MiB；**10M = 4,159.1 MiB（4.06 GiB）**，低于 6 GB 建议预算 | ✅ |
-| ⑤ GPU 拾取延迟 | 当前拾取在 CPU：12 µs P50（1M）/ 195 µs P50（10M）；设计选择，docs/04；GPU ID buffer 为可选优化 | ✅（口径修正） |
-| ⑥ 连续 10 分钟稳定性 | 8 秒 GUI 冒烟通过（窗口存活、PBF 加载 + 场景 + wgpu 首帧无崩溃）；10 分钟连续交互未跑 | ⚠️ 部分 |
-| ⑦ 三平台可构建 | 仅 Windows 本机验证；Linux/macOS 需 CI | ❌ 未验证 |
+| ① 1M object import | Bremen real PBF 1.79M elem/s; 1M synthetic 0.19 s | ✅ |
+| ② Time to first frame (import→visible) | Monaco full chain < 100 ms; Bremen import 1.12 s + index 1.2 s + scene 90 ms | ⚠️ Needs stage 2 optimization of index build/parallel decoding |
+| ③ Pan/zoom frame time | Scene rebuild z16 = 1.29 ms P50 / 2.63 ms P99; panning does not rebuild | ✅ |
+| ④ Peak RSS (1M) | 566.8 MiB; **10M = 4,159.1 MiB (4.06 GiB)**, below the 6 GB suggested budget | ✅ |
+| ⑤ GPU picking latency | Picking is currently on the CPU: 12 µs P50 (1M) / 195 µs P50 (10M); a design choice, docs/04; GPU ID buffer is an optional optimization | ✅ (methodology corrected) |
+| ⑥ 10-minute continuous stability | 8-second GUI smoke test passed (window stays alive, PBF load + scene + wgpu first frame without crashes); 10-minute continuous interaction not run | ⚠️ Partial |
+| ⑦ Buildable on three platforms | Only verified on local Windows; Linux/macOS need CI | ❌ Unverified |
 
-**结论：G1 = Conditional Go（有条件通过）**。编辑尺度交互、GPU 管线、1M/10M 内存均已达标；阻塞项只剩"三平台构建 + 10 分钟稳定性"，必须在进入阶段 2 前补齐（见 gate 报告）。
+**Conclusion: G1 = Conditional Go**. Editing-scale interaction, the GPU pipeline, and 1M/10M memory have all met the targets; the only blocking items left are "three-platform build + 10-minute stability", which must be completed before entering stage 2 (see the gate report).
 
-## 6 已知瓶颈与下一步（按收益排序）
+## 6 Known bottlenecks and next steps (ordered by payoff)
 
-1. **PBF 并行解码**（阶段 2）：单线程 1.79M elem/s；blob 级 rayon 并行预期 3–5×。
-2. **空间索引构建**（1M 1.3M 条目 572 ms；Bremen 1.2 s）：可并行 bulk_load / 分块构建。
-3. **全城视角场景重建 17–90 ms**：真正的修复是"按脏 way 增量重建批次"（ADR-0009 的下一层），以及把几何缓存做成 per-way 可失效条目。
-4. **bbox query 273 µs**：返回 7,922 条目的 Vec 分配是主要成本；场景路径已改为零分配迭代器，拾取路径仍是小范围查询。
-5. **PBF 写侧**：`osmpbf` 只读，需要自研 varint encoder（docs/08）。
+1. **PBF parallel decoding** (stage 2): single-threaded 1.79M elem/s; blob-level rayon parallelism is expected to give 3–5×.
+2. **Spatial index build** (1M with 1.3M entries takes 572 ms; Bremen 1.2 s): parallel bulk_load / chunked build is possible.
+3. **Whole-city view scene rebuild 17–90 ms**: the real fix is "incrementally rebuild batches from dirty ways" (the next level of ADR-0009), plus making the geometry cache per-way invalidatable entries.
+4. **bbox query 273 µs**: the Vec allocation for 7,922 returned entries is the main cost; the scene path has already been changed to a zero-allocation iterator, while the picking path is still a small-range query.
+5. **PBF write side**: `osmpbf` is read-only, so a custom varint encoder is needed (docs/08).
 
-## 7 复现
+## 7 Reproduction
 
 ```powershell
-# 一次性准备（README 有完整说明）
+# One-time preparation (README has full instructions)
 # .research/data/monaco-latest.osm.pbf / bremen-latest.osm.pbf
 pwsh scripts/bench.ps1 -Runs 3
-# 原始输出：out/bench-summary.md、out/prototype-bench.md、out/*.png
+# Raw output: out/bench-summary.md, out/prototype-bench.md, out/*.png
 ```
 
-## 8 参考
+## 8 References
 
-- wgpu 30 计时与 `PollType`：<https://docs.rs/wgpu/30.0.2/wgpu/>
-- rstar 0.14 bulk_load / 迭代器：<https://docs.rs/rstar/0.14.0/rstar/>
-- osmpbf 0.3.8：<https://docs.rs/osmpbf/0.3.8/osmpbf/>
-- 机器与数据来源：Geofabrik extracts <https://download.geofabrik.de/>
+- wgpu 30 timing and `PollType`: <https://docs.rs/wgpu/30.0.2/wgpu/>
+- rstar 0.14 bulk_load / iterators: <https://docs.rs/rstar/0.14.0/rstar/>
+- osmpbf 0.3.8: <https://docs.rs/osmpbf/0.3.8/osmpbf/>
+- Machine and data sources: Geofabrik extracts <https://download.geofabrik.de/>
 
 
-## 9 G2 / G3 验收结果（2026-11-15，第二轮）
+## 9 G2 / G3 acceptance results (2026-11-15, second round)
 
-自动化验收（`cargo test --workspace`，98 个测试全绿；本节 3 项为 G3 要求）：
+Automated acceptance (`cargo test --workspace`, all 98 tests green; the 3 items in this section are G3 requirements):
 
-| G3 判定项 | 测试 | 结果 |
+| G3 criterion | Test | Result |
 |---|---|---|
-| 随机 1000 次编辑 + 随机 undo/redo 后与"逐步重放"一致 | `crates/neo-editor/tests/g3_acceptance.rs::random_edits_with_undo_redo_match_replay` | ✅ 状态摘要（节点 ID/坐标/tag 数）逐位相等，且每步 `history.undo_len == 已应用操作数` |
-| 事务失败零副作用 | `...::failed_batch_rolls_back_and_keeps_history_clean` | ✅ 批量第二条失败 → 第一条回滚、历史不增长、坐标回到原值 |
-| journal replay 丢弃半条事务 | `...::journal_prefix_replay_drops_unfinished_transaction` + `journal::tests::committed_prefix_drops_unfinished_transaction` | ✅ 尾部未提交 MoveNode 未生效 |
-| OSC 写→读→再写语义等价（G2） | `crates/neo-io/tests/osc_roundtrip.rs::osc_write_read_write_is_semantically_stable` | ✅ create/modify/delete 分组 ID 集合一致（含负 ID 与删除对象） |
-| 一次拖动只产生 1 条历史 | `neo-tools::tests::drag_end_is_single_history_entry` + 桌面拖拽实现（预览不入历史） | ✅ |
-| 原子性/撤销单测 | `neo-editor` 15 个单测（AddNode/AddWay/Move/SetTags/SetWayNodes/Delete/Split/Merge/Reverse + undo/redo identity + merge） | ✅ |
+| 1000 random edits + random undo/redo stay consistent with "step-by-step replay" | `crates/neo-editor/tests/g3_acceptance.rs::random_edits_with_undo_redo_match_replay` | ✅ State summary (node IDs/coordinates/tag counts) bit-identical, and at every step `history.undo_len == number of applied operations` |
+| Transaction failure has zero side effects | `...::failed_batch_rolls_back_and_keeps_history_clean` | ✅ The second item in the batch fails → the first rolls back, history does not grow, coordinates return to their original values |
+| journal replay discards half a transaction | `...::journal_prefix_replay_drops_unfinished_transaction` + `journal::tests::committed_prefix_drops_unfinished_transaction` | ✅ The uncommitted MoveNode at the tail does not take effect |
+| OSC write→read→write semantically equivalent (G2) | `crates/neo-io/tests/osc_roundtrip.rs::osc_write_read_write_is_semantically_stable` | ✅ create/modify/delete grouped ID sets identical (including negative IDs and deleted objects) |
+| One drag produces only 1 history entry | `neo-tools::tests::drag_end_is_single_history_entry` + desktop drag implementation (preview is not entered into history) | ✅ |
+| Atomicity/undo unit tests | `neo-editor` 15 unit tests (AddNode/AddWay/Move/SetTags/SetWayNodes/Delete/Split/Merge/Reverse + undo/redo identity + merge) | ✅ |
 
-G2 相关（部分）：
+G2-related (partial):
 
-| G2 判定项 | 状态 |
+| G2 criterion | Status |
 |---|---|
-| OSM XML 0.6 读 + 两种写模式 + 往返语义等价 | ✅ `neo-io/xml.rs` 6 个单测 |
-| osmChange 0.6 读 + 写 + apply | ✅ `osc.rs`（写）+ `osc_read.rs`（读/应用，3 个单测） |
-| PBF 读（osmpbf） | ✅ Monaco/Bremen 实测（docs/14 §4） |
-| **PBF 写 encoder** | ✅ `neo-io/pbf_write.rs`（wire 编码 + zlib；写→osmpbf 读回全等，3 个集成测试 + 原型 `pbf-roundtrip`） |
-| 引用完整性 / 导入取消 | ✅ `neo-store/integrity.rs`（2 单测）、`ImportOptions.cancel`（2 集成测试） |
-| 10M 对拍 / 并行解码 | ❌ 待实现（TODO 2.7–2.8） |
+| OSM XML 0.6 read + two write modes + round-trip semantic equivalence | ✅ 6 unit tests in `neo-io/xml.rs` |
+| osmChange 0.6 read + write + apply | ✅ `osc.rs` (write) + `osc_read.rs` (read/apply, 3 unit tests) |
+| PBF read (osmpbf) | ✅ Monaco/Bremen measured (docs/14 §4) |
+| **PBF write encoder** | ✅ `neo-io/pbf_write.rs` (wire encoding + zlib; write→osmpbf read-back fully equal, 3 integration tests + prototype `pbf-roundtrip`) |
+| Referential integrity / import cancellation | ✅ `neo-store/integrity.rs` (2 unit tests), `ImportOptions.cancel` (2 integration tests) |
+| 10M comparison / parallel decoding | ❌ To be implemented (TODO 2.7–2.8) |
 
-复现：
+Reproduction:
 
 ```powershell
 cargo test -p neo-editor --test g3_acceptance
@@ -200,21 +200,20 @@ cargo test --workspace
 ```
 
 
-## 10 并行导入与 10M PBF 往返（2026-11-15）
+## 10 Parallel import and 10M PBF round-trip (2026-11-15)
 
-### 10.1 顺序 vs 并行 PBF 导入（release）
+### 10.1 Sequential vs parallel PBF import (release)
 
-| 数据 | 元素数 | 顺序导入 | 并行导入 | 加速比 |
+| Data | Elements | Sequential import | Parallel import | Speedup |
 |---|---:|---:|---:|---:|
-| Bremen（20.3 MiB） | 2,003,507 | 1.163 s | **0.899 s** | 1.29× |
-| Monaco（0.7 MiB） | 48,347 | 0.028 s | 0.026 s | 1.11× |
+| Bremen (20.3 MiB) | 2,003,507 | 1.163 s | **0.899 s** | 1.29× |
+| Monaco (0.7 MiB) | 48,347 | 0.028 s | 0.026 s | 1.11× |
 
-结论：blob 级并行解码有效但**未达 3× 目标**。Amdahl：单线程装配（string interning + ID HashMap 插入）
-占绝对大头；下一步若需要更高吞吐应做"分区 DataSet + 合并"或按 id 分片并行 interning。
+Conclusion: blob-level parallel decoding is effective but **falls short of the 3× target**. By Amdahl's law, single-threaded assembly (string interning + ID HashMap insertion) accounts for the dominant share; if higher throughput is needed next, do "partitioned DataSet + merge" or shard interning by id.
 
-复现：`neo-prototype compare-import --pbf .research/data/bremen-latest.osm.pbf`
+Reproduction: `neo-prototype compare-import --pbf .research/data/bremen-latest.osm.pbf`
 
-### 10.2 10M 合成数据 PBF 写→读对拍
+### 10.2 10M synthetic data PBF write→read comparison
 
 ```
 synthetic: 10,001,406 nodes, 2,503,908 ways, 78,210 relations in 2.60s
@@ -225,96 +224,85 @@ integrity: 10,001,406 nodes, 3,129,589 ways, 78,210 relations, 0 issues
 OK: PBF roundtrip preserved object counts
 ```
 
-写侧 encoder + 读侧 osmpbf 在 10M 规模上语义一致（坐标/引用/成员/tag 计数），格式正确性闭环。
+The write-side encoder and the read-side osmpbf are semantically consistent at 10M scale (coordinates/references/members/tag counts), closing the format-correctness loop.
 
-复现：`neo-prototype pbf-roundtrip --synth 10000000 --out out/10m-roundtrip.pbf`
+Reproduction: `neo-prototype pbf-roundtrip --synth 10000000 --out out/10m-roundtrip.pbf`
 
 
-## 11 会话文件与多选（2026-11-15）
+## 11 Session files and multi-select (2026-11-15)
 
-| 验收项 | 测试/证据 | 结果 |
+| Acceptance item | Test/evidence | Result |
 |---|---|---|
-| `.jos` 往返（viewport/layers/selection） | `neo-persist::session::tests::jos_roundtrip` | ✅ |
-| 未知插件图层段被容忍 | `...::unknown_elements_and_attributes_are_ignored` | ✅ |
-| `.joz` ZIP 嵌入图层 + 读取解压 | `...::joz_embeds_and_extracts_layers` | ✅ |
-| Shift+点击多选 | `neo-tools::multi_select_tests::shift_click_extends_selection` | ✅ |
+| `.jos` round-trip (viewport/layers/selection) | `neo-persist::session::tests::jos_roundtrip` | ✅ |
+| Unknown plugin layer sections are tolerated | `...::unknown_elements_and_attributes_are_ignored` | ✅ |
+| `.joz` ZIP-embedded layers + read/extract | `...::joz_embeds_and_extracts_layers` | ✅ |
+| Shift+click multi-select | `neo-tools::multi_select_tests::shift_click_extends_selection` | ✅ |
 
-桌面端已接入：保存/打开会话（`.jos`/`.joz`）、批量删除、合并两条 way、relation 属性/标签编辑。
+The desktop app is wired up: save/open session (`.jos`/`.joz`), batch delete, merge two ways, relation property/tag editing.
 
 
-## 12 桌面 UI 模拟输入手测（2026-11-15）
+## 12 Desktop UI simulated-input manual test (2026-11-15)
 
-工具：`scripts/ui_check.ps1`（Win32 `SetCursorPos`/`mouse_event`/`keybd_event` + `CopyFromScreen` 截图；窗口按标题
-`NEO — Next Editor for OSM` 定位、按 DPI 换算坐标）。截图：`out/ui-check/01-initial.png` … `13-zoom-back.png`。
+Tools: `scripts/ui_check.ps1` (Win32 `SetCursorPos`/`mouse_event`/`keybd_event` + `CopyFromScreen` screenshots; the window is located by the title `NEO — Next Editor for OSM`, with coordinates converted by DPI). Screenshots: `out/ui-check/01-initial.png` … `13-zoom-back.png`.
 
-| 场景 | 结果 |
+| Scenario | Result |
 |---|---|
-| 启动 + Monaco PBF（41844 N / 6281 W / 222 R）+ wgpu 首帧 | ✅ z15.1（修复前 z11） |
-| 中文字体/工具栏/左右面板/状态栏 | ✅（修复前 tofu 方块） |
-| A 绘制：点击建节点/way（吸附近似节点）、Enter 结束线 | ✅ 节点+2 / way+1 / 脏 3 / 撤销 4 |
-| Ctrl+Z×3 / Ctrl+Y×3 | ✅ 撤销 1 重做 3 ↔ 撤销 4 重做 0，消息与版本号正确 |
-| S 选择节点 → 右侧属性（id/lat/lon/version）+ Tags 编辑面板 | ✅ |
-| 删除被 way 引用的节点 | ✅ 级联删除：先把它从各 way 摘掉，2 点 way 会先提示再整条删除（`plan_delete`） |
-| 同时选中节点与其 way 删除 | ✅ 一批提交、一次撤销（修复前逐条 execute 且节点先检查 → 永远 "0/2"） |
-| 工具栏「示例数据」、滚轮缩放 | ✅ 重置为 v1；z15.49→15.82→15.49 |
-| 原生文件对话框 / Shift 多选 / 合并按钮 | ⚠️ 未覆盖（需人工或更精确的 GUI 自动化） |
+| Startup + Monaco PBF (41844 N / 6281 W / 222 R) + wgpu first frame | ✅ z15.1 (z11 before the fix) |
+| Chinese font/toolbar/left-right panels/status bar | ✅ (tofu boxes before the fix) |
+| A drawing: click to create nodes/way (snapping to nearby nodes), Enter to finish the line | ✅ nodes+2 / ways+1 / dirty 3 / undo 4 |
+| Ctrl+Z×3 / Ctrl+Y×3 | ✅ undo 1 redo 3 ↔ undo 4 redo 0, messages and version numbers correct |
+| S select node → right-side properties (id/lat/lon/version) + Tags editing panel | ✅ |
+| Delete a node referenced by ways | ✅ Cascade delete: first detach it from each way; a 2-point way prompts first and then deletes the whole way (`plan_delete`) |
+| Select a node and its way and delete both | ✅ One batch commit, one undo (before the fix, each was executed separately and the node was checked first → always "0/2") |
+| Toolbar "Sample data", scroll-wheel zoom | ✅ Resets to v1; z15.49→15.82→15.49 |
+| Native file dialog / Shift multi-select / merge button | ⚠️ Not covered (requires manual testing or more precise GUI automation) |
 
-修复的 UI 缺陷：CJK 字体缺失、状态消息不可见、动作后未请求重绘（UI 滞后一步）、初始视图分位点拟合。
+UI defects fixed: missing CJK font, invisible status messages, no redraw requested after actions (UI lagging one step), initial view quantile fitting.
 
 
-## 13 桌面渲染卡顿：根因与修复（2026-11-15）
+## 13 Desktop rendering stutter: root cause and fix (2026-11-15)
 
-**现象**：拖动节点/缩放时明显卡顿（"渲染太慢"）。
+**Symptom**: noticeable stutter when dragging nodes/zooming ("rendering too slow").
 
-**诊断方法**：`NEO_PERF_LOG=out/ui-check/perf.log RUST_LOG=neo_desktop=debug,neo_render=debug` + `scripts/ui_check.ps1` 模拟输入，
-日志每帧记录 `scene build` / `gpu upload` / `ui frame`。
+**Diagnosis method**: `NEO_PERF_LOG=out/ui-check/perf.log RUST_LOG=neo_desktop=debug,neo_render=debug` + `scripts/ui_check.ps1` simulated input; the log records `scene build` / `gpu upload` / `ui frame` every frame.
 
-**根因**：节点拖拽预览把每个 mousemove 都写回 `DataSet`（`preview_move_node`），`data.version()` 每帧递增，
-`ensure_scene` 因此每帧整场重建（Monaco 7–8 ms / 200k synth 14–15 ms），`GpuScene` 按 version 全量重传
-（Monaco 3.9 MiB / synth 200k 1.9 MiB），叠加 UI 帧耗时后约 20–40 ms/帧。
+**Root cause**: the node-drag preview wrote every mousemove back to `DataSet` (`preview_move_node`), so `data.version()` incremented every frame and `ensure_scene` therefore rebuilt the entire scene every frame (Monaco 7–8 ms / 200k synth 14–15 ms), while `GpuScene` re-uploaded everything by version (Monaco 3.9 MiB / synth 200k 1.9 MiB); combined with UI frame time this came to about 20–40 ms/frame.
 
-| synth:200000，拖拽节点约 1s | 修复前 | 修复后 |
+| synth:200000, dragging a node for about 1s | Before fix | After fix |
 |---|---:|---:|
-| scene build 次数 | 78 | **2** |
-| gpu upload 次数 / 字节 | 78 / 1.86 MiB×78 | **2 / 3.7 MiB** |
-| ui frame > 8 ms | 全部 | **2** |
+| scene build count | 78 | **2** |
+| gpu upload count / bytes | 78 / 1.86 MiB×78 | **2 / 3.7 MiB** |
+| ui frame > 8 ms | all | **2** |
 
-**修复**：
-1. 预览不写数据：`DragState.current: LatLon` + egui 叠加层画邻居连线/目标点（`Editor::node_neighbors`）；
-2. 释放时单次 `MoveNode`（单条历史、单次重建 + 上传）；
-3. `MoveNode` 标记 `ChangeState::Modified`（脏对象计数与上传 diff 正确）；
-4. 双击启动 CWD 不是仓库根导致加载 synth 的问题：示例数据按 exe 相对路径查找；
-5. 新增 `NEO_SYNTH_N` / `NEO_PERF_LOG` 测试钩子。
+**Fix**:
+1. Preview does not write data: `DragState.current: LatLon` + egui overlay drawing neighbor connections/target point (`Editor::node_neighbors`);
+2. On release, a single `MoveNode` (single history entry, single rebuild + upload);
+3. `MoveNode` marks `ChangeState::Modified` (dirty object count and upload diff are correct);
+4. Problem where the double-click startup CWD is not the repo root, causing synth load failure: sample data is looked up by a path relative to the exe;
+5. Added `NEO_SYNTH_N` / `NEO_PERF_LOG` test hooks.
 
-复现：`powershell -File scripts\ui_check.ps1 start|drag|truepan`，日志见 `out/ui-check/perf-*.log`。
-
-
-### 13.1 追加：放大到 z19 再缩小后地图变空（2026-11-15）
-
-**现象**：只做缩放、没有任何编辑，放大到 z19+ 再缩小，地图只剩几条线（视口裁剪结果停留在高倍率）。
-
-**根因**：`ensure_scene` 的**重建触发条件只有**「数据版本变化 / 原点重基 >4km / 平移超过 25% 视口」，
-缩放变化不会触发重建；而放大到 z19 时的高倍率视口（或此时轻微平移触发的重建）把场景裁剪到很小范围，
-缩小回 z16 后仍渲染这份旧批次 → 只剩少量元素。另外 `GpuScene` 的上传缓存 key 只有
-(data version, origin)，即使重建，缩放后 origin/version 未变也会**跳过重传**。
-
-**修复**：
-1. `ensure_scene` 增加触发条件：`|scene.camera.zoom - camera.zoom| > 0.5` → 重建（LOD/裁剪随缩放更新）；
-2. `GpuScene` 上传 key 增加 `camera.zoom`（几何含 LOD，缩放重建后必须重传）；
-3. 自动化回归：`scripts/ui_check.ps1 zoomcycle`（z16 → 滚轮放大到 z19+ → 缩小到 z13 → 再放大到 z16），
-   截图 `23-zoomed-in-z19.png` / `24-zoomed-out-z12.png` / `25-zoomed-in-z16-again.png`，
-   全程 10 次重建/10 次上传，最终地图与缩放前一致。
+Reproduction: `powershell -File scripts\ui_check.ps1 start|drag|truepan`, logs in `out/ui-check/perf-*.log`.
 
 
-### 13.2 选中要素的可拖动外边距（2026-11-15）
+### 13.1 Addendum: map goes blank after zooming in to z19 and back out (2026-11-15)
 
-选中要素只有在鼠标位于其**屏幕外边距 16px** 内时才可拖动：节点按点距离、way 按折线线段距离；
-判定使用**按下原点**（`pointer.press_origin()`），避免 egui 拖拽阈值（~6px）触发时指针已移动导致误判。
-远离要素的拖动不会移动任何对象。
+**Symptom**: only zooming, no edits at all; zoom in to z19+ and then out, and only a few lines remain on the map (the viewport culling result stays at the high magnification).
 
-自动化验证（`NEO_TEST_SELECT=node` 选中 z19 节点，红圈位置由截图定位）：
+**Root cause**: the **only rebuild triggers** in `ensure_scene` are "data version change / origin rebase >4km / pan over 25% of the viewport", so zoom changes do not trigger a rebuild; and when zoomed in to z19, the high-magnification viewport (or a rebuild triggered by a slight pan at that moment) culls the scene to a very small range, and after zooming back out to z16 the old batch is still rendered → only a few elements remain. In addition, the `GpuScene` upload cache key is only (data version, origin), so even if the scene is rebuilt, when origin/version are unchanged after zooming the upload is **skipped**.
 
-| 起点 | 结果 |
+**Fix**:
+1. `ensure_scene` gains a trigger condition: `|scene.camera.zoom - camera.zoom| > 0.5` → rebuild (LOD/culling updated with zoom);
+2. `GpuScene` upload key gains `camera.zoom` (geometry contains LOD, so it must be re-uploaded after a zoom rebuild);
+3. Automated regression: `scripts/ui_check.ps1 zoomcycle` (z16 → scroll-wheel zoom in to z19+ → zoom out to z13 → zoom back in to z16), screenshots `23-zoomed-in-z19.png` / `24-zoomed-out-z12.png` / `25-zoomed-in-z16-again.png`; 10 rebuilds/10 uploads over the whole run, and the final map matches the pre-zoom state.
+
+
+### 13.2 Draggable outer margin for selected features (2026-11-15)
+
+Selected features can only be dragged when the mouse is within **16 px of their screen-space outer margin**: nodes by point distance, ways by polyline-segment distance; the test uses the **press origin** (`pointer.press_origin()`), avoiding misjudgment when the egui drag threshold (~6px) triggers after the pointer has already moved. A drag far away from the feature moves no objects.
+
+Automated verification (`NEO_TEST_SELECT=node` selects a z19 node; the red-circle position is located from screenshots):
+
+| Start point | Result |
 |---|---|
-| 距离节点 ≤16px | 撤销 1、`移动 1 个节点`、坐标更新 ✅ |
-| 距离节点数百 px（空白区域） | 撤销 0、无移动 ✅ |
+| Within ≤16px of the node | undo 1, move status message shown, coordinates updated ✅ |
+| Hundreds of px from the node (empty area) | undo 0, no movement ✅ |

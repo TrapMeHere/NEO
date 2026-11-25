@@ -1,6 +1,6 @@
-//! NEO 启动器：检查旁路版本提示后拉起编辑器。
+//! NEO launcher: checks sidecar version hints, then starts the editor.
 //!
-//! 旁路缺失时仍启动编辑器；对应功能由编辑器自行降级。
+//! The editor still starts when sidecars are missing; the corresponding features degrade in the editor.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 

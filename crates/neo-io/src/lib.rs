@@ -1,13 +1,13 @@
-//! # neo-io — OSM 数据读写
+//! # neo-io — OSM data reading and writing
 //!
-//! * [`pbf`]：PBF 导入（`osmpbf` 0.3.8，只读；并行解码设计见 docs/08）；
-//! * [`osc`]：osmChange 0.6 输出（上传 diff 的唯一格式，注意不是 "OSC 0.3"）；
-//! * [`synth`]：确定性合成数据集，用于性能基准与回归（不依赖外部数据）。
+//! * [`pbf`]: PBF import (`osmpbf` 0.3.8, read-only; parallel decoding design in docs/08);
+//! * [`osc`]: osmChange 0.6 output (the only format for upload diffs; note it is not "OSC 0.3");
+//! * [`synth`]: deterministic synthetic datasets for performance benchmarks and regressions (no external data).
 //!
-//! 写 PBF 需要自研 encoder（osmpbf 不提供写侧），见 docs/08 §2.7；本期先把
-//! XML/osmChange 往返做对，PBF 写作为阶段 2 的独立任务。
+//! Writing PBF needs a self-built encoder (osmpbf offers no write side), see docs/08 §2.7; this iteration gets
+//! XML/osmChange round-trips right first, and PBF writing is a separate stage-2 task.
 //!
-//! 依赖方向：`neo-core`/`neo-osm`/`neo-store` → 本 crate；本 crate 不做渲染、不碰 UI。
+//! Dependency direction: `neo-core`/`neo-osm`/`neo-store` → this crate; this crate does no rendering and never touches the UI.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

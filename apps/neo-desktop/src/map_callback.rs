@@ -1,14 +1,14 @@
-//! egui-wgpu 集成的全部代码（~60 行）。
+//! All of the egui-wgpu integration (~60 lines).
 //!
-//! 这是 UI 层与渲染层唯一的接触点：`MapCallback` 实现 [`egui_wgpu::CallbackTrait`]，
-//! 从 `Renderer::callback_resources` 里取出 [`MapGpu`]，在 `prepare` 阶段上传/更新
-//! uniform，在 `paint` 阶段把 draw call 发进 egui 自己的 render pass。
+//! This is the only contact point between the UI layer and the render layer: `MapCallback` implements [`egui_wgpu::CallbackTrait`],
+//! pulls [`MapGpu`] out of `Renderer::callback_resources`, uploads/updates the uniform in `prepare`,
+//! and issues draw calls into egui's own render pass in `paint`.
 //!
-//! 关键约束（docs/05 §2.4，已按 wgpu 30 / egui-wgpu 0.36.2 校准）：
-//! * pipeline 的 color format 必须等于 `RenderState::target_format`；
-//! * pipeline 的 sample_count 必须等于 `RendererOptions::msaa_samples`
-//!   （eframe 用 `NativeOptions::multisampling`，`0` 与 `1` 都是"关"）；
-//! * `paint` 给的 pass 生命周期是 `'static`，资源来自 `CallbackResources` 借用。
+//! Key constraints (docs/05 §2.4, calibrated against wgpu 30 / egui-wgpu 0.36.2):
+//! * The pipeline's color format must equal `RenderState::target_format`;
+//! * The pipeline's sample_count must equal `RendererOptions::msaa_samples`
+//!   (eframe uses `NativeOptions::multisampling`; both `0` and `1` mean "off");
+//! * The pass lifetime given to `paint` is `'static`; resources come from a `CallbackResources` borrow.
 
 use std::sync::Arc;
 
@@ -17,15 +17,15 @@ use neo_geo::Camera;
 use neo_render::MapGpu;
 use neo_scene::SceneFrame;
 
-/// 一帧地图绘制回调。
+/// One map frame draw callback.
 pub struct MapCallback {
-    /// 场景（不可变，跨线程共享）。
+    /// Scene (immutable, shared across threads).
     pub scene: Arc<SceneFrame>,
-    /// 当前相机。
+    /// Current camera.
     pub camera: Camera,
-    /// 画布尺寸（物理像素，来自 egui rect × pixels_per_point）。
+    /// Canvas size (physical pixels, from egui rect × pixels_per_point).
     pub viewport_px: [u32; 2],
-    /// 是否对数据去色（非活动图层只读）。
+    /// Whether to desaturate the data (inactive layers are read-only).
     pub grey: bool,
 }
 

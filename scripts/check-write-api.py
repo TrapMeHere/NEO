@@ -52,7 +52,7 @@ def main() -> int:
         in_tests = False
         for lineno, line in enumerate(text.splitlines(), start=1):
             if TEST_MODULE.match(line):
-                # 约定：测试模块放在文件末尾；其后的代码允许构造测试数据集。
+                # Convention: test modules live at the end of the file; code after them may construct test datasets.
                 in_tests = True
             if in_tests or line.lstrip().startswith("//"):
                 continue

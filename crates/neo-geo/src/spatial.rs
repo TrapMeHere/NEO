@@ -1,18 +1,18 @@
-//! 空间索引：rstar R-tree（**按对象类型分树**）。
+//! Spatial index: rstar R-tree (**separate trees per object type**).
 //!
-//! 双层索引中的**对象层**：节点（点）、Way（预计算 AABB）。Relation 不直接进空间索引
-//! ——它没有自己的坐标，bbox 由成员派生（见 docs/04）。
+//! The **object tier** of the two-tier index: nodes (points), Ways (precomputed AABBs). Relations do not enter the spatial index
+//! directly — they have no coordinates of their own, and their bbox is derived from members (see docs/04).
 //!
-//! 为什么 node 和 way 各一棵树：
-//! 城市级缩放下"所有 way 都在视口内"是常态，如果两种对象混在一棵树里，只遍历 way 时
-//! 仍然要扫描全部 node 条目（原型实测：200 万条目视角下多花约 100 ms）。分树后
-//! `for_each_way` 只碰 way 树，遍历量降到 1/6。
+//! Why separate trees for nodes and ways:
+//! At city-level zoom "all ways are within the viewport" is the norm; if both object types shared one tree, iterating only ways
+//! would still scan every node entry (prototype measurement: about 100 ms extra at 2 million entries). After splitting,
+//! `for_each_way` only touches the way tree, cutting traversal to 1/6.
 //!
-//! 构建策略：
+//! Construction strategy:
 //!
-//! * 导入/大批量变更后用 `RTree::bulk_load`（O(n log n)，比逐个 insert 快一个量级）；
-//! * 交互编辑时用 [`SpatialIndex::update_way`] / [`SpatialIndex::update_node`] 增量更新；
-//! * `RTree::remove` 需要"相同元素"，因此额外维护 `entries` 映射拿到旧 bbox。
+//! * after import/bulk changes, use `RTree::bulk_load` (O(n log n), an order of magnitude faster than inserting one by one);
+//! * during interactive editing, update incrementally with [`SpatialIndex::update_way`] / [`SpatialIndex::update_node`];
+//! * `RTree::remove` requires "the same element", so an extra `entries` map is maintained to look up the old bbox.
 
 use std::collections::HashMap;
 
@@ -29,31 +29,31 @@ fn key(kind: ObjectKind, slot: u32) -> u64 {
     ((kind as u64) << 32) | u64::from(slot)
 }
 
-/// 空间索引条目。
+/// Spatial index entry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpatialEntry {
-    /// 对象种类（Node / Way）。
+    /// Object kind (Node / Way).
     pub kind: ObjectKind,
-    /// 槽位下标（配合 generation 还原句柄）。
+    /// Slot index (combined with generation to restore the handle).
     pub slot: u32,
-    /// 槽位代号。
+    /// Slot generation.
     pub generation: u32,
-    /// 世界坐标包围盒。
+    /// World-coordinate bounding box.
     pub bounds: WorldBounds,
 }
 
 impl SpatialEntry {
-    /// 节点句柄（若不是节点返回 `None`）。
+    /// Node handle (returns `None` if it is not a node).
     pub fn as_node(self) -> Option<Handle<NodeSlot>> {
         (self.kind == ObjectKind::Node).then(|| Handle::new(self.slot, self.generation))
     }
 
-    /// Way 句柄。
+    /// Way handle.
     pub fn as_way(self) -> Option<Handle<WaySlot>> {
         (self.kind == ObjectKind::Way).then(|| Handle::new(self.slot, self.generation))
     }
 
-    /// 命中测试优先级：节点优先于 way。
+    /// Hit-testing priority: nodes take priority over ways.
     pub fn priority(self) -> u8 {
         match self.kind {
             ObjectKind::Node => 0,
@@ -74,12 +74,12 @@ impl RTreeObject for SpatialEntry {
     }
 }
 
-/// 对象空间索引（node / way 分树）。
+/// Object spatial index (separate node / way trees).
 #[derive(Debug)]
 pub struct SpatialIndex {
     node_tree: RTree<SpatialEntry>,
     way_tree: RTree<SpatialEntry>,
-    /// slot key -> 已注册条目（用于增量删除）。
+    /// slot key -> registered entry (for incremental deletion).
     entries: HashMap<u64, SpatialEntry>,
 }
 
@@ -90,7 +90,7 @@ impl Default for SpatialIndex {
 }
 
 impl SpatialIndex {
-    /// 空索引。
+    /// Empty index.
     pub fn new() -> Self {
         Self {
             node_tree: RTree::new(),
@@ -99,34 +99,34 @@ impl SpatialIndex {
         }
     }
 
-    /// 条目总数。
+    /// Total number of entries.
     pub fn len(&self) -> usize {
         self.node_tree.size() + self.way_tree.size()
     }
 
-    /// 是否为空。
+    /// Whether it is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// 节点条目数。
+    /// Number of node entries.
     pub fn node_count(&self) -> usize {
         self.node_tree.size()
     }
 
-    /// Way 条目数。
+    /// Number of Way entries.
     pub fn way_count(&self) -> usize {
         self.way_tree.size()
     }
 
-    /// 从数据集全量构建。
+    /// Build fully from the dataset.
     pub fn build(data: &DataSet) -> Self {
         let mut nodes = Vec::with_capacity(data.node_count());
         let mut ways = Vec::with_capacity(data.way_count());
 
         for node in data.iter_nodes() {
-            // 服务端已删除（visible=false）的对象不进入空间索引：否则导入历史
-            // 数据后仍能被拾取/渲染。
+            // Objects deleted on the server (visible=false) do not enter the spatial index; otherwise they could still be picked/rendered
+            // after importing historical data.
             if !node.meta.visible {
                 continue;
             }
@@ -163,7 +163,7 @@ impl SpatialIndex {
         }
     }
 
-    /// 包围盒查询（返回所有相交条目）。
+    /// Bounding-box query (returns all intersecting entries).
     pub fn query(&self, bounds: WorldBounds) -> Vec<SpatialEntry> {
         let env = AABB::from_corners([bounds.min.x, bounds.min.y], [bounds.max.x, bounds.max.y]);
         let mut out: Vec<SpatialEntry> = self
@@ -175,7 +175,7 @@ impl SpatialIndex {
         out
     }
 
-    /// 零分配遍历：对包围盒内每个条目调用 `f`（不构造中间 Vec）。
+    /// Allocation-free traversal: call `f` for each entry in the bbox (without building an intermediate Vec).
     pub fn for_each_in<F>(&self, bounds: WorldBounds, mut f: F)
     where
         F: FnMut(&SpatialEntry),
@@ -189,7 +189,7 @@ impl SpatialIndex {
         }
     }
 
-    /// 只遍历 Way（不触碰 node 树）。
+    /// Traverse only Ways (without touching the node tree).
     pub fn for_each_way<F>(&self, bounds: WorldBounds, mut f: F)
     where
         F: FnMut(&SpatialEntry),
@@ -200,7 +200,7 @@ impl SpatialIndex {
         }
     }
 
-    /// 只遍历 Node。
+    /// Traverse only Nodes.
     pub fn for_each_node<F>(&self, bounds: WorldBounds, mut f: F)
     where
         F: FnMut(&SpatialEntry),
@@ -211,7 +211,7 @@ impl SpatialIndex {
         }
     }
 
-    /// 只查询 Way。
+    /// Query only Ways.
     pub fn query_ways(&self, bounds: WorldBounds) -> Vec<SpatialEntry> {
         let env = AABB::from_corners([bounds.min.x, bounds.min.y], [bounds.max.x, bounds.max.y]);
         self.way_tree
@@ -220,7 +220,7 @@ impl SpatialIndex {
             .collect()
     }
 
-    /// 只查询 Node。
+    /// Query only Nodes.
     pub fn query_nodes(&self, bounds: WorldBounds) -> Vec<SpatialEntry> {
         let env = AABB::from_corners([bounds.min.x, bounds.min.y], [bounds.max.x, bounds.max.y]);
         self.node_tree
@@ -229,7 +229,7 @@ impl SpatialIndex {
             .collect()
     }
 
-    /// 增量更新节点。
+    /// Incrementally update a node.
     pub fn update_node(&mut self, handle: Handle<NodeSlot>, node: neo_core::LatLon) {
         self.remove_key(ObjectKind::Node, handle.index());
         let wp = WorldPoint::from_latlon(node);
@@ -241,7 +241,7 @@ impl SpatialIndex {
         });
     }
 
-    /// 增量更新一条 way 的 bbox。
+    /// Incrementally update one way's bbox.
     pub fn update_way(&mut self, data: &DataSet, handle: Handle<WaySlot>) -> bool {
         self.remove_key(ObjectKind::Way, handle.index());
         let Some(bounds) = geometry::way_bounds(data, handle) else {
@@ -256,7 +256,7 @@ impl SpatialIndex {
         true
     }
 
-    /// 删除某对象条目。
+    /// Remove an object's entry.
     pub fn remove(&mut self, kind: ObjectKind, slot: u32) -> bool {
         self.remove_key(kind, slot)
     }
@@ -284,7 +284,7 @@ impl SpatialIndex {
         self.tree_mut(entry.kind).insert(entry);
     }
 
-    /// 估算内存。
+    /// Estimate memory.
     pub fn mem_bytes(&self) -> ByteSize {
         ByteSize(
             self.entries.capacity()

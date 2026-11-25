@@ -1,39 +1,39 @@
-# 09 · OSM API 0.6 与同步（API & Sync）
+# 09 · OSM API 0.6 and Sync (API & Sync)
 
-本篇定义 `neo-api`：面向 OSM API 0.6 的客户端与同步策略，覆盖 OAuth2 鉴权、changeset 生命周期、diff 上传、冲突处理、按需下载与离线队列。设计基调是**乐观锁 + 服务端事务不跨请求**：客户端必须自己承担"版本校验、分块、补偿"的责任，因为服务端只保证单次 `upload` 请求的原子性。
+This document defines `neo-api`: the client and sync strategy for OSM API 0.6, covering OAuth2 authentication, changeset lifecycle, diff upload, conflict handling, on-demand downloads, and the offline queue. The design baseline is **optimistic locking + server transactions do not span requests**: the client must take on "version checking, chunking, and compensation" itself, because the server only guarantees atomicity for a single `upload` request.
 
-## 1 目标与范围
+## 1 Goals and Scope
 
-| 编号 | 目标 | 判定 |
+| # | Goal | Judgement |
 |---|---|---|
-| S1 | 完整替代 JOSM 上传路径：鉴权 → 建 changeset → 上传 diff → 关 changeset | `diffResult` 全量成功 |
-| S2 | 冲突（409/412）可定位到具体对象并给出解决入口 | `ConflictReport` 逐对象可操作 |
-| S3 | 断网/失败不丢编辑：排队 + 重放 | 重启后队列仍在（[10](./10-persistence-and-recovery.md)） |
-| S4 | 下载结果满足引用完整性，缺失引用**显式建模** | `DownloadBatch::incomplete` 非空即 UI 提示 |
+| S1 | Fully replace the JOSM upload path: authenticate → create changeset → upload diff → close changeset | `diffResult` reports full success |
+| S2 | Conflicts (409/412) are localizable to a specific object and come with a resolution entry point | `ConflictReport` is actionable per object |
+| S3 | Network loss / failure never loses edits: queue + replay | the queue still exists after a restart ([10](./10-persistence-and-recovery.md)) |
+| S4 | Download results satisfy referential integrity; missing references are **modeled explicitly** | a non-empty `DownloadBatch::incomplete` triggers a UI notice |
 
-**范围外**：Overpass、replication diff（minute/hourly）、GPX 上传（multipart）、diary、用户偏好写入；`/api/0.6/notes` 仅做读与"新建 note"。
-**依赖**：`neo-api → neo-core, neo-osm`（不依赖 store/editor；差异由上层以 `EditDiff` 传入）；网络栈 `tokio 1.54` + `reqwest 0.13.5`，错误 `thiserror 2.0`。
+**Out of scope**: Overpass, replication diffs (minute/hourly), GPX upload (multipart), diary, user-preference writes; `/api/0.6/notes` is read-only plus "create note".
+**Dependencies**: `neo-api → neo-core, neo-osm` (no dependency on store/editor; diffs are passed in from above as `EditDiff`); network stack `tokio 1.54` + `reqwest 0.13.5`, errors via `thiserror 2.0`.
 
-## 2 设计
+## 2 Design
 
-### 2.1 端点矩阵（已核实）
+### 2.1 Endpoint Matrix (verified)
 
-> **重要更正**：任务描述中的 `POST /api/0.6/changeset/create` 实际是 **`PUT`**（[API v0.6 §2.2.2](https://wiki.openstreetmap.org/wiki/API_v0.6)）。与 `POST changeset/{id}/upload` 混淆会直接得到 405。
+> **Important correction**: the `POST /api/0.6/changeset/create` from the task description is actually **`PUT`** ([API v0.6 §2.2.2](https://wiki.openstreetmap.org/wiki/API_v0.6)). Confusing it with `POST changeset/{id}/upload` yields an immediate 405.
 
-| 用途 | 方法与路径 | 鉴权 | 关键约束 |
+| Purpose | Method and path | Auth | Key constraints |
 |---|---|---|---|
-| 服务能力 | `GET /api/0.6/capabilities` | 读免鉴权 | `area maximum="0.25"`、`waynodes=2000`、`relationmembers=32000`、`changesets maximum_elements=10000`、`note_area=25` |
-| 建 changeset | `PUT /api/0.6/changeset/create` | `write_api` | body `<osm><changeset><tag k="comment" v="…"/></changeset></osm>`，响应为纯文本 id |
-| 改标签 | `PUT /api/0.6/changeset/{id}` | `write_api` | 追加 `comment`/`created_by` |
-| 关闭 | `PUT /api/0.6/changeset/{id}/close` | `write_api` | 关闭后再上传 ⇒ 409 |
-| 上传 diff | `POST /api/0.6/changeset/{id}/upload` | `write_api` | body 即 OsmChange XML（`application/xml`），**非 multipart** |
-| 按框下载 | `GET /api/0.6/map?bbox=left,bottom,right,top` | 读免鉴权 | 面积 ≤ 0.25 平方度；超 **50,000 节点** ⇒ 400 |
-| 多对象取回 | `GET /api/0.6/{nodes\|ways\|relations}?{type}=id,…` | 读免鉴权 | 补全缺失成员的主手段 |
-| 引用者 | `GET /api/0.6/{type}/{id}/relations` | 读免鉴权 | parent 递归 |
-| 完整对象 | `GET /api/0.6/{way\|relation}/{id}/full` | 读免鉴权 | 连带节点与成员 |
-| notes | `GET /api/0.6/notes?bbox=…`、`POST /api/0.6/notes` | 读 / `write_notes` | 面积 ≤ 25 平方度 |
+| Service capabilities | `GET /api/0.6/capabilities` | read, no auth | `area maximum="0.25"`, `waynodes=2000`, `relationmembers=32000`, `changesets maximum_elements=10000`, `note_area=25` |
+| Create changeset | `PUT /api/0.6/changeset/create` | `write_api` | body `<osm><changeset><tag k="comment" v="…"/></changeset></osm>`, response is a plain-text id |
+| Update tags | `PUT /api/0.6/changeset/{id}` | `write_api` | append `comment`/`created_by` |
+| Close | `PUT /api/0.6/changeset/{id}/close` | `write_api` | uploading after close ⇒ 409 |
+| Upload diff | `POST /api/0.6/changeset/{id}/upload` | `write_api` | the body is OsmChange XML (`application/xml`), **not multipart** |
+| Download by bbox | `GET /api/0.6/map?bbox=left,bottom,right,top` | read, no auth | area ≤ 0.25 square degrees; over **50,000 nodes** ⇒ 400 |
+| Multi-object fetch | `GET /api/0.6/{nodes\|ways\|relations}?{type}=id,…` | read, no auth | the primary means of completing missing members |
+| Referrers | `GET /api/0.6/{type}/{id}/relations` | read, no auth | recursive parents |
+| Full object | `GET /api/0.6/{way\|relation}/{id}/full` | read, no auth | brings along nodes and members |
+| notes | `GET /api/0.6/notes?bbox=…`, `POST /api/0.6/notes` | read / `write_notes` | area ≤ 25 square degrees |
 
-上传体**不是** `multipart/form-data`（multipart 是 GPX 上传 `/api/0.6/gpx` 的要求）；`Content-Type` 可省略（默认 XML/UTF-8），2018 年起支持请求体 gzip（`Content-Encoding: gzip`）。响应 `diffResult` 每个上传元素一行，同一元素出现多次则输出多次：
+The upload body is **not** `multipart/form-data` (multipart is required only for GPX upload to `/api/0.6/gpx`); `Content-Type` may be omitted (it defaults to XML/UTF-8), and request-body gzip (`Content-Encoding: gzip`) has been supported since 2018. The `diffResult` response has one line per uploaded element, and an element uploaded multiple times appears multiple times:
 
 ```xml
 <diffResult generator="OpenStreetMap Server" version="0.6">
@@ -42,122 +42,122 @@
 </diffResult>
 ```
 
-`create` 行含 `new_id`+`new_version`；`modify` 行 `new_id` 同输入、`new_version` 递增；`delete` 行**无 `new_version`**。占位 id（负数）→ 真实 id 的重映射**只能**依赖此响应，这是本地 Store 与服务器对齐的唯一权威。
+A `create` line contains `new_id`+`new_version`; a `modify` line has the same input `new_id` and an incremented `new_version`; a `delete` line has **no `new_version`**. The remapping from placeholder ids (negative) to real ids can **only** rely on this response — it is the sole authority for aligning the local Store with the server.
 
-### 2.2 鉴权（OAuth 2.0）
+### 2.2 Authentication (OAuth 2.0)
 
-OAuth 1.0a 与 HTTP Basic 已于 2024 年 6 月下线，只剩 OAuth 2.0。所需 scope：
+OAuth 1.0a and HTTP Basic were retired in June 2024, leaving only OAuth 2.0. Required scopes:
 
-| scope | 权限名 | 用途 |
+| scope | Permission name | Purpose |
 |---|---|---|
-| `read_prefs` | `allow_read_prefs` | 用户偏好、`user/details` |
-| `write_api` | `allow_write_api` | 改地图 + changeset 评论 |
-| `write_notes` | `allow_write_notes` | notes 写入 |
-| `consume_messages` | `allow_consume_messages` | 站内信（可选） |
+| `read_prefs` | `allow_read_prefs` | user preferences, `user/details` |
+| `write_api` | `allow_write_api` | map edits + changeset comments |
+| `write_notes` | `allow_write_notes` | writing notes |
+| `consume_messages` | `allow_consume_messages` | site messages (optional) |
 
-scope 在 `/permissions` 中统一加 `allow_` 前缀——比较权限时必须归一，否则永远判"未授权"。**令牌存储**：access/refresh token 进 OS 凭据库（Windows Credential Manager / macOS Keychain / libsecret），**绝不**进 SQLite 或配置文件；SQLite 只存 `account_id` 与 scope 摘要。刷新失败降级为只读模式，上传按钮禁用并显示原因。
+Scopes in `/permissions` are uniformly prefixed with `allow_` — permission comparison must normalize them, otherwise everything is always judged "unauthorized". **Token storage**: access/refresh tokens go into the OS credential store (Windows Credential Manager / macOS Keychain / libsecret), and **never** into SQLite or the configuration file; SQLite stores only `account_id` and a scope digest. A failed refresh degrades to read-only mode: the upload button is disabled and shows the reason.
 
-> 待验证：OAuth2 授权/令牌端点精确路径（通常 `https://www.openstreetmap.org/oauth2/authorize` 与 `/oauth2/token`）本次未能联网核实（`web_fetch` 失败）。实现前需按 <https://wiki.openstreetmap.org/wiki/OAuth> 复核，并确认 PKCE 是否必需。
+> To verify: the exact OAuth2 authorization/token endpoint paths (usually `https://www.openstreetmap.org/oauth2/authorize` and `/oauth2/token`) could not be verified online this time (`web_fetch` failed). Re-check <https://wiki.openstreetmap.org/wiki/OAuth> before implementing, and confirm whether PKCE is required.
 
-### 2.3 HTTP 客户端：连接池、限流、重试、取消
+### 2.3 HTTP Client: Connection Pool, Rate Limiting, Retries, Cancellation
 
-- **连接池**：单个 `reqwest::Client` 全局复用（HTTP/2 多路复用、keep-alive），`pool_max_idle_per_host(4)`，`timeout(30s)` + `connect_timeout(5s)`。
-- **并发**：下载默认 **2**（对齐 OSM 使用策略；JOSM 亦以 `MAX_DOWNLOAD_THREADS = 2` 实现）；上传恒为 **1**（同一 changeset 顺序上传，避免 bbox 竞争与顺序错乱）。
-- **限流**：令牌桶（默认 2 req/s、突发 4）；命中 429 按 `Retry-After` 退避，并把桶容量临时减半、成功后缓慢恢复。
-- **重试**：仅幂等请求（GET、`capabilities`）与"明确未提交"的失败（连接建立失败、TLS 错误）自动重试；`upload` **只在请求未发出时**（`reqwest` 的 `is_connect()`）重试，否则返回 `Ambiguous` 让上层查证，绝不冒重复创建对象的险。
-- **退避**：指数 + 抖动，基数 500ms，上限 60s，最多 5 次（与 JOSM `DEFAULT_MAX_NUM_RETRIES = 5` 同量级）。
-- **取消与进度**：自建 `CancelToken`（`Arc<AtomicBool>` + `tokio::sync::Notify`，不引入 `tokio-util`）；所有 `await` 点插入 `tokio::select!`，取消后请求被 drop（HTTP/1.1 关连接，HTTP/2 RST_STREAM）。进度用 `watch::Receiver<Progress>`，按"已下载对象数/已上传元素数"推进。
+- **Connection pool**: a single `reqwest::Client` reused globally (HTTP/2 multiplexing, keep-alive), `pool_max_idle_per_host(4)`, `timeout(30s)` + `connect_timeout(5s)`.
+- **Concurrency**: downloads default to **2** (aligned with the OSM usage policy; JOSM also implements `MAX_DOWNLOAD_THREADS = 2`); uploads are always **1** (sequential uploads within one changeset, avoiding bbox contention and ordering confusion).
+- **Rate limiting**: token bucket (default 2 req/s, burst 4); on 429, back off per `Retry-After`, temporarily halve the bucket capacity, and recover slowly after success.
+- **Retries**: automatic retries only for idempotent requests (GET, `capabilities`) and failures that "definitely did not commit" (connection-establishment failure, TLS errors); `upload` is retried **only when the request was never sent** (`reqwest`'s `is_connect()`), otherwise it returns `Ambiguous` for the caller to verify — never risking duplicate object creation.
+- **Backoff**: exponential + jitter, base 500ms, cap 60s, at most 5 attempts (the same order of magnitude as JOSM's `DEFAULT_MAX_NUM_RETRIES = 5`).
+- **Cancellation and progress**: our own `CancelToken` (`Arc<AtomicBool>` + `tokio::sync::Notify`, without pulling in `tokio-util`); every `await` point is wrapped in `tokio::select!`, and after cancellation the request is dropped (HTTP/1.1 closes the connection, HTTP/2 sends RST_STREAM). Progress uses `watch::Receiver<Progress>`, advancing by "objects downloaded / elements uploaded".
 
-### 2.4 changeset 生命周期
+### 2.4 Changeset Lifecycle
 
 ```text
  ┌────────┐  create(PUT)   ┌────────┐  upload(cls)  ┌───────────┐  close  ┌────────┐
  │  Idle  │───────────────▶│  Open  │──────────────▶│ Uploading │────────▶│ Closed │
  └────────┘                └────────┘               └───────────┘         └────────┘
-      ▲                        │  ▲ 追加标签 / 失败保持 Open
-      └── 丢弃（未建）──────────┘  └── 空闲超时自动关闭
+      ▲                        │  ▲ append tags / stay Open on failure
+      └── discard (not created)┘  └── auto-close on idle timeout
 ```
 
-1. **延迟创建**：用户首次点"上传"时才 `PUT changeset/create`，避免空 changeset 污染历史。
-2. **标签**：`comment`（必填，空则禁用上传）、`created_by=NEO/<version>`、`host`、`locale`，可选 `source`、`imagery_used`。`created_by` 是社区规范而非 API 要求，缺失会被质疑。
-3. **自动关闭**：`Open` 且空闲超阈值（默认 30 分钟，可配）时后台 close，避免服务端 24h 自动关闭导致"上传到已关闭 changeset ⇒ 409"。
-4. **超限预检**：上传前用 `capabilities.changesets.maximum_elements`（当前 10000）与已上传元素数比对，超出即要求分 changeset——不要依赖 413 才发现。
-5. **关闭失败**：409（已关闭）视为成功（幂等）；其它错误保留 `Open` 并提示，下次上传复用同一 changeset。
+1. **Lazy creation**: `PUT changeset/create` happens only when the user first clicks "upload", avoiding empty changesets polluting history.
+2. **Tags**: `comment` (mandatory; upload is disabled when empty), `created_by=NEO/<version>`, `host`, `locale`, plus optional `source`, `imagery_used`. `created_by` is a community convention rather than an API requirement, but its absence invites criticism.
+3. **Auto-close**: when `Open` and idle past a threshold (default 30 minutes, configurable), close in the background, avoiding the server's 24h auto-close leading to "upload to a closed changeset ⇒ 409".
+4. **Pre-check against limits**: before uploading, compare `capabilities.changesets.maximum_elements` (currently 10000) with the number of elements already uploaded and require splitting into multiple changesets if exceeded — do not rely on discovering it via 413.
+5. **Close failure**: 409 (already closed) counts as success (idempotent); other errors keep `Open` and notify, and the next upload reuses the same changeset.
 
-### 2.5 上传流水线
+### 2.5 Upload Pipeline
 
 ```text
-EditDiff(本地差异)
- │ 1. 校验：无 version=0 的 modify；delete 依赖序（先 relation 后 way 后 node）
+EditDiff(local diff)
+ │ 1. validate: no modify with version=0; delete dependency order (relations before ways before nodes)
  ▼
-UploadPlan{changeset 标签, chunks[]}
- │ 2. 冲突预检（默认开）：multi_fetch 所有 modify/delete 的当前 version
- │    不一致 ⇒ 直接产出 ConflictReport（省掉一次必然失败的 409）
+UploadPlan{changeset tags, chunks[]}
+ │ 2. conflict precheck (on by default): multi_fetch the current version of all modify/delete
+ │    mismatch ⇒ produce ConflictReport directly (saving a round trip that would certainly 409)
  ▼
-for chunk in chunks:                          ← 顺序、单并发
- │ 3. 序列化：OscWriter 输出（changeset/version 必填，create 免 version）
- │ 4. POST upload（可 gzip）
+for chunk in chunks:                          ← sequential, single concurrency
+ │ 3. serialize: OscWriter output (changeset/version mandatory, create exempt from version)
+ │ 4. POST upload (gzip allowed)
  │    ├─ 200 + diffResult ⇒ 5
- │    ├─ 409 ⇒ version 不匹配 / changeset 已关闭 / 非本人（text/plain）
- │    ├─ 412 ⇒ 缺失节点或被引用（"Way #1 requires the nodes with id in (…)"）
- │    └─ 429/5xx ⇒ 退避重试（仅当可判定请求未生效）
+ │    ├─ 409 ⇒ version mismatch / changeset closed / not the owner (text/plain)
+ │    ├─ 412 ⇒ missing node or still referenced ("Way #1 requires the nodes with id in (…)")
+ │    └─ 429/5xx ⇒ backoff and retry (only when it can be determined the request had no effect)
  ▼
-5. 应用 diffResult：占位 id → 真实 id；version 覆盖；经 Editor 写回 Store
+5. apply diffResult: placeholder id → real id; version overwrite; write back to the Store via the Editor
  │
-6. 全部成功 ⇒ close；任一失败 ⇒ 保持 Open + ConflictReport
+6. all succeeded ⇒ close; any failure ⇒ stay Open + ConflictReport
 ```
 
-**分块与原子性的矛盾**（本设计最重要的取舍）：服务端对**单次** `upload` 保证"全部应用或全不应用"，但**不跨请求**。
+**The conflict between chunking and atomicity** (the most important trade-off in this design): the server guarantees that a **single** `upload` is "all applied or none applied", but **not across requests**.
 
-| 方案 | 原子性 | 代价 |
+| Approach | Atomicity | Cost |
 |---|---|---|
-| 单请求上传整个 changeset | ✅ 服务端事务 | 受 `maximum_elements`=10000 与请求体大小限制 |
-| 多请求分块 | ❌ 部分成功 | 需客户端补偿 |
-| 多 changeset | ❌ 语义割裂 | 历史里出现多个 changeset，社区不友好 |
+| single request uploading the whole changeset | ✅ server transaction | limited by `maximum_elements`=10000 and request-body size |
+| multiple requests in chunks | ❌ partial success | requires client-side compensation |
+| multiple changesets | ❌ split semantics | multiple changesets appear in history, unfriendly to the community |
 
-**决策**：优先单请求（覆盖绝大多数会话）；仅当元素数 > `maximum_elements` 或请求体超阈值（默认 8MiB，避免代理截断）才分块，且必须：(1) 每块成功后立即持久化 `uploaded_until`，崩溃后**续传而非重传**；(2) 失败块之后不再继续，保持 `Open`，UI 显示"已上传 N 块，剩余 M 块"；(3) 放弃时提供"补偿上传"——对已上传元素生成**逆向 OSC**（modify 回旧值 / delete 新建对象）作为新请求。补偿是**尽力而为**，不是事务回滚：服务端无 revert 端点，逆向 diff 本身也是合法编辑，期间若有人改动同样会 409。
+**Decision**: prefer a single request (covering the vast majority of sessions); chunk only when the element count > `maximum_elements` or the request body exceeds a threshold (default 8MiB, to avoid proxy truncation), and then it must: (1) persist `uploaded_until` immediately after each chunk succeeds, so a crash leads to **resuming rather than re-uploading**; (2) stop after the first failed chunk and stay `Open`, with the UI showing "N chunks uploaded, M remaining"; (3) on giving up, offer "compensating upload" — generate a **reverse OSC** for the already-uploaded elements (modify back to old values / delete newly created objects) as a new request. Compensation is **best effort**, not a transaction rollback: the server has no revert endpoint, the reverse diff is itself a legitimate edit, and if someone changes things meanwhile it will 409 too.
 
-**失败语义**（必须准确，不允许含糊）：
+**Failure semantics** (must be precise, no vagueness allowed):
 
-| 失败点 | 服务端状态 | 客户端动作 |
+| Failure point | Server state | Client action |
 |---|---|---|
-| 请求未发出 / 连接失败 | 未变更 | 安全重试 |
-| 已发出但无响应（超时） | **未知** | 标记 `Ambiguous`，先 `GET` 核对 version 再决定 |
-| 409（version 被他人更新） | 未变更（整请求回滚） | 产出 `ConflictReport` |
-| 409（changeset 已关闭） | 未变更 | 新建 changeset 重传 |
-| 412（引用缺失/被引用） | 未变更 | 补下载缺失成员或对删除用 `if-unused` |
+| request never sent / connection failed | unchanged | safe to retry |
+| sent but no response (timeout) | **unknown** | mark `Ambiguous`, `GET` the version to check before deciding |
+| 409 (version updated by someone else) | unchanged (whole request rolled back) | produce `ConflictReport` |
+| 409 (changeset already closed) | unchanged | create a new changeset and re-upload |
+| 412 (missing/used reference) | unchanged | download missing members, or use `if-unused` for deletes |
 
-### 2.6 下载策略与引用完整性
+### 2.6 Download Strategy and Referential Integrity
 
-| 策略 | 实现 | 适用 |
+| Strategy | Implementation | Applicable to |
 |---|---|---|
-| 按框 | `GET /map?bbox=`，面积 ≤ 0.25 平方度、节点 ≤ 50k | 主下载 |
-| 分片 | 切成 ≤ 0.25 平方度的瓦片，双并发 | 城市级区域 |
-| 沿路径/轨迹 | 几何包络 + 走廊缓冲（默认 100m）生成细长 bbox 序列，去重后逐块下载 | 沿道路测绘 |
-| parent 递归 | `GET {type}/{id}/relations` 逐层上溯，默认深度 3 | 避免破坏关系 |
-| 成员补全 | `GET ways?ways=…` / `nodes?nodes=…` 批量取回 | incomplete members |
-| 完整对象 | `GET {way,relation}/{id}/full` | 单对象深链 |
+| by bbox | `GET /map?bbox=`, area ≤ 0.25 square degrees, nodes ≤ 50k | primary download |
+| tiling | split into tiles ≤ 0.25 square degrees, two concurrent | city-level areas |
+| along a path/track | geometry envelope + corridor buffer (default 100m) generating a sequence of elongated bboxes, deduplicated, downloaded chunk by chunk | mapping along roads |
+| parent recursion | `GET {type}/{id}/relations` walking upward, depth 3 by default | avoiding broken relations |
+| member completion | `GET ways?ways=…` / `nodes?nodes=…` batch fetch | incomplete members |
+| full object | `GET {way,relation}/{id}/full` | deep links to a single object |
 
-**partial data 下 Way 缺 Node 的处理**（显式，不静默丢弃）：
+**Handling a Way with missing Nodes under partial data** (explicit, never silently dropped):
 
-1. Way 允许引用不存在的 `ObjectId`，Store 中解析为 `Handle::MISSING`（generation=0 哨兵）；
-2. 渲染层跳过缺失节点、在断口处画断口标记（**不**连成直线，避免伪造几何）；
-3. `neo-validate` 产出 `incomplete_way` 警告，**上传被硬阻断**：过滤任何引用缺失节点的 Way，并在 `ConflictReport` 说明原因——服务端会以 412 拒绝整个 diff，本地拦截代价低得多；
-4. 用户可选择"补全并重试"：自动 multi_fetch，仍失败则标 `deleted`（服务端语义为不可见）。
+1. A Way may reference a nonexistent `ObjectId`, resolved in the Store as `Handle::MISSING` (a generation=0 sentinel);
+2. The render layer skips missing nodes and draws a break marker at the gap (**does not** connect them with a straight line, avoiding fabricated geometry);
+3. `neo-validate` produces an `incomplete_way` warning and **upload is hard-blocked**: any Way referencing a missing node is filtered out, and the `ConflictReport` explains why — the server would reject the whole diff with 412, so blocking locally is far cheaper;
+4. The user may choose "complete and retry": automatic multi_fetch, and if that still fails, mark it `deleted` (the server semantics being invisible).
 
-> 细节：`GET /map` 只返回"框内有节点"的道路；与框相交但节点全在框外的 Way **不会**返回。框边界的 Way 因此常以"缺节点"形态出现，这是 partial data 的常见来源，UI 文案必须解释清楚。
+> Detail: `GET /map` only returns roads that "have a node inside the box"; a Way that intersects the box but has all its nodes outside it **will not** be returned. Ways at the box boundary therefore often show up in "missing node" form — a common source of partial data, and the UI copy must explain it clearly.
 
-### 2.7 离线队列
+### 2.7 Offline Queue
 
-编辑产生的待上传差异落入 SQLite 的 `changeset_queue`（DDL 见 [10](./10-persistence-and-recovery.md) §2.2）：`client_uuid` 为幂等键（同一编辑重复入队只留一份）；`state ∈ {queued, uploading, uploaded, conflicting, aborted}` 的迁移必须与 `uploaded_until` 在同一事务提交；重放按 `seq` 且**跨 changeset 不重排**（先建后引的依赖不可交换）；离线期间 UI 显示"未同步 N 项"，同一对象上的第二个编辑合并进同一 payload。
+Pending diffs produced by editing land in SQLite's `changeset_queue` (DDL in [10](./10-persistence-and-recovery.md) §2.2): `client_uuid` is the idempotency key (repeated enqueues of the same edit keep only one); transitions of `state ∈ {queued, uploading, uploaded, conflicting, aborted}` must commit in the same transaction as `uploaded_until`; replay follows `seq` and **never reorders across changesets** (create-before-reference dependencies are not commutative); while offline the UI shows "N items unsynced", and a second edit to the same object is merged into the same payload.
 
-## 3 关键接口
+## 3 Key Interfaces
 
 ```rust
 // neo-api/src/lib.rs
-pub struct ApiConfig { pub base_url: reqwest::Url,      // 默认 https://api.openstreetmap.org
-    pub user_agent: String,                             // 必填：NEO/0.1 (+https://…)
-    pub max_download_concurrency: usize,                // 默认 2
+pub struct ApiConfig { pub base_url: reqwest::Url,      // default https://api.openstreetmap.org
+    pub user_agent: String,                             // mandatory: NEO/0.1 (+https://…)
+    pub max_download_concurrency: usize,                // default 2
     pub request_timeout: Duration, pub max_retries: u32, pub gzip_upload: bool, pub offline: bool }
 
 pub struct OsmApiClient { /* reqwest::Client + AuthProvider + RateLimiter + CancelToken */ }
@@ -191,7 +191,7 @@ pub trait AuthProvider: Send + Sync {
     fn is_read_only(&self) -> bool;
 }
 
-pub struct ChangesetManager { /* 状态机 + 空闲计时 + 队列写回 */ }
+pub struct ChangesetManager { /* state machine + idle timer + queue write-back */ }
 impl ChangesetManager {
     pub fn new(client: Arc<OsmApiClient>, queue: Arc<dyn QueueStore>) -> Self;
     pub async fn ensure_open(&mut self, meta: &ChangesetMeta) -> Result<i64, ApiError>;
@@ -200,12 +200,12 @@ impl ChangesetManager {
     pub fn state(&self) -> ChangesetState;
 }
 
-pub struct UploadPlan { pub changeset_meta: ChangesetMeta, pub chunks: Vec<UploadChunk>, // 通常恰 1 个
+pub struct UploadPlan { pub changeset_meta: ChangesetMeta, pub chunks: Vec<UploadChunk>, // usually exactly 1
     pub precheck_versions: bool, pub compensation: CompensationPolicy }  // None | InverseOsc
 pub struct UploadChunk { pub osc: Vec<u8>, pub element_count: usize, pub kind: ChunkKind }
 
 pub struct ConflictReport { pub kind: ConflictKind, pub changeset_closed: Option<ConflictSummaryLine>,
-    pub per_object: Vec<ObjectConflict>, pub message: String }   // 服务端 text/plain 原文
+    pub per_object: Vec<ObjectConflict>, pub message: String }   // the server's raw text/plain message
 pub struct ObjectConflict { pub id: ObjectId, pub stage: ConflictStage,  // Precheck | Upload409 | Upload412
     pub local_version: i32, pub remote_version: Option<i32>, pub resolution: ConflictResolution }
 
@@ -222,73 +222,73 @@ pub enum ApiError {
 }
 ```
 
-## 4 数据流与时序
+## 4 Data Flow and Timing
 
 ```text
-用户   ChangesetManager   OsmApiClient        服务端          Store/Editor
- │ 上传      │                 │                │                 │
+User   ChangesetManager   OsmApiClient        Server           Store/Editor
+ │ upload    │                 │                │                 │
  │──────────▶│ ensure_open     │                │                 │
  │           │── PUT create ──▶│───────────────▶│ id=555          │
- │           │ precheck: multi_fetch 现网 version│                 │
+ │           │ precheck: multi_fetch current versions             │
  │           │────────────────▶│───────────────▶│                 │
  │           │◀── node 42 local=3 remote=5 ──────│                 │
- │◀─ 冲突面板（TakeRemote / Merge / Skip）        │                 │
- │ 选 TakeRemote for 42      │                │                 │
- │──────────▶│ 重算 diff（丢弃本地 42 的标签改动）                │
- │           │── POST upload（OsmChange）──────▶│ 事务：全成功/全回滚│
+ │◀─ conflict panel (TakeRemote / Merge / Skip)  │                 │
+ │ choose TakeRemote for 42  │                │                 │
+ │──────────▶│ recompute diff (discard local tag edits on 42)     │
+ │           │── POST upload (OsmChange)──────▶│ txn: all-or-nothing
  │           │◀──── diffResult(old→new) ────────│                 │
- │           │ 应用 id/version 重映射 ───────────────────────────▶│
+ │           │ apply id/version remap ───────────────────────────▶│
  │           │── PUT close ──▶│───────────────▶│                 │
- │◀─ 完成 ───│                 │                │                 │
+ │◀─ done ───│                 │                │                 │
 
-超时 ⇒ Ambiguous：
-client ──POST upload──▶ [超时] ──▶ 不重试
-client ──GET /api/0.6/node/42─▶ remote_version == 本地预期+1 ?
-    ├─ 是 ⇒ 视为已成功，应用 version，继续下一块
-    └─ 否 ⇒ 视为未生效，有限次重试（标记风险）
+timeout ⇒ Ambiguous:
+client ──POST upload──▶ [timeout] ──▶ no retry
+client ──GET /api/0.6/node/42─▶ remote_version == local expectation + 1 ?
+    ├─ yes ⇒ treat as succeeded, apply version, continue with the next chunk
+    └─ no  ⇒ treat as not applied, retry a limited number of times (flagging the risk)
 ```
 
-## 5 权衡与替代方案
+## 5 Trade-offs and Alternatives
 
-| 决策 | 选择 | 替代 | 放弃原因 |
+| Decision | Choice | Alternative | Why rejected |
 |---|---|---|---|
-| 上传粒度 | 默认单请求 | 总是分块 | 分块牺牲原子性，只为绕开 10k 限制 |
-| 冲突检测 | 先预检再上传 | 只靠 409 | 预检省一次必然失败的往返；可关 |
-| 重试策略 | 非幂等请求不自动重试 | 全量重试 | `upload` 可能已生效，重试会重复创建对象 |
-| 令牌存储 | OS 凭据库 | SQLite | 明文令牌泄露不可接受 |
-| 取消机制 | 自建 `CancelToken` | `tokio-util::CancellationToken` | 依赖清单无 `tokio-util`，不为一个布尔 + Notify 增依赖 |
-| 并发下载 | 2 | 按核数放大 | 违背 OSM 使用策略，易被 429/封禁 |
-| 缺失引用 | 显式 `MISSING` + 上传阻断 | 静默丢弃 Way | 静默丢弃制造"看不见的数据损坏" |
+| upload granularity | single request by default | always chunk | chunking sacrifices atomicity just to dodge the 10k limit |
+| conflict detection | precheck then upload | rely on 409 only | the precheck saves a round trip that is certain to fail; it can be disabled |
+| retry policy | no automatic retry for non-idempotent requests | retry everything | `upload` may already have taken effect, so retrying would create duplicate objects |
+| token storage | OS credential store | SQLite | plaintext token leakage is unacceptable |
+| cancellation mechanism | our own `CancelToken` | `tokio-util::CancellationToken` | `tokio-util` is not in the dependency list; don't add a dependency for one bool + Notify |
+| download concurrency | 2 | scale by core count | violates the OSM usage policy and invites 429s/bans |
+| missing references | explicit `MISSING` + upload blocking | silently drop the Way | silent dropping manufactures "invisible data corruption" |
 
-## 6 风险
+## 6 Risks
 
-| 风险 | 影响 | 缓解 |
+| Risk | Impact | Mitigation |
 |---|---|---|
-| changeset 被服务端 24h 自动关闭 | 上传 409 | 空闲 30 分钟自动 close；409 时新建重传 |
-| 分块中途崩溃 | 部分数据已入库 | `uploaded_until` 事务化，恢复后从下一块续传 |
-| 代理/网关截断大请求体 | 400 或半截 XML | 请求体上限 8MiB，超出即分块；gzip 降低概率 |
-| 令牌过期/scope 不足 | 403，用户困惑 | 上传前校验 scope，缺失项给可操作提示 |
-| 服务端只读维护（`status=readonly`） | 写入全失败 | `capabilities` 缓存 5 分钟，`readonly` 时禁用上传入口 |
-| 逆向补偿失败 | 数据半改 | 补偿结果单独记录并提示"需人工核对 changeset #id" |
-| 版本判断用本地自增 | 误判冲突 | 版本只信服务端返回值 |
+| changeset auto-closed by the server after 24h | upload 409 | auto-close after 30 minutes idle; create a new one and re-upload on 409 |
+| crash in the middle of chunked upload | partial data already committed | transactionally persist `uploaded_until`, resume from the next chunk after recovery |
+| proxy/gateway truncates a large request body | 400 or half an XML document | request-body cap of 8MiB, chunk beyond that; gzip reduces the chance |
+| expired token / insufficient scope | 403, user confusion | validate scopes before upload, and give actionable hints for missing ones |
+| server in read-only maintenance (`status=readonly`) | all writes fail | cache `capabilities` for 5 minutes; disable upload entry points while `readonly` |
+| reverse compensation fails | data half-changed | record the compensation result separately and tell the user to "manually verify changeset #id" |
+| version checks based on a local increment | false conflict detection | trust only versions returned by the server |
 
-## 7 验收标准
+## 7 Acceptance Criteria
 
-- [ ] 对 [OSM 开发服务器](https://master.apis.dev.openstreetmap.org)（非生产库）完成：建 changeset → 新建节点/道路 → 上传 → 关闭 → 再下载比对。
-- [ ] `upload` 请求体断言为 OsmChange XML（`application/xml`），**不含** multipart 边界。
-- [ ] 构造 version 落后 1 的场景，得到 `ApiError::Conflict`，`per_object` 含该对象与 `remote_version`。
-- [ ] 构造 Way 缺节点场景，本地即阻断上传并给出 412 的可读原因。
-- [ ] 断网后队列不丢；恢复后按 `seq` 重放，`client_uuid` 去重生效。
-- [ ] 50k 节点/0.25 平方度预检：超限请求在发出前被拒（不消耗一次 400）。
-- [ ] 令牌不出现在任何日志/`tracing` 字段（`secrecy` 包装 + 集成测试）。
-- [ ] 上传/下载吞吐与 429 触发率记录在 [14](./14-performance-and-verification.md)【待实测，见 docs/14-performance-and-verification.md】。
-- [ ] `cargo test -p neo-api` + `clippy -- -D warnings` 通过。
+- [ ] Against the [OSM development server](https://master.apis.dev.openstreetmap.org) (not production): create changeset → create node/way → upload → close → download and compare.
+- [ ] Assert that the `upload` request body is OsmChange XML (`application/xml`) and **contains no** multipart boundary.
+- [ ] Construct a scenario where the version is 1 behind and get `ApiError::Conflict`, with `per_object` containing that object and `remote_version`.
+- [ ] Construct a Way-missing-node scenario and confirm the upload is blocked locally with a readable 412 explanation.
+- [ ] After network loss the queue is not lost; on recovery it replays in `seq` order and `client_uuid` deduplication works.
+- [ ] 50k nodes / 0.25 square degrees precheck: an over-limit request is rejected before being sent (without spending a 400).
+- [ ] Tokens never appear in any log/`tracing` field (`secrecy` wrapper + integration test).
+- [ ] Upload/download throughput and 429 rate are recorded in [14](./14-performance-and-verification.md) [pending measurement, see docs/14-performance-and-verification.md].
+- [ ] `cargo test -p neo-api` + `clippy -- -D warnings` pass.
 
-## 8 参考
+## 8 References
 
-- API v0.6 全量端点、错误码、capabilities 字段（`area maximum`、`waynodes`、`changesets maximum_elements`、50'000 节点上限）：<https://wiki.openstreetmap.org/wiki/API_v0.6>
-- OsmChange 格式（`create`/`modify`/`delete`、`if-unused`）：<https://wiki.openstreetmap.org/wiki/OsmChange>
-- OAuth 2.0 与 scope：<https://wiki.openstreetmap.org/wiki/OAuth>（端点细节 `> 待验证`）
-- 开发服务器（验收用）：<https://master.apis.dev.openstreetmap.org>
-- `reqwest 0.13`：<https://docs.rs/reqwest/0.13.5/reqwest/> · `tokio 1.54`：<https://docs.rs/tokio/1.54.0/tokio/>
-- 相关：[IO 层](./08-io-pbf-xml-osc.md) · [持久化与恢复](./10-persistence-and-recovery.md) · [数据模型与 Store](./03-osm-data-model-and-store.md)
+- The full API v0.6 endpoint set, error codes, capabilities fields (`area maximum`, `waynodes`, `changesets maximum_elements`, the 50'000-node cap): <https://wiki.openstreetmap.org/wiki/API_v0.6>
+- OsmChange format (`create`/`modify`/`delete`, `if-unused`): <https://wiki.openstreetmap.org/wiki/OsmChange>
+- OAuth 2.0 and scopes: <https://wiki.openstreetmap.org/wiki/OAuth> (endpoint details `> to verify`)
+- Development server (for acceptance): <https://master.apis.dev.openstreetmap.org>
+- `reqwest 0.13`: <https://docs.rs/reqwest/0.13.5/reqwest/> · `tokio 1.54`: <https://docs.rs/tokio/1.54.0/tokio/>
+- Related: [IO Layer](./08-io-pbf-xml-osc.md) · [Persistence and Recovery](./10-persistence-and-recovery.md) · [Data Model and Store](./03-osm-data-model-and-store.md)

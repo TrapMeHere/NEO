@@ -1,21 +1,21 @@
-//! 几何构建：Way → 世界坐标折线 → 三角形批次。
+//! Geometry construction: Way → world-coordinate polyline → triangle batches.
 //!
-//! 明确的职责边界：
+//! Clear responsibility boundaries:
 //!
-//! * 本模块在 **CPU** 上把经纬度折线转成世界坐标、做简化、生成描边三角形、
-//!   三角化多边形；
-//! * 不做屏幕变换（那是相机的事），也不碰 GPU buffer（那是 `neo-render` 的事）；
-//! * 结果用 `[f32; 2]` 米坐标 + `u32` 索引表达，可以零拷贝上传。
+//! * this module converts lon/lat polylines into world coordinates, simplifies them, generates stroke triangles, and
+//!   triangulates polygons, all on the **CPU**;
+//! * it does no screen transform (that is the camera's job) and never touches GPU buffers (that is `neo-render`'s job);
+//! * results are expressed as `[f32; 2]` meter coordinates + `u32` indices, ready for zero-copy upload.
 //!
-//! 为什么不用 GPU 做几何生成：OSM 编辑是"少量对象高频修改"，CPU 增量重建 + 局部上传
-//! 比 GPU 上跑几何 shader 更容易保证正确性与可维护性（见 docs/05 的负载划分表）。
+//! Why not generate geometry on the GPU: OSM editing is "few objects, high-frequency modification"; CPU incremental rebuild + partial upload
+//! makes correctness and maintainability easier to guarantee than geometry shaders on the GPU (see the workload split table in docs/05).
 
 use neo_core::Handle;
 use neo_store::{DataSet, WaySlot};
 
 use crate::world::{WorldBounds, WorldPoint};
 
-/// 把一条 way 解析成世界坐标折线（跳过失效/缺失节点）。
+/// Parse one way into a world-coordinate polyline (skipping invalid/missing nodes).
 pub fn way_world_points(data: &DataSet, way: Handle<WaySlot>) -> Vec<WorldPoint> {
     let Some(refs) = data.ways.nodes(way) else {
         return Vec::new();
@@ -26,7 +26,7 @@ pub fn way_world_points(data: &DataSet, way: Handle<WaySlot>) -> Vec<WorldPoint>
         .collect()
 }
 
-/// 一条 way 的世界坐标包围盒。
+/// World-coordinate bounding box of one way.
 pub fn way_bounds(data: &DataSet, way: Handle<WaySlot>) -> Option<WorldBounds> {
     let points = way_world_points(data, way);
     if points.is_empty() {
@@ -35,16 +35,16 @@ pub fn way_bounds(data: &DataSet, way: Handle<WaySlot>) -> Option<WorldBounds> {
     Some(WorldBounds::from_points_iter(points))
 }
 
-/// CAD / JOSM 风格框选模式（由拖拽水平方向决定）。
+/// CAD / JOSM style rectangle-selection mode (determined by the horizontal drag direction).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoxSelectMode {
-    /// 左 → 右：仅选中整体落在框内的要素（窗选）。
+    /// Left → right: select only features entirely inside the rectangle (window select).
     Window,
-    /// 右 → 左：选中与框相交或整体在框内的要素（相交选）。
+    /// Right → left: select features intersecting the rectangle or entirely inside it (crossing select).
     Crossing,
 }
 
-/// 由框选起止点判定模式：`start.x > end.x` 为相交选，否则为窗选。
+/// Determine the mode from the drag start/end points: `start.x > end.x` is crossing select, otherwise window select.
 #[inline]
 pub fn box_select_mode(start: WorldPoint, end: WorldPoint) -> BoxSelectMode {
     if start.x > end.x {
@@ -54,7 +54,7 @@ pub fn box_select_mode(start: WorldPoint, end: WorldPoint) -> BoxSelectMode {
     }
 }
 
-/// 线段是否与轴对齐包围盒相交（含端点落在盒内、穿边）。
+/// Whether a segment intersects an axis-aligned bounding box (including endpoints inside the box and crossing edges).
 pub fn segment_intersects_bounds(a: WorldPoint, b: WorldPoint, bounds: &WorldBounds) -> bool {
     if bounds.contains(a) || bounds.contains(b) {
         return true;
@@ -73,10 +73,10 @@ pub fn segment_intersects_bounds(a: WorldPoint, b: WorldPoint, bounds: &WorldBou
         || segments_cross(a, b, c3, c0)
 }
 
-/// 折线（way）是否匹配框选模式。
+/// Whether a polyline (way) matches the selection mode.
 ///
-/// * 窗选：全部顶点在框内（轴对齐盒为凸，故整条折线也在框内）；
-/// * 相交选：任一点在框内，或任一线段与框相交。
+/// * window select: all vertices are inside the box (an AABB is convex, so the whole polyline is inside);
+/// * crossing select: any point is inside the box, or any segment intersects the box.
 pub fn way_matches_box(points: &[WorldPoint], bounds: &WorldBounds, mode: BoxSelectMode) -> bool {
     if points.is_empty() {
         return false;
@@ -94,12 +94,12 @@ pub fn way_matches_box(points: &[WorldPoint], bounds: &WorldBounds, mode: BoxSel
     }
 }
 
-/// 折线长度（世界坐标米，仅用于 LOD 与简化容差）。
+/// Polyline length (world-coordinate meters; used only for LOD and simplification tolerance).
 pub fn polyline_length(points: &[WorldPoint]) -> f64 {
     points.windows(2).map(|w| w[0].dist(w[1])).sum()
 }
 
-/// 点到线段的最近点与距离（f64 米）。返回 `(投影点, 距离, t∈[0,1])`。
+/// Nearest point and distance from a point to a segment (f64 meters). Returns `(projected point, distance, t∈[0,1])`.
 pub fn point_segment_closest(p: WorldPoint, a: WorldPoint, b: WorldPoint) -> (WorldPoint, f64, f64) {
     let (abx, aby) = (b.x - a.x, b.y - a.y);
     let (apx, apy) = (p.x - a.x, p.y - a.y);
@@ -112,12 +112,12 @@ pub fn point_segment_closest(p: WorldPoint, a: WorldPoint, b: WorldPoint) -> (Wo
     (proj, p.dist(proj), t)
 }
 
-/// 点到线段的最短距离（f64 米）。
+/// Shortest distance from a point to a segment (f64 meters).
 pub fn point_segment_distance(p: WorldPoint, a: WorldPoint, b: WorldPoint) -> f64 {
     point_segment_closest(p, a, b).1
 }
 
-/// 点到折线的最短距离（米）。
+/// Shortest distance from a point to a polyline (meters).
 pub fn point_polyline_distance(p: WorldPoint, points: &[WorldPoint]) -> f64 {
     if points.is_empty() {
         return f64::INFINITY;
@@ -131,9 +131,9 @@ pub fn point_polyline_distance(p: WorldPoint, points: &[WorldPoint]) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-/// Ramer–Douglas–Peucker 折线简化。
+/// Ramer–Douglas–Peucker polyline simplification.
 ///
-/// `tolerance_m` 是允许的最大偏离（米）。LOD 与渲染抽稀都用它。
+/// `tolerance_m` is the maximum allowed deviation (meters). Used by both LOD and render simplification.
 pub fn simplify_rdp(points: &[WorldPoint], tolerance_m: f64) -> Vec<WorldPoint> {
     let mut out = Vec::new();
     let mut keep = Vec::new();
@@ -141,7 +141,7 @@ pub fn simplify_rdp(points: &[WorldPoint], tolerance_m: f64) -> Vec<WorldPoint> 
     out
 }
 
-/// 带洞多边形三角化（earcut）。`holes` 的点序不限，但必须是闭合环（首尾可重复）。
+/// Triangulate a polygon with holes (earcut). `holes` may be in any point order, but each must be a closed ring (the first/last point may repeat).
 pub fn triangulate_polygon_with_holes(outer: &[WorldPoint], holes: &[Vec<WorldPoint>]) -> Vec<u32> {
     if outer.len() < 3 {
         return Vec::new();
@@ -173,7 +173,7 @@ pub fn triangulate_polygon_with_holes(outer: &[WorldPoint], holes: &[Vec<WorldPo
         .unwrap_or_default()
 }
 
-/// 点是否在环内（射线法，包含边界近似）。
+/// Whether a point is inside a ring (ray casting, approximate at boundaries).
 pub fn point_in_ring(point: WorldPoint, ring: &[WorldPoint]) -> bool {
     if ring.len() < 3 {
         return false;
@@ -193,7 +193,7 @@ pub fn point_in_ring(point: WorldPoint, ring: &[WorldPoint]) -> bool {
     inside
 }
 
-/// RDP 简化后保留的下标（升序，含首尾）。
+/// Indices kept after RDP simplification (ascending, including first and last).
 pub fn simplify_rdp_indices(points: &[WorldPoint], tolerance_m: f64) -> Vec<usize> {
     if points.len() <= 2 {
         return (0..points.len()).collect();
@@ -208,7 +208,7 @@ pub fn simplify_rdp_indices(points: &[WorldPoint], tolerance_m: f64) -> Vec<usiz
         .collect()
 }
 
-/// 迭代版 RDP 标记（显式栈）：病态折线不会把递归深度推爆调用栈。
+/// Iterative RDP marking (explicit stack): pathological polylines cannot blow the call stack through recursion depth.
 fn rdp_mark(points: &[WorldPoint], tolerance_m: f64, keep: &mut [bool]) {
     let mut stack: Vec<(usize, usize)> = vec![(0, points.len() - 1)];
     while let Some((first, last)) = stack.pop() {
@@ -232,7 +232,7 @@ fn rdp_mark(points: &[WorldPoint], tolerance_m: f64, keep: &mut [bool]) {
     }
 }
 
-/// 环的有符号面积（世界坐标平方米；正 = 逆时针）。
+/// Signed area of a ring (world-coordinate square meters; positive = counterclockwise).
 pub fn signed_area(ring: &[WorldPoint]) -> f64 {
     let n = ring.len();
     if n < 3 {
@@ -247,7 +247,7 @@ pub fn signed_area(ring: &[WorldPoint]) -> f64 {
     sum * 0.5
 }
 
-/// 环的面积质心。退化环返回 `None`。末尾重复的闭合点会被忽略。
+/// Area centroid of a ring. Returns `None` for degenerate rings. A duplicated closing point at the end is ignored.
 pub fn ring_centroid(ring: &[WorldPoint]) -> Option<WorldPoint> {
     let ring = strip_closing_point(ring);
     if ring.len() < 3 {
@@ -271,7 +271,7 @@ pub fn ring_centroid(ring: &[WorldPoint]) -> Option<WorldPoint> {
     Some(WorldPoint::new(cx / (3.0 * twice), cy / (3.0 * twice)))
 }
 
-/// 面状注记落点：优先面积质心。质心落在环外或洞内时，改用面积最大的三角形重心。
+/// Anchor point for area labels: prefer the area centroid. When the centroid falls outside the ring or inside a hole, use the centroid of the largest triangle instead.
 pub fn area_label_point(outer: &[WorldPoint], holes: &[Vec<WorldPoint>]) -> Option<WorldPoint> {
     let centroid = ring_centroid(outer);
     if let Some(point) = centroid
@@ -300,7 +300,7 @@ pub fn area_label_point(outer: &[WorldPoint], holes: &[Vec<WorldPoint>]) -> Opti
     best.or(centroid)
 }
 
-/// 两个环的区域是否重叠（包围盒相交，且有顶点落入对方或边相交）。
+/// Whether the regions of two rings overlap (bounding boxes intersect, a vertex falls inside the other, or an edge crosses).
 pub fn rings_overlap(a: &[WorldPoint], b: &[WorldPoint]) -> bool {
     let a = strip_closing_point(a);
     let b = strip_closing_point(b);
@@ -330,8 +330,8 @@ pub fn rings_overlap(a: &[WorldPoint], b: &[WorldPoint]) -> bool {
     false
 }
 
-/// 点是否落在环的内圈上。`inset` 是从边界向围成区域内部的起点，`width` 是圈宽。
-/// 洞内不算。洞边界上同样宽的一圈也算。
+/// Whether a point falls on the inner band of a ring. `inset` is the start from the boundary toward the interior of the enclosed region, and `width` is the band width.
+/// Points inside holes do not count. A band of the same width on the hole boundary also counts.
 pub fn point_in_inner_band(
     point: WorldPoint,
     outer: &[WorldPoint],
@@ -349,13 +349,13 @@ pub fn point_in_inner_band(
     near(outer) || holes.iter().any(|hole| near(hole))
 }
 
-/// 环带（`outer` 向内 `width` 的条带）是否完全避开所有洞。
+/// Whether a ring band (the `width`-wide strip inside `outer`) completely avoids all holes.
 ///
-/// 只画条带时，条带几何不扣洞；因此仅当每个洞都完整落在条带内边界以内
-/// （远离边界、条带不会扫到）时才可以安全地“条带 + 洞边条带”绘制。否则调用方
-/// 应改画“实心 + 挖洞”，否则洞会被条带盖住（小内院建筑在中间缩放级别会整洞变实）。
+/// When only the band is drawn, band geometry does not subtract holes; therefore the "band + hole-edge band" drawing is safe only when every hole lies entirely inside the band's inner boundary
+/// (away from the boundary, so the band does not sweep over it). Otherwise the caller should switch to "solid + hole cutout",
+/// otherwise holes would be covered by the band (small inner courtyards would become solid at mid zoom levels).
 ///
-/// 条带退化（偏移失败）时返回 `true`：调用方会因条带为空而走实心路径。
+/// Return `true` when the band degenerates (offset fails): the caller then takes the solid path because the band is empty.
 pub fn band_clears_holes(outer: &[WorldPoint], holes: &[Vec<WorldPoint>], width: f64) -> bool {
     let base_len = strip_closing_point(outer).len();
     let (vertices, indices) = ring_band(outer, 0.0, width, true);
@@ -368,12 +368,12 @@ pub fn band_clears_holes(outer: &[WorldPoint], holes: &[Vec<WorldPoint>], width:
         if ring.len() < 3 {
             return true;
         }
-        // 洞必须完整落在内边界以内，且洞边不能穿出内边界。
+        // Holes must lie entirely inside the inner boundary, and hole edges must not cross outside the inner boundary.
         ring.iter().all(|point| point_in_ring(*point, inner)) && !ring_edges_cross(ring, inner)
     })
 }
 
-/// 两个环的边是否相交（用于判断洞是否穿出条带内边界）。
+/// Whether the edges of two rings intersect (used to decide whether a hole crosses outside the band's inner boundary).
 fn ring_edges_cross(a: &[WorldPoint], b: &[WorldPoint]) -> bool {
     let na = a.len();
     let nb = b.len();
@@ -392,7 +392,7 @@ fn ring_edges_cross(a: &[WorldPoint], b: &[WorldPoint]) -> bool {
     false
 }
 
-/// 沿环生成一条向内（或向围成区域外）的等宽条带。偏移把环撑破时返回空。
+/// Generate a constant-width band along a ring, inward (or outward from the enclosed region). Returns empty when the offset breaks the ring.
 pub fn ring_band(
     ring: &[WorldPoint],
     inset: f64,
@@ -505,16 +505,16 @@ fn segments_cross(a: WorldPoint, b: WorldPoint, c: WorldPoint, d: WorldPoint) ->
     orient(a, b, c) * orient(a, b, d) < 0.0 && orient(c, d, a) * orient(c, d, b) < 0.0
 }
 
-/// 线状注记：落在折线长度中点，角度已翻成从左向右可读。
+/// Line labels: placed at the polyline's length midpoint, with the angle flipped to read left-to-right.
 #[derive(Clone, Copy, Debug)]
 pub struct LineLabel {
-    /// 长度中点。
+    /// Length midpoint.
     pub pos: WorldPoint,
-    /// 屏幕顺时针弧度，范围 (-π/2, π/2]。
+    /// Screen clockwise angle, range (-π/2, π/2].
     pub angle: f32,
 }
 
-/// 沿折线取长度中点与可读走向。少于两个点时返回 `None`。
+/// Take the length midpoint and a readable direction along the polyline. Returns `None` with fewer than two points.
 pub fn line_label(points: &[WorldPoint]) -> Option<LineLabel> {
     if points.len() < 2 {
         return None;
@@ -555,7 +555,7 @@ pub fn line_label(points: &[WorldPoint]) -> Option<LineLabel> {
     None
 }
 
-/// y 向下时 `atan2(dy, dx)` 就是屏幕顺时针角。朝左的线段翻转 180°，避免倒字。
+/// `atan2(dy, dx)` is the screen clockwise angle when y points down. Segments facing left are flipped 180° to avoid upside-down text.
 fn readable_angle(dx: f64, dy: f64) -> f32 {
     if dx == 0.0 && dy == 0.0 {
         return 0.0;
@@ -569,7 +569,7 @@ fn readable_angle(dx: f64, dy: f64) -> f32 {
     angle as f32
 }
 
-/// 去掉闭合环末尾的重复点。
+/// Remove the duplicated closing point at the end of a closed ring.
 pub fn strip_closing_point(ring: &[WorldPoint]) -> &[WorldPoint] {
     if ring.len() >= 2 && ring[0] == ring[ring.len() - 1] {
         &ring[..ring.len() - 1]
@@ -578,13 +578,13 @@ pub fn strip_closing_point(ring: &[WorldPoint]) -> &[WorldPoint] {
     }
 }
 
-/// 闭合环是否有效（去重、面积非零）。
+/// Whether a closed ring is valid (deduplicated, non-zero area).
 pub fn is_valid_ring(ring: &[WorldPoint]) -> bool {
     let r = strip_closing_point(ring);
     r.len() >= 3 && signed_area(r).abs() > 1e-6
 }
 
-/// 多边形三角化（耳切法）。返回相对于 `ring` 的索引。
+/// Polygon triangulation (ear clipping). Returns indices relative to `ring`.
 pub fn triangulate_ring(ring: &[WorldPoint]) -> Vec<u32> {
     let r = strip_closing_point(ring);
     if r.len() < 3 {
@@ -601,9 +601,9 @@ pub fn triangulate_ring(ring: &[WorldPoint]) -> Vec<u32> {
     }
 }
 
-/// 带孔多边形三角化：`outer` 外环，`holes` 内环列表。
+/// Triangulate a polygon with holes: `outer` is the outer ring, `holes` the list of inner rings.
 ///
-/// 返回 (顶点坐标, 索引)。顶点顺序：外环在前，内环依次拼接。
+/// Returns (vertex coordinates, indices). Vertex order: outer ring first, then inner rings concatenated.
 pub fn triangulate_polygon(outer: &[WorldPoint], holes: &[Vec<WorldPoint>]) -> (Vec<WorldPoint>, Vec<u32>) {
     let outer = strip_closing_point(outer);
     if outer.len() < 3 {
@@ -634,10 +634,10 @@ pub fn triangulate_polygon(outer: &[WorldPoint], holes: &[Vec<WorldPoint>]) -> (
     }
 }
 
-/// 描边三角形：每个折线点生成一对顶点（左右偏移），相邻点之间 2 个三角形。
+/// Stroke triangles: each polyline point generates a pair of vertices (left/right offsets), with 2 triangles between adjacent points.
 ///
-/// * 偏移方向取相邻线段法线的平均（斜接），斜接长度做上限保护，避免尖角爆边；
-/// * 返回 (顶点, 索引)，顶点为世界坐标米，索引为 `u32`。
+/// * the offset direction is the average of adjacent segment normals (miter), with a miter-length cap to avoid spikes at sharp corners;
+/// * returns (vertices, indices), where vertices are world-coordinate meters and indices are `u32`.
 pub fn stroke_polyline(points: &[WorldPoint], width_m: f64) -> (Vec<WorldPoint>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
@@ -654,7 +654,7 @@ fn normalize(v: WorldPoint) -> WorldPoint {
     }
 }
 
-/// 便捷：用 `MissingPolicy` 判断 way 几何是否完整。
+/// Convenience: use `MissingPolicy` to decide whether a way's geometry is complete.
 pub fn way_is_complete(data: &DataSet, way: Handle<WaySlot>) -> bool {
     match data.ways.nodes(way) {
         Some(refs) => refs.iter().all(|h| data.nodes.contains(*h)),
@@ -662,7 +662,7 @@ pub fn way_is_complete(data: &DataSet, way: Handle<WaySlot>) -> bool {
     }
 }
 
-/// 便于测试/基准的合成折线。
+/// Synthetic polylines for tests/benchmarks.
 pub fn synthetic_line(start: WorldPoint, segments: usize, step_m: f64) -> Vec<WorldPoint> {
     (0..=segments)
         .map(|i| {
@@ -675,10 +675,10 @@ pub fn synthetic_line(start: WorldPoint, segments: usize, step_m: f64) -> Vec<Wo
 }
 
 // ---------------------------------------------------------------------------
-// 零分配变体（场景构建热路径；复用一个 scratch 缓冲区，避免每 way 一次堆分配）
+// Zero-allocation variant (scene-build hot path; reuses one scratch buffer to avoid a heap allocation per way)
 // ---------------------------------------------------------------------------
 
-/// 把 way 解析进 `out`（覆盖写，使用预计算的世界坐标缓存，避免重复投影）。
+/// Parse a way into `out` (overwrite, using the precomputed world-coordinate cache to avoid re-projecting).
 pub fn way_points_cached_into(
     data: &DataSet,
     way: Handle<WaySlot>,
@@ -688,8 +688,8 @@ pub fn way_points_cached_into(
     out.clear();
     if let Some(refs) = data.ways.nodes(way) {
         for h in refs {
-            // 句柄可能已失效（槽位被复用）：必须先校验，否则缓存会返回
-            // "新节点"的坐标，旧 way 被连到错误位置。
+            // The handle may have expired (slot reused): validate it first, otherwise the cache would return
+            // the coordinates of a "new node" and the old way would be connected to the wrong place.
             if !data.nodes.contains(*h) {
                 continue;
             }
@@ -700,7 +700,7 @@ pub fn way_points_cached_into(
     }
 }
 
-/// 把 way 解析进 `out`（覆盖写）。
+/// Parse a way into `out` (overwrite).
 pub fn way_points_into(data: &DataSet, way: Handle<WaySlot>, out: &mut Vec<WorldPoint>) {
     out.clear();
     if let Some(refs) = data.ways.nodes(way) {
@@ -712,7 +712,7 @@ pub fn way_points_into(data: &DataSet, way: Handle<WaySlot>, out: &mut Vec<World
     }
 }
 
-/// RDP 简化进 `out`，`keep` 为复用标志位缓冲。
+/// RDP simplification into `out`, with `keep` as a reusable flag buffer.
 pub fn simplify_rdp_into(
     points: &[WorldPoint],
     tolerance_m: f64,
@@ -736,7 +736,7 @@ pub fn simplify_rdp_into(
     }
 }
 
-/// 描边三角形进 `verts`/`indices`（覆盖写）。
+/// Stroke triangles into `verts`/`indices` (overwrite).
 pub fn stroke_polyline_into(
     points: &[WorldPoint],
     width_m: f64,
@@ -748,11 +748,11 @@ pub fn stroke_polyline_into(
     stroke_polyline_append(points, width_m, verts, indices);
 }
 
-/// 折线在某个顶点处的斜接法线，返回 `(nx, ny, 斜接放大系数)`。
+/// Miter normal of a polyline at a given vertex; returns `(nx, ny, miter scale factor)`.
 ///
-/// 法线取相邻线段法线的平均（左侧为 `(-dy, dx)`，与
-/// [stroke_polyline_append] 的描边方向约定一致）；反向折返退化为单侧法线，
-/// 相邻重复点不做斜接放大，避免屏幕上长出尖刺。
+/// The normal is the average of adjacent segment normals (the left side is `(-dy, dx)`, consistent with
+/// [stroke_polyline_append]'s stroke direction convention); reversal degenerates to a single-side normal,
+/// and adjacent duplicate points are not miter-scaled, avoiding spikes on screen.
 fn join_normal(prev: Option<WorldPoint>, cur: WorldPoint, next: Option<WorldPoint>) -> (f64, f64, f64) {
     let normal_of = |d: WorldPoint| WorldPoint::new(-d.y, d.x);
     let dir_prev = prev.map(|p| normalize(WorldPoint::new(cur.x - p.x, cur.y - p.y)));
@@ -764,7 +764,7 @@ fn join_normal(prev: Option<WorldPoint>, cur: WorldPoint, next: Option<WorldPoin
             let (mut mx, mut my) = (a.x + b.x, a.y + b.y);
             let mlen = (mx * mx + my * my).sqrt();
             if mlen < 1e-9 {
-                // 反向折返：退化为单侧法线。
+                // Reversal: degenerate to a single-side normal.
                 (a.x, a.y, 1.0)
             } else {
                 mx /= mlen;
@@ -790,10 +790,10 @@ fn join_normal(prev: Option<WorldPoint>, cur: WorldPoint, next: Option<WorldPoin
     }
 }
 
-/// 把一条折线整体向一侧平移 `distance_m`（`side`: `1` 左侧、`-1` 右侧）。
+/// Translate an entire polyline sideways by `distance_m` (`side`: `1` left, `-1` right).
 ///
-/// 用于画路堤的坡脚线：平移方向取相邻线段法线的斜接平均，拐角处保持等距。
-/// 覆盖写 `out`；参数非法（距离非有限或 ≤0、点数 <2）时清空。
+/// Used to draw the slope-foot line of an embankment: the offset direction is the miter average of adjacent segment normals, keeping constant distance at corners.
+/// Overwrites `out`; clears it when parameters are invalid (distance non-finite or ≤0, fewer than 2 points).
 pub fn offset_polyline_into(points: &[WorldPoint], distance_m: f64, side: i8, out: &mut Vec<WorldPoint>) {
     out.clear();
     if points.len() < 2 || !distance_m.is_finite() || distance_m <= 1e-9 {
@@ -811,7 +811,7 @@ pub fn offset_polyline_into(points: &[WorldPoint], distance_m: f64, side: i8, ou
     }
 }
 
-/// 把一条折线的描边接到已有三角形后面。虚线要逐段调用，不能每次覆盖。
+/// Append a polyline's stroke after existing triangles. Dashes must call this per segment; it must not overwrite each time.
 pub fn stroke_polyline_append(
     points: &[WorldPoint],
     width_m: f64,
@@ -845,9 +845,9 @@ pub fn stroke_polyline_append(
     }
 }
 
-/// 沿折线放一组方向箭头。`forward` 为假时箭头与点序相反。
+/// Place a set of direction arrows along a polyline. When `forward` is false the arrows point opposite to the point order.
 ///
-/// 间距和尺寸都是米。线太短放不下一个箭头时返回空。
+/// Spacing and size are in meters. Returns empty when the line is too short for even one arrow.
 pub fn direction_arrows(
     points: &[WorldPoint],
     spacing_m: f64,
@@ -916,15 +916,15 @@ fn point_along(points: &[WorldPoint], distance: f64) -> Option<(WorldPoint, f64,
     None
 }
 
-/// 沿折线放坡侧刻线（路堤/路堑）。`side`: 1 = 点序左侧, -1 = 右侧, 0 = 两侧。
+/// Place slope-side hachures along a polyline (embankments/cuttings). `side`: 1 = left of the point order, -1 = right, 0 = both.
 ///
-/// 每条刻线是从折线上的采样点垂直向外、长 `length_m`、宽 `width_m` 的短线；采样沿弧长
-/// 从 `spacing_m * 0.5` 开始、步长 `spacing_m`。覆盖写 `verts`/`indices`；参数非法
-/// （非有限、≤0）或折线不足 2 点时两者清空。
+/// Each hachure is a short line perpendicular to the polyline at a sample point, of length `length_m` and width `width_m`; sampling runs along arc length
+/// starting at `spacing_m * 0.5` with a step of `spacing_m`. Overwrites `verts`/`indices`; with invalid parameters
+/// (non-finite, ≤0) or fewer than 2 points both are cleared.
 ///
-/// 折线总长不足一个 `spacing_m` 时只在弧长中点放一根；`side` 只认 `1`/`-1`，其它值按
-/// `0`（两侧）处理。左侧法线取 `(-dy, dx)`，与 [stroke_polyline_append] 内部的
-/// `normal_of` 约定一致。刻线 tip 可以越过折线端点（刻线不是路径）。
+/// When the polyline's total length is less than one `spacing_m`, only one hachure is placed at the arc-length midpoint; `side` only recognizes `1`/`-1`, any other value is treated as
+/// `0` (both sides). The left normal is `(-dy, dx)`, consistent with the `normal_of` convention inside [stroke_polyline_append].
+/// Hachure tips may extend past the polyline endpoints (hachures are not part of the path).
 pub fn hachure_ticks(
     points: &[WorldPoint],
     spacing_m: f64,
@@ -944,7 +944,7 @@ pub fn hachure_ticks(
     if total <= 1e-9 {
         return;
     }
-    // 只认 ±1；其它值按 0（两侧）处理。顺序固定为左再右，便于场景层统一叠加。
+    // Only ±1 is recognized; other values are treated as 0 (both sides). Order is fixed left then right, so the scene layer can overlay them uniformly.
     let sides: &[f64] = match side {
         1 => &[1.0],
         -1 => &[-1.0],
@@ -954,11 +954,11 @@ pub fn hachure_ticks(
         let Some((base, dx, dy)) = point_along(points, distance) else {
             return;
         };
-        // 左侧法线 = (-dy, dx)；右侧取反。
+        // Left normal = (-dy, dx); the right side negates it.
         let (nx, ny) = (-dy, dx);
         for &sign in sides {
             let tip = WorldPoint::new(base.x + nx * sign * length_m, base.y + ny * sign * length_m);
-            // 复用栈上数组，热路径不额外分配 Vec。
+            // Reuse a stack array; the hot path allocates no extra Vec.
             let segment = [base, tip];
             stroke_polyline_append(&segment, width_m, verts, indices);
         }
@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn closed_rectangle_area_label_is_center_not_corner() {
-        // 墨卡托量级：line_label 半周长会落在对角，面注记必须用质心。
+        // Mercator scale: a line label's half-perimeter would land on the diagonal, so area labels must use the centroid.
         let ox = 11_560_000.0;
         let oy = 3_580_000.0;
         let w = 80.0;
@@ -1184,7 +1184,7 @@ mod tests {
     #[test]
     fn crossing_select_hits_segment_without_nodes_inside() {
         let bounds = WorldBounds::from_points(WorldPoint::new(0.0, 0.0), WorldPoint::new(10.0, 10.0));
-        // 水平线穿过框中部，两端都在框外
+        // A horizontal line crossing the middle of the box, with both ends outside the box
         let crossing = [WorldPoint::new(-5.0, 5.0), WorldPoint::new(15.0, 5.0)];
         assert!(way_matches_box(&crossing, &bounds, BoxSelectMode::Crossing));
         assert!(!way_matches_box(&crossing, &bounds, BoxSelectMode::Window));
@@ -1195,20 +1195,20 @@ mod tests {
     #[test]
     fn hachure_ticks_place_evenly_on_the_left_side() {
         let line = [WorldPoint::new(0.0, 0.0), WorldPoint::new(100.0, 0.0)];
-        // 预填垃圾，验证覆盖写而不是追加。
+        // Pre-fill with garbage to verify overwrite rather than append.
         let mut verts = vec![WorldPoint::new(-999.0, -999.0)];
         let mut indices = vec![7_u32];
         hachure_ticks(&line, 10.0, 5.0, 1.0, 1, &mut verts, &mut indices);
-        // total=100，采样弧长 5,15,…,95 共 10 根；每根两点描边 = 2 点 × 2 顶点、6 索引。
+        // total=100, sample arc lengths 5,15,…,95 for 10 hachures; each hachure has a 2-point stroke = 2 points × 2 vertices, 6 indices.
         assert_eq!(indices.len(), 60);
         assert_eq!(verts.len(), 40);
         assert_eq!(indices.len() % 6, 0);
         assert!(indices.iter().all(|&index| (index as usize) < verts.len()));
-        // side=1 用左法线 (0,1)：所有顶点 y ≥ 0 且不超过刻线长度。
+        // side=1 uses the left normal (0,1): all vertices have y ≥ 0 and do not exceed the hachure length.
         assert!(verts.iter().all(|v| v.y >= -1e-9));
         assert!(verts.iter().all(|v| v.y <= 5.0 + 1e-9));
         assert!(verts.iter().any(|v| (v.y - 5.0).abs() < 1e-9));
-        // 第一根的 base 弧长 5、最后一根 95（描边沿 x 方向再偏 ±半宽 0.5）。
+        // The first hachure has base arc length 5, the last 95 (the stroke is shifted ±half width 0.5 along x).
         assert!((verts[0].x - 4.5).abs() < 1e-9);
         assert!((verts[36].x - 94.5).abs() < 1e-9);
     }
@@ -1220,7 +1220,7 @@ mod tests {
         let mut indices = Vec::new();
         hachure_ticks(&line, 10.0, 5.0, 1.0, -1, &mut verts, &mut indices);
         assert_eq!(indices.len(), 60);
-        // 右法线 (0,-1)：tip 在折线下方。
+        // Right normal (0,-1): tips are below the polyline.
         assert!(verts.iter().all(|v| v.y <= 1e-9));
         assert!(verts.iter().any(|v| v.y < -4.9));
     }
@@ -1252,7 +1252,7 @@ mod tests {
         let mut indices = Vec::new();
         hachure_ticks(&line, 10.0, 5.0, 1.0, 1, &mut verts, &mut indices);
         assert_eq!(indices.len(), 60);
-        // 点序向上时左法线为 (-1,0)，刻线落在 x<0 一侧。
+        // With the point order going up, the left normal is (-1,0), so hachures fall on the x<0 side.
         assert!(verts.iter().all(|v| v.x >= -5.0 - 1e-9 && v.x <= 1e-9));
         assert!(verts.iter().any(|v| v.x < -4.9));
     }
@@ -1280,9 +1280,9 @@ mod tests {
             hachure_ticks(points, spacing, length, width, 1, &mut verts, &mut indices);
             assert!(
                 verts.is_empty(),
-                "verts 未清空: {points:?} {spacing} {length} {width}"
+                "verts not cleared: {points:?} {spacing} {length} {width}"
             );
-            assert!(indices.is_empty(), "indices 未清空: {points:?}");
+            assert!(indices.is_empty(), "indices not cleared: {points:?}");
         }
     }
 
@@ -1292,7 +1292,7 @@ mod tests {
         let mut verts = Vec::new();
         let mut indices = Vec::new();
         hachure_ticks(&line, 10.0, 5.0, 1.0, 1, &mut verts, &mut indices);
-        // total=4 < spacing=10：只在弧长中点 2.0 放一根。
+        // total=4 < spacing=10: only one hachure at arc-length midpoint 2.0.
         assert_eq!(indices.len(), 6);
         assert_eq!(verts.len(), 4);
         assert!((verts[0].x - 1.5).abs() < 1e-9);
@@ -1313,11 +1313,11 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!((out[0].y + 5.0).abs() < 1e-9 && (out[1].y + 5.0).abs() < 1e-9);
 
-        // 覆盖写，而不是追加；非法参数清空。
+        // Overwrite, not append; invalid parameters clear the buffers.
         for &(distance, points) in &[(0.0_f64, &line[..]), (f64::NAN, &line[..]), (5.0, &[][..])] {
             let mut out = vec![WorldPoint::new(-999.0, -999.0)];
             offset_polyline_into(points, distance, 1, &mut out);
-            assert!(out.is_empty(), "距离 {distance} 时应清空输出");
+            assert!(out.is_empty(), "output must be cleared at distance {distance}");
         }
     }
 
@@ -1331,11 +1331,11 @@ mod tests {
         let mut out = Vec::new();
         offset_polyline_into(&corner, 2.0, 1, &mut out);
         assert_eq!(out.len(), 3);
-        // 90° 拐角的斜接交点：(10,0) 左移 2、上移 2 → (8, 2)。
+        // Miter intersection at a 90° corner: (10,0) shifted left 2 and up 2 → (8, 2).
         let miter = out[1];
         assert!((miter.x - 8.0).abs() < 1e-6);
         assert!((miter.y - 2.0).abs() < 1e-6);
-        // 两种平移方向互为镜像。
+        // The two translation directions are mirror images of each other.
         let mut right = Vec::new();
         offset_polyline_into(&corner, 2.0, -1, &mut right);
         assert!((right[1].x - 12.0).abs() < 1e-6);
@@ -1350,7 +1350,7 @@ mod tests {
             WorldPoint::new(100.0, 100.0),
             WorldPoint::new(0.0, 100.0),
         ];
-        // 带宽 20：条带内边界是 20..80 的环。
+        // Band width 20: the band's inner boundary is the ring 20..80.
         let deep = vec![
             WorldPoint::new(40.0, 40.0),
             WorldPoint::new(60.0, 40.0),
@@ -1359,7 +1359,7 @@ mod tests {
         ];
         assert!(band_clears_holes(&outer, std::slice::from_ref(&deep), 20.0));
 
-        // 洞落在条带范围内：条带几何不扣洞，会被整片盖住。
+        // A hole falls within the band range: band geometry does not subtract holes, so it would be covered entirely.
         let in_band = vec![
             WorldPoint::new(5.0, 5.0),
             WorldPoint::new(15.0, 5.0),
@@ -1368,7 +1368,7 @@ mod tests {
         ];
         assert!(!band_clears_holes(&outer, &[in_band], 20.0));
 
-        // 洞跨过条带内边界。
+        // A hole crosses the band's inner boundary.
         let crossing = vec![
             WorldPoint::new(10.0, 10.0),
             WorldPoint::new(30.0, 10.0),
@@ -1377,7 +1377,7 @@ mod tests {
         ];
         assert!(!band_clears_holes(&outer, &[crossing], 20.0));
 
-        // 洞包住整条内边界。
+        // A hole encloses the entire inner boundary.
         let huge = vec![
             WorldPoint::new(10.0, 10.0),
             WorldPoint::new(90.0, 10.0),
@@ -1386,7 +1386,7 @@ mod tests {
         ];
         assert!(!band_clears_holes(&outer, &[huge], 20.0));
 
-        // 没有洞、或条带退化（宽度 0）时都交给实心路径。
+        // With no holes, or a degenerate band (width 0), both cases are left to the solid path.
         assert!(band_clears_holes(&outer, &[], 20.0));
         assert!(band_clears_holes(&outer, &[deep], 0.0));
     }

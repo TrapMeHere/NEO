@@ -1,13 +1,13 @@
-//! 进程峰值内存（Windows 用 Win32 API；其他平台退化为 None）。
+//! Process peak memory (Win32 API on Windows; degrades to None on other platforms).
 
-/// 返回当前进程的峰值工作集（MiB）。
+/// Returns the current process's peak working set (MiB).
 #[cfg(windows)]
 pub fn peak_working_set_mib() -> Option<f64> {
     use windows_sys::Win32::Foundation::FALSE;
     use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-    // SAFETY: 只读查询当前进程的内存统计；结构体按文档初始化，句柄来自 GetCurrentProcess。
+    // SAFETY: read-only query of the current process's memory statistics; the struct is initialized per the docs and the handle comes from GetCurrentProcess.
     unsafe {
         let mut counters = PROCESS_MEMORY_COUNTERS {
             cb: core::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
@@ -21,7 +21,7 @@ pub fn peak_working_set_mib() -> Option<f64> {
     }
 }
 
-/// 非 Windows 平台暂不统计（Linux 可读 /proc/self/status，macOS 用 task_info）。
+/// Not measured on non-Windows platforms for now (Linux could read /proc/self/status, macOS could use task_info).
 #[cfg(not(windows))]
 pub fn peak_working_set_mib() -> Option<f64> {
     None

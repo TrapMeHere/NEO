@@ -1,4 +1,4 @@
-//! 级联删除回归测试：删节点/way/relation 时引用者必须被同步修正（JOSM 语义）。
+//! Cascade-delete regression tests: when deleting nodes/ways/relations, referrers must be fixed up in sync (JOSM semantics).
 
 use neo_core::{LatLon, ObjectId, ObjectKind};
 use neo_editor::{AddNode, AddRelation, AddWay, Editor, RelationMemberSpec, plan_delete};
@@ -50,7 +50,10 @@ fn deleting_middle_vertex_resizes_way_in_one_undo_step() {
     add_way(&mut editor, 10, &[1, 2, 3]);
 
     let plan = plan_delete(&mut editor, &[(ObjectKind::Node, ObjectId(2))]).unwrap();
-    assert!(plan.reaped_ways.is_empty(), "3 点 way 删 1 点后仍有 2 点");
+    assert!(
+        plan.reaped_ways.is_empty(),
+        "deleting 1 of 3 nodes leaves 2 nodes"
+    );
     assert_eq!(plan.touched_ways, vec![ObjectId(10)]);
     let undo_before = editor.history().undo_len();
     editor.execute_batch(plan.commands).unwrap();
@@ -60,7 +63,7 @@ fn deleting_middle_vertex_resizes_way_in_one_undo_step() {
         editor.data().change_state(ObjectKind::Node, ObjectId(2)),
         ChangeState::Deleted
     );
-    // 一批命令 = 一条历史记录。
+    // One command batch = one history entry.
     assert_eq!(editor.history().undo_len(), undo_before + 1);
 
     editor.undo().unwrap();
@@ -90,7 +93,7 @@ fn deleting_vertex_of_two_node_way_reaps_the_way() {
         editor.data().change_state(ObjectKind::Node, ObjectId(1)),
         ChangeState::Deleted
     );
-    // 剩下的节点不受影响。
+    // The remaining nodes are unaffected.
     assert_eq!(
         editor.data().change_state(ObjectKind::Node, ObjectId(2)),
         ChangeState::Added
@@ -110,7 +113,7 @@ fn node_shared_by_two_ways_is_removed_from_both() {
     for id in 1..=5 {
         add_node(&mut editor, id);
     }
-    // 共享节点 3。
+    // Shared node 3.
     add_way(&mut editor, 10, &[1, 2, 3]);
     add_way(&mut editor, 11, &[3, 4, 5]);
 
@@ -145,8 +148,8 @@ fn deleting_node_drops_direct_relation_membership() {
     let members = editor.relation_members(ObjectId(20)).unwrap();
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].id, ObjectId(2));
-    // 这条 relation 是本地新建的（change_state = Added），SetRelationMembers 只在
-    // Unchanged 时提升为 Modified；这里断言它没被误标成 Deleted。
+    // This relation was newly created locally (change_state = Added); SetRelationMembers only
+    // promotes it to Modified when Unchanged; assert here that it was not wrongly marked Deleted.
     assert_ne!(
         editor.data().change_state(ObjectKind::Relation, ObjectId(20)),
         ChangeState::Deleted
@@ -161,7 +164,7 @@ fn deleting_way_drops_parent_relation_membership_instead_of_refusing() {
     add_way(&mut editor, 10, &[1, 2]);
     add_relation(&mut editor, 20, vec![member(ObjectKind::Way, 10, "outer")]);
 
-    // 修复前：DeleteObject 会以 "way 10 is still referenced by relations" 直接失败。
+    // Before the fix: DeleteObject would fail outright with "way 10 is still referenced by relations".
     let plan = plan_delete(&mut editor, &[(ObjectKind::Way, ObjectId(10))]).unwrap();
     assert_eq!(plan.touched_relations, vec![ObjectId(20)]);
     editor.execute_batch(plan.commands).unwrap();
@@ -192,7 +195,7 @@ fn deleting_relation_drops_parent_relation_membership() {
 
 #[test]
 fn selecting_node_together_with_its_way_deletes_both() {
-    // 用户实际遇到的 "删除 0/2"：同时选中节点和它的 way。
+    // The real-world "delete 0/2" case: select a node together with its way.
     let mut editor = Editor::new(DataSet::new());
     add_node(&mut editor, 1);
     add_node(&mut editor, 2);
@@ -203,7 +206,7 @@ fn selecting_node_together_with_its_way_deletes_both() {
         &[(ObjectKind::Node, ObjectId(1)), (ObjectKind::Way, ObjectId(10))],
     )
     .unwrap();
-    // way 本身在删除集里，不应再被"摘点"或重复删除。
+    // The way itself is in the delete set, so it must not have nodes removed again or be deleted twice.
     assert!(plan.reaped_ways.is_empty());
     assert!(plan.touched_ways.is_empty());
     let undo_before = editor.history().undo_len();

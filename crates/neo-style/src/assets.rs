@@ -1,15 +1,15 @@
-//! 运行时资源查找。字体、预设等外置文件不编进二进制。
+//! Runtime asset lookup. Fonts, presets and other external files are not compiled into the binary.
 //!
-//! 搜索顺序：
+//! Search order:
 //! 1. `NEO_ASSET_DIR`
-//! 2. 可执行文件目录及其 `assets/`
-//! 3. 开发时从可执行文件目录往上查找仓库根的 `assets`
-//! 4. 当前工作目录及其 `assets/`
+//! 2. the executable directory and its `assets/`
+//! 3. during development, walk up from the executable directory to the repository root's `assets`
+//! 4. the current working directory and its `assets/`
 
 use std::env;
 use std::path::{Path, PathBuf};
 
-/// 可能存放资源的根目录（去重后）。
+/// Directories that may contain assets (after deduplication).
 pub fn asset_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut push = |path: PathBuf| {
@@ -29,13 +29,13 @@ pub fn asset_roots() -> Vec<PathBuf> {
     {
         push(dir.to_path_buf());
         push(dir.join("assets"));
-        // Linux 安装布局：/usr/bin/neo-desktop + /usr/share/neo/assets
+        // Linux install layout: /usr/bin/neo-desktop + /usr/share/neo/assets
         push(dir.join("../share/neo"));
         push(dir.join("../share/neo/assets"));
-        // macOS bundle：Contents/MacOS/neo-desktop + Contents/Resources/assets
+        // macOS bundle: Contents/MacOS/neo-desktop + Contents/Resources/assets
         push(dir.join("../Resources"));
         push(dir.join("../Resources/assets"));
-        // out/cargo/debug 上到仓库根。测试二进制在 debug/deps 或 debug/build/.../out，要多走几层。
+        // out/cargo/debug up to the repository root. Test binaries live in debug/deps or debug/build/.../out, so walk up several levels.
         let mut ancestor = dir.to_path_buf();
         for _ in 0..8 {
             let Some(parent) = ancestor.parent() else {
@@ -53,7 +53,7 @@ pub fn asset_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// 在资源根下查找相对路径（例如 `fonts/NotoSansCJKsc-Regular.otf`）。
+/// Look up a relative path under the asset roots (e.g. `fonts/NotoSansCJKsc-Regular.otf`).
 pub fn find_asset(relative: impl AsRef<Path>) -> Option<PathBuf> {
     let relative = relative.as_ref();
     for root in asset_roots() {
@@ -65,7 +65,7 @@ pub fn find_asset(relative: impl AsRef<Path>) -> Option<PathBuf> {
     None
 }
 
-/// 读取资源文件；找不到返回 `None`。
+/// Read an asset file; returns `None` when not found.
 pub fn read_asset(relative: impl AsRef<Path>) -> Option<Vec<u8>> {
     let path = find_asset(relative)?;
     std::fs::read(path).ok()

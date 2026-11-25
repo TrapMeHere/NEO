@@ -1,7 +1,7 @@
-//! GPX 1.1 读写。
+//! GPX 1.1 reading and writing.
 //!
-//! 航点写成 node（`gpx=waypoint`），每条轨迹段写成一条 way（`gpx=track`）。
-//! 这是阶段 5 的附加交换格式，不替代 OSM XML。
+//! Waypoints become nodes (`gpx=waypoint`), and each track segment becomes one way (`gpx=track`).
+//! This is an additional exchange format added in stage 5; it does not replace OSM XML.
 
 use neo_core::{LatLon, Meta, NeoError, ObjectId};
 use neo_osm::{Node, Tags, Way};
@@ -9,18 +9,18 @@ use neo_store::{DataSet, MissingPolicy};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
-/// 一次 GPX 导入的计数。
+/// Counts for one GPX import.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpxImportReport {
-    /// 航点数。
+    /// Waypoint count.
     pub waypoints: usize,
-    /// 轨迹点数。
+    /// Track point count.
     pub track_points: usize,
-    /// 轨迹条数。
+    /// Track count.
     pub tracks: usize,
 }
 
-/// 从 GPX 文本追加到数据集。
+/// Appends GPX text to a dataset.
 pub fn read_gpx(xml: &str, data: &mut DataSet) -> Result<GpxImportReport, NeoError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -80,7 +80,7 @@ pub fn read_gpx(xml: &str, data: &mut DataSet) -> Result<GpxImportReport, NeoErr
     Ok(report)
 }
 
-/// 把数据集写成 GPX。不在任何 way 里的节点是航点，每条 way 是一条轨迹。
+/// Writes a dataset as GPX. Nodes not in any way are waypoints, and each way is a track.
 pub fn write_gpx(data: &DataSet) -> String {
     let mut used = std::collections::HashSet::new();
     let mut tracks = String::new();

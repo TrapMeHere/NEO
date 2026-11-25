@@ -1,12 +1,12 @@
-//! # neo-tools — 交互工具（选择 / 绘制 / 删除）
+//! # neo-tools — interactive tools (select / draw / delete)
 //!
-//! 工具是**纯状态机**：输入"点击/拖拽结束 + 命中结果 + 世界坐标"，输出编辑命令（通过
-//! `neo_editor::Editor` 执行）。不依赖 egui/wgpu，因此可以单测、可被未来 CLI/脚本复用。
+//! Tools are **pure state machines**: input "click/drag end + hit result + world coordinates", output edit commands (executed through
+//! `neo_editor::Editor`). No dependency on egui/wgpu, so they are unit-testable and reusable by future CLI/scripts.
 //!
-//! 绘制语义：
-//! * **点**：点击创建单个节点；
-//! * **线**：首次点击放起点，后续点击追加节点；再次点击最新节点或 `finish_way` 结束；
-//! * **面**：同线，结束时自动闭合；再次点击起点也可闭合。
+//! Drawing semantics:
+//! * **Point**: click to create a single node;
+//! * **Line**: the first click places the start point, later clicks append nodes; clicking the newest node again or `finish_way` ends it;
+//! * **Area**: same as line, auto-closes at the end; clicking the start point again also closes it.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -26,68 +26,68 @@ pub use geom::{
 };
 pub use neo_geo::{SnapHit as DrawSnapHit, SnapTarget as DrawSnapTarget};
 
-/// 当前工具。
+/// Current tool.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ToolKind {
-    /// 选择/移动。
+    /// Select/move.
     #[default]
     Select,
-    /// 创建节点。
+    /// Create a node.
     DrawPoint,
-    /// 绘制折线。
+    /// Draw a polyline.
     DrawLine,
-    /// 绘制闭合面。
+    /// Draw a closed area.
     DrawArea,
 }
 
 impl ToolKind {
-    /// 显示名。
+    /// Display name.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Select => "选择",
-            Self::DrawPoint => "点",
-            Self::DrawLine => "线",
-            Self::DrawArea => "面",
+            Self::Select => "Select",
+            Self::DrawPoint => "Point",
+            Self::DrawLine => "Line",
+            Self::DrawArea => "Area",
         }
     }
 
-    /// 是否为绘制类工具。
+    /// Whether this is a drawing tool.
     pub fn is_draw(self) -> bool {
         matches!(self, Self::DrawPoint | Self::DrawLine | Self::DrawArea)
     }
 }
 
-/// 命中结果（由应用层用 `neo_geo::HitTester` 得到）。
+/// Hit result (obtained by the app layer with `neo_geo::HitTester`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pick {
-    /// 命中节点。
+    /// Hit node.
     pub node: Option<ObjectId>,
-    /// 命中路径。
+    /// Hit way.
     pub way: Option<ObjectId>,
-    /// 命中关系（点在面的内圈上）。
+    /// Hit relation (the point is on an area's inner ring).
     pub relation: Option<ObjectId>,
 }
 
-/// 工具处理结果。
+/// Tool processing result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// 无变化。
+    /// No change.
     None,
-    /// 选择集变了。
+    /// The selection changed.
     SelectionChanged,
-    /// 执行了一次编辑。
+    /// One edit was executed.
     Edited(String),
-    /// 提示/错误信息。
+    /// Hint/error message.
     Message(String),
 }
 
 impl Outcome {
-    /// 是否有编辑发生（应用层据此刷新场景/面板）。
+    /// Whether an edit happened (the app layer refreshes scene/panels based on this).
     pub fn is_edit(&self) -> bool {
         matches!(self, Self::Edited(_))
     }
 
-    /// 取状态文本。
+    /// Get the status text.
     pub fn message(&self) -> Option<&str> {
         match self {
             Self::Edited(m) | Self::Message(m) => Some(m),
@@ -96,17 +96,17 @@ impl Outcome {
     }
 }
 
-/// 工具状态机。
+/// Tool state machine.
 pub struct EditController {
-    /// 当前工具。
+    /// Current tool.
     pub tool: ToolKind,
-    /// 绘制时是否启用几何吸附（Alt 临时关闭由应用层处理）。
+    /// Whether geometric snapping is enabled while drawing (Alt temporarily disables it; handled by the app layer).
     pub snap_enabled: bool,
     pending_nodes: Vec<ObjectId>,
     pending_way: Option<ObjectId>,
-    /// 当前绘制会话中每一步写入的历史条数（供右键逐步回退）。
+    /// Number of history entries written per step in the current draw session (for stepwise rollback via right-click).
     draw_step_cmds: Vec<usize>,
-    /// 刚完成一个完整要素（点落成 / 线面结束），应用层应切回选择工具。
+    /// A complete feature was just finished (point placed / line or area ended); the app layer should switch back to the select tool.
     finished_feature: bool,
 }
 
@@ -117,7 +117,7 @@ impl Default for EditController {
 }
 
 impl EditController {
-    /// 构造。
+    /// Construct.
     pub fn new(tool: ToolKind) -> Self {
         Self {
             tool,
@@ -129,7 +129,7 @@ impl EditController {
         }
     }
 
-    /// 切换工具（会结束未完成的绘制）。
+    /// Switch tools (ends an unfinished drawing).
     pub fn set_tool(&mut self, tool: ToolKind) {
         if tool != self.tool {
             self.reset_pending();
@@ -137,43 +137,43 @@ impl EditController {
         self.tool = tool;
     }
 
-    /// 取出并清除「要素已完成」标志。
+    /// Take and clear the "feature finished" flag.
     pub fn take_finished_feature(&mut self) -> bool {
         let done = self.finished_feature;
         self.finished_feature = false;
         done
     }
 
-    /// 当前绘制中的节点数。
+    /// Number of nodes currently being drawn.
     pub fn pending_len(&self) -> usize {
         self.pending_nodes.len()
     }
 
-    /// 当前绘制中的路径。
+    /// The way currently being drawn.
     pub fn pending_way(&self) -> Option<ObjectId> {
         self.pending_way
     }
 
-    /// 当前绘制中的节点序列（含尚未成路径的起点）。
+    /// The node sequence currently being drawn (including the start point not yet made into a way).
     pub fn pending_nodes(&self) -> &[ObjectId] {
         &self.pending_nodes
     }
 
-    /// 放弃未完成的路径。
+    /// Abandon the unfinished way.
     pub fn reset_pending(&mut self) {
         self.pending_nodes.clear();
         self.pending_way = None;
         self.draw_step_cmds.clear();
     }
 
-    /// 结束当前路径（面模式会先闭合并确保 `area=yes`；保留已创建的命令历史）。
+    /// End the current way (area mode closes it first and ensures `area=yes`; the command history created so far is kept).
     pub fn finish_way(&mut self, editor: &mut Editor) -> Outcome {
         if self.pending_nodes.is_empty() {
             return Outcome::None;
         }
         if self.tool == ToolKind::DrawArea {
             if self.pending_nodes.len() < 3 {
-                return Outcome::Message("面至少需要 3 个节点".into());
+                return Outcome::Message("an area needs at least 3 nodes".into());
             }
             let before = editor.history().undo_len();
             if let Err(err) = self.close_pending_area(editor) {
@@ -191,10 +191,10 @@ impl EditController {
             editor.selection_mut().select_only(ObjectKind::Way, way);
         }
         self.finished_feature = true;
-        Outcome::Message(format!("已结束路径（{count} 个节点）"))
+        Outcome::Message(format!("Finished way ({count} nodes)"))
     }
 
-    /// 绘制模式下回退上一步绘制；若上一步不是绘制则不撤销其它历史。
+    /// In drawing mode, undo the previous drawing step; if the previous step was not a drawing, other history is left untouched.
     pub fn undo_last_draw(&mut self, editor: &mut Editor) -> Outcome {
         if !self.tool.is_draw() {
             return Outcome::None;
@@ -207,9 +207,9 @@ impl EditController {
                 }
             }
             self.resync_pending_after_undo(editor);
-            return Outcome::Edited("回退绘制".into());
+            return Outcome::Edited("Undo drawing".into());
         }
-        // 续画载入尚未写入历史：仅取消草稿。
+        // Continuing a draw is loaded without writing history: cancel the draft only.
         if !self.pending_nodes.is_empty() || self.pending_way.is_some() {
             self.reset_pending();
             return Outcome::None;
@@ -239,12 +239,12 @@ impl EditController {
         }
     }
 
-    /// 处理一次点击。
+    /// Handle one click.
     pub fn on_click(&mut self, editor: &mut Editor, pick: Pick, pos: LatLon) -> Outcome {
         self.on_click_with_snap(editor, pick, pos, None)
     }
 
-    /// 处理一次点击，可附带吸附结果（绘制工具使用）。
+    /// Handle one click, optionally with a snap result (used by drawing tools).
     pub fn on_click_with_snap(
         &mut self,
         editor: &mut Editor,
@@ -259,7 +259,7 @@ impl EditController {
         }
     }
 
-    /// 处理一次点击（`additive` = Shift/Ctrl 追加选择，用于多选）。
+    /// Handle one click (`additive` = Shift/Ctrl append selection, for multi-select).
     pub fn on_click_multi(
         &mut self,
         editor: &mut Editor,
@@ -270,7 +270,7 @@ impl EditController {
         self.on_click_multi_with_snap(editor, pick, pos, additive, None)
     }
 
-    /// 多选点击 + 可选吸附。
+    /// Multi-select click + optional snapping.
     pub fn on_click_multi_with_snap(
         &mut self,
         editor: &mut Editor,
@@ -325,13 +325,13 @@ impl EditController {
             ..
         }) = snap
         {
-            return Outcome::Message("已有节点".into());
+            return Outcome::Message("node already exists".into());
         }
         if pick.node.is_some() && snap.is_none() {
-            return Outcome::Message("已有节点".into());
+            return Outcome::Message("node already exists".into());
         }
         let before = editor.history().undo_len();
-        // 线段吸附：新建节点并插入该路径，成为共享成员。
+        // Segment snapping: create a node and insert it into the way, making it a shared member.
         if let Some(SnapHit {
             target: SnapTarget::WaySegment { way, seg, at },
             ..
@@ -342,7 +342,7 @@ impl EditController {
                     self.note_draw_step(editor, before);
                     editor.selection_mut().select_only(ObjectKind::Node, id);
                     self.finished_feature = true;
-                    Outcome::Edited(format!("在线段上创建节点 {id}"))
+                    Outcome::Edited(format!("Create node {id} on segment"))
                 }
                 Err(err) => Outcome::Message(err),
             };
@@ -355,13 +355,13 @@ impl EditController {
                 self.note_draw_step(editor, before);
                 editor.selection_mut().select_only(ObjectKind::Node, id);
                 self.finished_feature = true;
-                Outcome::Edited(format!("创建节点 {id}"))
+                Outcome::Edited(format!("Create node {id}"))
             }
-            Err(err) => Outcome::Message(format!("创建节点失败：{err}")),
+            Err(err) => Outcome::Message(format!("Failed to create node: {err}")),
         }
     }
 
-    /// 在路径线段中点插入节点并选中；成功时返回新节点 ID。
+    /// Insert a node at the midpoint of a way segment and select it; returns the new node ID on success.
     pub fn insert_midpoint_node(
         &mut self,
         editor: &mut Editor,
@@ -384,7 +384,7 @@ impl EditController {
             })
             .or(pick.node);
 
-        // 线工具、草稿为空：点击开放路径端点 → 载入续画（不写状态栏）。
+        // Line tool with an empty draft: clicking an open way's endpoint -> load for continuation (no status bar message).
         if self.pending_nodes.is_empty()
             && self.tool == ToolKind::DrawLine
             && let Some(node) = hit_node
@@ -393,7 +393,7 @@ impl EditController {
             return self.begin_continue_way(editor, way, node);
         }
 
-        // 线：再次点击最新节点 → 结束绘制（先于落点解析，避免新建重复节点）。
+        // Line: clicking the newest node again -> end drawing (before hit resolution, to avoid creating a duplicate node).
         if let Some(id) = hit_node
             && self.pending_nodes.last() == Some(&id)
         {
@@ -403,7 +403,7 @@ impl EditController {
             return Outcome::None;
         }
 
-        // 面：再次点到起点则闭合结束。
+        // Area: clicking the start point again closes and ends it.
         if self.tool == ToolKind::DrawArea
             && self.pending_nodes.len() >= 3
             && self.pending_nodes.first() == hit_node.as_ref()
@@ -421,9 +421,9 @@ impl EditController {
             self.pending_nodes.push(node_id);
             self.note_draw_step(editor, before);
             let tip = if self.tool == ToolKind::DrawArea {
-                "已放置起点，继续点击绘制面；再次点击起点或按完成以闭合"
+                "Start point placed; keep clicking to draw the area, then click the start point again or press finish to close it"
             } else {
-                "已放置起点，继续点击绘制线；再次点击最新节点结束"
+                "Start point placed; keep clicking to draw the line, then click the latest node again to finish"
             };
             return if created_on_segment || before < editor.history().undo_len() {
                 Outcome::Edited(tip.into())
@@ -432,7 +432,7 @@ impl EditController {
             };
         }
 
-        // 落点解析后若仍落到最新节点（例如仅 pick 命中），同样结束/忽略。
+        // If hit resolution still lands on the newest node (e.g. only the pick matched), end/ignore likewise.
         if self.pending_nodes.last() == Some(&node_id) {
             if self.tool == ToolKind::DrawLine && self.pending_nodes.len() >= 2 {
                 return self.finish_way(editor);
@@ -440,7 +440,7 @@ impl EditController {
             return Outcome::None;
         }
 
-        // 面：落点解析后点到起点则闭合。
+        // Area: if hit resolution lands on the start point, close it.
         if self.tool == ToolKind::DrawArea
             && self.pending_nodes.len() >= 3
             && self.pending_nodes.first() == Some(&node_id)
@@ -453,8 +453,8 @@ impl EditController {
         let outcome = if let Some(way) = self.pending_way {
             let nodes = self.pending_nodes.clone();
             match editor.execute(Box::new(SetWayNodes::new(way, nodes))) {
-                Ok(()) => Outcome::Edited("追加路径节点".into()),
-                Err(err) => Outcome::Message(format!("追加失败：{err}")),
+                Ok(()) => Outcome::Edited("Append way node".into()),
+                Err(err) => Outcome::Message(format!("Failed to append: {err}")),
             }
         } else if self.pending_nodes.len() >= 2 {
             let way_id = editor.next_local_id();
@@ -468,9 +468,9 @@ impl EditController {
             match editor.execute(Box::new(cmd)) {
                 Ok(()) => {
                     self.pending_way = Some(way_id);
-                    Outcome::Edited(format!("开始路径 {way_id}"))
+                    Outcome::Edited(format!("Start way {way_id}"))
                 }
-                Err(err) => Outcome::Message(format!("创建路径失败：{err}")),
+                Err(err) => Outcome::Message(format!("Failed to create way: {err}")),
             }
         } else {
             Outcome::None
@@ -479,10 +479,10 @@ impl EditController {
         outcome
     }
 
-    /// 从已有开放路径的端点开始续画。
+    /// Continue drawing from an existing open way's endpoint.
     fn begin_continue_way(&mut self, editor: &mut Editor, way: ObjectId, endpoint: ObjectId) -> Outcome {
         let Some(handle) = editor.data().way_handle(way) else {
-            return Outcome::Message("路径不存在".into());
+            return Outcome::Message("way does not exist".into());
         };
         let mut nodes = editor.data().way_node_ids(handle);
         if nodes.len() < 2 {
@@ -495,7 +495,7 @@ impl EditController {
         }
         self.pending_way = Some(way);
         self.pending_nodes = nodes;
-        // 画布 overlay 反馈即可，不写状态栏。
+        // Canvas overlay feedback is enough; no status bar message.
         Outcome::None
     }
 
@@ -510,13 +510,13 @@ impl EditController {
             return Ok(());
         };
         let nodes = self.pending_nodes.clone();
-        // 首尾必须同一节点：否则仍会被当成未闭合路径。
+        // First and last must be the same node: otherwise it is still treated as an unclosed way.
         if nodes.len() < 4 || nodes.first() != nodes.last() {
-            return Err("面未能闭合".into());
+            return Err("the area could not be closed".into());
         }
         editor
             .execute(Box::new(SetWayNodes::new(way, nodes)))
-            .map_err(|err| format!("闭合失败：{err}"))
+            .map_err(|err| format!("Failed to close: {err}"))
     }
 
     fn ensure_area_yes(&self, editor: &mut Editor) -> Result<(), String> {
@@ -546,39 +546,39 @@ impl EditController {
         tags.push(("area".to_owned(), "yes".to_owned()));
         editor
             .execute(Box::new(SetTags::new(ObjectKind::Way, way, tags)))
-            .map_err(|err| format!("写入 area=yes 失败：{err}"))
+            .map_err(|err| format!("Failed to write area=yes: {err}"))
     }
 
-    /// 拖拽结束：把节点从 `from` 移到 `to`（一次拖动 = 一条历史）。
+    /// Drag end: move the node from `from` to `to` (one drag = one history entry).
     pub fn on_drag_end(&mut self, editor: &mut Editor, node: ObjectId, from: LatLon, to: LatLon) -> Outcome {
         if from == to {
             return Outcome::None;
         }
         match editor.execute(Box::new(MoveNode::new(node, from, to))) {
-            Ok(()) => Outcome::Edited("移动节点".into()),
-            Err(err) => Outcome::Message(format!("移动失败：{err}")),
+            Ok(()) => Outcome::Edited("Move node".into()),
+            Err(err) => Outcome::Message(format!("Failed to move: {err}")),
         }
     }
 
-    /// 合并两条端点相邻的路径（自动处理方向）。
+    /// Merge two endpoint-adjacent ways (direction handled automatically).
     pub fn merge_ways(&mut self, editor: &mut Editor, a: ObjectId, b: ObjectId) -> Outcome {
         match editor.execute(Box::new(neo_editor::MergeWay::new(a, b))) {
-            Ok(()) => Outcome::Edited("合并路径".into()),
-            Err(err) => Outcome::Message(format!("合并失败：{err}")),
+            Ok(()) => Outcome::Edited("Merge ways".into()),
+            Err(err) => Outcome::Message(format!("Failed to merge: {err}")),
         }
     }
 
-    /// 合并所选头尾相连的路径（可多条；每条链合并成一条）。
+    /// Merge the selected end-to-end connected ways (possibly several; each chain becomes one way).
     ///
-    /// 只考虑开放路径，按共享端点把所选路径连成链；分叉、成环或互不相邻的组会跳过。
-    /// 所有链的合并命令一次 `execute_batch` 提交，撤销一次可整批回退。
+    /// Only open ways are considered; selected ways are linked into chains by shared endpoints, and groups that branch, loop, or are disconnected are skipped.
+    /// All chains' merge commands are submitted in one `execute_batch`; a single undo reverts the whole batch.
     pub fn merge_chain_ways(&mut self, editor: &mut Editor, ways: &[ObjectId]) -> Outcome {
         let mut node_seqs: Vec<(ObjectId, Vec<ObjectId>)> = Vec::with_capacity(ways.len());
         for way in ways {
             let Some(handle) = editor.data().way_handle(*way) else {
                 continue;
             };
-            // 已逻辑删除的路径不再参与编辑。
+            // Logically deleted ways no longer take part in editing.
             let Some(view) = editor.data().way_view(handle) else {
                 continue;
             };
@@ -592,12 +592,14 @@ impl EditController {
         }
         let chains = chain_merge_order(&node_seqs);
         if chains.is_empty() {
-            return Outcome::Message("所选路径无法合并：需要至少两条头尾相连的开放路径".into());
+            return Outcome::Message(
+                "Selected ways cannot be merged: need at least two end-to-end open ways".into(),
+            );
         }
         let mut commands: Vec<Box<dyn neo_editor::Command>> = Vec::new();
         for chain in &chains {
-            // 整条链串行并入链首：后续命令必须以仍存活的链路首为 a，
-            // 否则会去合并已被前一条命令逻辑删除的中间路径。
+            // Merge each chain serially into its head: subsequent commands must use the still-alive chain head as `a`,
+            // otherwise they would merge a middle way already logically deleted by the previous command.
             let Some((&survivor, rest)) = chain.split_first() else {
                 continue;
             };
@@ -606,12 +608,12 @@ impl EditController {
             }
         }
         match editor.execute_batch(commands) {
-            Ok(()) => Outcome::Edited("合并路径".into()),
-            Err(err) => Outcome::Message(format!("合并失败：{err}")),
+            Ok(()) => Outcome::Edited("Merge ways".into()),
+            Err(err) => Outcome::Message(format!("Failed to merge: {err}")),
         }
     }
 
-    /// 批量移动节点（拖动选中的节点/路径 = 一条历史记录）。
+    /// Batch-move nodes (dragging selected nodes/ways = one history entry).
     pub fn move_nodes_batch(&mut self, editor: &mut Editor, moves: &[(ObjectId, LatLon, LatLon)]) -> Outcome {
         let moves: Vec<_> = moves.iter().copied().filter(|(_, from, to)| from != to).collect();
         if moves.is_empty() {
@@ -624,50 +626,50 @@ impl EditController {
             })
             .collect();
         match editor.execute_batch(commands) {
-            Ok(()) => Outcome::Edited(format!("移动 {} 个节点", moves.len())),
-            Err(err) => Outcome::Message(format!("移动失败：{err}")),
+            Ok(()) => Outcome::Edited(format!("Moved {} nodes", moves.len())),
+            Err(err) => Outcome::Message(format!("Failed to move: {err}")),
         }
     }
 
-    /// 反转选中的路径。
+    /// Reverse the selected way.
     pub fn reverse_way(&mut self, editor: &mut Editor, way: ObjectId) -> Outcome {
         match editor.execute(Box::new(neo_editor::ReverseWay::new(way))) {
-            Ok(()) => Outcome::Edited("反转路径".into()),
-            Err(err) => Outcome::Message(format!("反转失败：{err}")),
+            Ok(()) => Outcome::Edited("Reverse way".into()),
+            Err(err) => Outcome::Message(format!("Failed to reverse: {err}")),
         }
     }
 
-    /// 在选中节点处分割路径；未选中节点时退化为中点分割。
+    /// Split the way at the selected node; falls back to midpoint splitting when no node is selected.
     pub fn split_way(&mut self, editor: &mut Editor, way: ObjectId, at_node: Option<ObjectId>) -> Outcome {
         let Some(handle) = editor.data().way_handle(way) else {
-            return Outcome::Message("路径不存在".into());
+            return Outcome::Message("way does not exist".into());
         };
         let nodes = editor.data().way_node_ids(handle);
         let len = nodes.len();
         if len < 3 {
-            return Outcome::Message("路径太短，无法分割".into());
+            return Outcome::Message("Way too short to split".into());
         }
-        // 只有内部节点能作为分割点（首尾切出来会得到单点路径）。
+        // Only interior nodes can be split points (splitting at the ends would yield single-point ways).
         let at = at_node
             .and_then(|node| nodes.iter().position(|id| *id == node))
             .filter(|index| *index >= 1 && *index + 1 < len)
             .unwrap_or(len / 2);
         match editor.execute(Box::new(neo_editor::SplitWay::new(way, at as u32))) {
-            Ok(()) => Outcome::Edited("分割路径".into()),
-            Err(err) => Outcome::Message(format!("分割失败：{err}")),
+            Ok(()) => Outcome::Edited("Split way".into()),
+            Err(err) => Outcome::Message(format!("Failed to split: {err}")),
         }
     }
 
-    /// 在节点处分割所有经过它的路径（仅内部节点会分割）。
+    /// Split every way passing through a node (only interior nodes are split).
     ///
-    /// 引用该节点的每条可见路径都会各自生成一条 `SplitWay` 命令，全部命令一次
-    /// `execute_batch` 原子提交（撤销一次即可整体回退）。节点不存在或只是路径端点
-    /// （没有内部引用）时返回提示信息。
+    /// For every visible way referencing the node, one `SplitWay` command is generated; all commands are committed atomically
+    /// in a single `execute_batch` (one undo reverts everything). If the node does not exist or is only an endpoint
+    /// (no interior references), a hint message is returned.
     pub fn split_ways_at_node(&mut self, editor: &mut Editor, node: ObjectId) -> Outcome {
         let Some(node_handle) = editor.data().node_handle(node) else {
-            return Outcome::Message("节点不存在".into());
+            return Outcome::Message("node does not exist".into());
         };
-        // 反查表是只读的，先按当前数据重建，避免拿到上一步编辑前的引用关系。
+        // The referrer table is read-only; rebuild it from current data first to avoid using references from before the last edit.
         editor.refresh_referrers();
         let way_handles: Vec<_> = editor.referrers().ways_of_node(node_handle).to_vec();
         let mut commands: Vec<Box<dyn neo_editor::Command>> = Vec::new();
@@ -683,35 +685,35 @@ impl EditController {
                 continue;
             };
             let len = nodes.len();
-            // 只有内部节点能作为分割点：首尾节点切出来会得到单点路径。
+            // Only interior nodes can be split points: splitting at the first/last node would yield a single-point way.
             if index >= 1 && index + 1 < len {
                 commands.push(Box::new(neo_editor::SplitWay::new(way, index as u32)));
             }
         }
         if commands.is_empty() {
-            return Outcome::Message("该点不是路径的内部节点".into());
+            return Outcome::Message("this point is not an interior node of a way".into());
         }
         match editor.execute_batch(commands) {
-            Ok(()) => Outcome::Edited("分割路径".into()),
-            Err(err) => Outcome::Message(format!("分割失败：{err}")),
+            Ok(()) => Outcome::Edited("Split way".into()),
+            Err(err) => Outcome::Message(format!("Failed to split: {err}")),
         }
     }
 }
 
-/// 计算链式合并顺序。
+/// Compute the chain merge order.
 ///
-/// 输入是 `(路径, 节点序列)` 列表（通常来自用户选择），返回每条可合并链的路径顺序：
-/// 链内路径首尾相接，按顺序执行 `MergeWay::new(chain[0], chain[i])` 即可把整条链
-/// 合成一条（`MergeWay` 会自动处理四条方向，并保留 `chain[0]` 的 ID）。
+/// Input is a list of `(way, node sequence)` (usually from the user selection); returns each mergeable chain's way order:
+/// ways in a chain are end-to-end, and executing `MergeWay::new(chain[0], chain[i])` in order merges the whole chain
+/// into one way (`MergeWay` handles all four directions automatically and keeps `chain[0]`'s ID).
 ///
-/// 规则：
-/// * 只考虑开放路径（节点数 >= 2 且首尾节点不同）；闭合路径与重复路径直接忽略；
-/// * 按共享端点把路径连成连通分量，每个分量必须是**链**：端点处最多两条路径相接且
-///   不能成环（分叉、闭环分量整条跳过）；
-/// * 只有含 2 条及以上路径的分量才算可合并链，孤立路径不返回；
-/// * 链从较小的度 1 端点节点出发，保证顺序稳定。
+/// Rules:
+/// * Only open ways are considered (node count >= 2 and first node != last node); closed and duplicate ways are ignored;
+/// * Ways are linked into connected components by shared endpoints, and each component must be a **chain**: at most two ways meet at an endpoint and
+///   no cycle is allowed (branching or looping components are skipped entirely);
+/// * Only components with 2 or more ways count as mergeable chains; isolated ways are not returned;
+/// * The chain starts from the smaller degree-1 endpoint node, keeping the order stable.
 pub fn chain_merge_order(node_seqs: &[(ObjectId, Vec<ObjectId>)]) -> Vec<Vec<ObjectId>> {
-    // 过滤不可参与合并的路径，并按输入顺序去重。
+    // Filter out ways that cannot take part in merging and deduplicate in input order.
     let mut ways: Vec<(ObjectId, ObjectId, ObjectId)> = Vec::with_capacity(node_seqs.len());
     let mut seen: Vec<ObjectId> = Vec::with_capacity(node_seqs.len());
     for (way, nodes) in node_seqs {
@@ -731,7 +733,7 @@ pub fn chain_merge_order(node_seqs: &[(ObjectId, Vec<ObjectId>)]) -> Vec<Vec<Obj
         return Vec::new();
     }
 
-    // 端点节点 -> 引用它的路径下标：共享端点即相邻。
+    // Endpoint node -> indices of ways referencing it: sharing an endpoint means adjacency.
     let mut at_node: BTreeMap<ObjectId, Vec<usize>> = BTreeMap::new();
     for (index, (_, first, last)) in ways.iter().enumerate() {
         at_node.entry(*first).or_default().push(index);
@@ -748,7 +750,7 @@ pub fn chain_merge_order(node_seqs: &[(ObjectId, Vec<ObjectId>)]) -> Vec<Vec<Obj
         }
     }
 
-    // 求连通分量（按路径相邻关系）。
+    // Find connected components (by way adjacency).
     let mut component: Vec<Option<usize>> = vec![None; ways.len()];
     let mut components: Vec<Vec<usize>> = Vec::new();
     let mut unvisited: Vec<usize> = (0..ways.len()).rev().collect();
@@ -772,13 +774,13 @@ pub fn chain_merge_order(node_seqs: &[(ObjectId, Vec<ObjectId>)]) -> Vec<Vec<Obj
         components.push(members);
     }
 
-    // 逐个分量校验并排出链序。
+    // Validate and order each component.
     let mut chains = Vec::new();
     for members in components {
         if members.len() < 2 {
             continue;
         }
-        // 端点节点的度数：> 2 说明分叉，整条分量跳过。
+        // Endpoint node degree: > 2 means branching, skip the whole component.
         let mut degree: BTreeMap<ObjectId, usize> = BTreeMap::new();
         for &index in &members {
             let (_, first, last) = ways[index];
@@ -788,11 +790,11 @@ pub fn chain_merge_order(node_seqs: &[(ObjectId, Vec<ObjectId>)]) -> Vec<Vec<Obj
         if degree.values().any(|degree| *degree > 2) {
             continue;
         }
-        // 链（路径图）满足 边数 + 1 = 顶点数；否则说明成环或存在重复边。
+        // A chain (path graph) satisfies edges + 1 = vertices; otherwise there is a cycle or a duplicate edge.
         if members.len() + 1 != degree.len() {
             continue;
         }
-        // 从最小的度 1 端点出发，沿未走过的路径走完整条链。
+        // Start from the smallest degree-1 endpoint and walk the whole chain along unvisited ways.
         let Some(&start) = degree
             .iter()
             .find_map(|(node, degree)| (*degree == 1).then_some(node))
@@ -826,7 +828,7 @@ pub fn chain_merge_order(node_seqs: &[(ObjectId, Vec<ObjectId>)]) -> Vec<Vec<Obj
     chains
 }
 
-/// 解析绘制落点：复用节点 / 线段插点 / 新建。返回 `(node_id, created_on_segment)`。
+/// Resolve a drawing target: reuse node / insert on segment / create new. Returns `(node_id, created_on_segment)`.
 fn resolve_draw_node(
     editor: &mut Editor,
     pick: Pick,
@@ -848,13 +850,13 @@ fn resolve_draw_node(
             cmd.id = Some(id);
             editor
                 .execute(Box::new(cmd))
-                .map_err(|err| format!("创建节点失败：{err}"))?;
+                .map_err(|err| format!("Failed to create node: {err}"))?;
             Ok((id, false))
         }
     }
 }
 
-/// 在路径线段投影处新建节点并插入为成员。返回新节点 ID。
+/// Create a node at the projection onto a way segment and insert it as a member. Returns the new node ID.
 pub fn insert_node_on_segment(
     editor: &mut Editor,
     way: ObjectId,
@@ -866,47 +868,47 @@ pub fn insert_node_on_segment(
     add.id = Some(id);
     editor
         .execute(Box::new(add))
-        .map_err(|err| format!("创建节点失败：{err}"))?;
+        .map_err(|err| format!("Failed to create node: {err}"))?;
     insert_node_on_way(editor, way, seg, id)?;
     Ok(id)
 }
 
-/// 在路径的 `seg` 段几何中点新建并插入节点。
+/// Create and insert a node at the geometric midpoint of the way's `seg` segment.
 pub fn insert_way_midpoint(editor: &mut Editor, way: ObjectId, seg: usize) -> Result<ObjectId, String> {
     let Some(handle) = editor.data().way_handle(way) else {
-        return Err("路径不存在".into());
+        return Err("way does not exist".into());
     };
     let nodes = editor.data().way_node_ids(handle);
     let (a, b) = nodes
         .get(seg)
         .copied()
         .zip(nodes.get(seg + 1).copied())
-        .ok_or_else(|| "线段下标无效".to_owned())?;
+        .ok_or_else(|| "invalid segment index".to_owned())?;
     let pa = editor
         .data()
         .node_handle(a)
         .and_then(|h| editor.data().nodes.position(h))
-        .ok_or_else(|| "线段端点缺失".to_owned())?;
+        .ok_or_else(|| "segment endpoint missing".to_owned())?;
     let pb = editor
         .data()
         .node_handle(b)
         .and_then(|h| editor.data().nodes.position(h))
-        .ok_or_else(|| "线段端点缺失".to_owned())?;
+        .ok_or_else(|| "segment endpoint missing".to_owned())?;
     let at = segment_midpoint_latlon(pa, pb);
     insert_node_on_segment(editor, way, seg, at)
 }
 
-/// 线段几何中点（世界坐标中点再转回经纬度）。
+/// Geometric midpoint of a segment (world-coordinate midpoint converted back to lat/lon).
 pub fn segment_midpoint_latlon(a: LatLon, b: LatLon) -> LatLon {
     let wa = neo_geo::WorldPoint::from_latlon(a);
     let wb = neo_geo::WorldPoint::from_latlon(b);
     neo_geo::WorldPoint::new((wa.x + wb.x) * 0.5, (wa.y + wb.y) * 0.5).to_latlon()
 }
 
-/// 在路径的 `seg` 段后插入已有节点（共享节点）。
+/// Insert an existing node after the way's `seg` segment (shared node).
 fn insert_node_on_way(editor: &mut Editor, way: ObjectId, seg: usize, node: ObjectId) -> Result<(), String> {
     let Some(handle) = editor.data().way_handle(way) else {
-        return Err("路径不存在".into());
+        return Err("way does not exist".into());
     };
     let mut nodes = editor.data().way_node_ids(handle);
     if nodes.contains(&node) {
@@ -914,21 +916,21 @@ fn insert_node_on_way(editor: &mut Editor, way: ObjectId, seg: usize, node: Obje
     }
     let insert_at = seg + 1;
     if insert_at > nodes.len() {
-        return Err("线段下标无效".into());
+        return Err("invalid segment index".into());
     }
     nodes.insert(insert_at, node);
     editor
         .execute(Box::new(SetWayNodes::new(way, nodes)))
-        .map_err(|err| format!("插入节点失败：{err}"))
+        .map_err(|err| format!("Failed to insert node: {err}"))
 }
 
-/// 查找可从该端点续画的开放路径。
+/// Find an open way that can be continued from this endpoint.
 fn find_continuable_way(
     editor: &mut Editor,
     endpoint: ObjectId,
     preferred_way: Option<ObjectId>,
 ) -> Option<ObjectId> {
-    // AddWay 等命令会标脏，这里先刷新再查反向引用。
+    // Commands such as AddWay mark the referrer table dirty, so refresh before querying reverse references.
     editor.refresh_referrers();
     let handle = editor.data().node_handle(endpoint)?;
     let parent_count = editor.referrers().ways_of_node(handle).len();
@@ -945,7 +947,7 @@ fn find_continuable_way(
             let first = *nodes.first()?;
             let last = *nodes.last()?;
             if first == last {
-                return None; // 闭合
+                return None; // closed
             }
             if first == endpoint || last == endpoint {
                 Some(way_id)
@@ -957,7 +959,7 @@ fn find_continuable_way(
     if candidates.is_empty() {
         return None;
     }
-    // 端点仅挂接一条路径时直接续画该路径。
+    // When the endpoint is attached to only one way, continue that way directly.
     if parent_count == 1 {
         return candidates.pop();
     }
@@ -994,7 +996,7 @@ mod tests {
     }
 
     fn way_nodes(editor: &Editor, way: ObjectId) -> Vec<ObjectId> {
-        let handle = editor.data().way_handle(way).expect("路径存在");
+        let handle = editor.data().way_handle(way).expect("way exists");
         editor.data().way_node_ids(handle)
     }
 
@@ -1061,7 +1063,7 @@ mod tests {
             target: SnapTarget::WaySegment { way, seg: 0, at },
             screen_dist: 2.0,
         };
-        // 先放一个自由起点
+        // Place a free start point first
         let start = LatLon::from_degrees(0.001, 0.0);
         ctl.on_click_with_snap(&mut editor, Pick::default(), start, None);
         let outcome = ctl.on_click_with_snap(&mut editor, Pick::default(), at, Some(snap));
@@ -1135,7 +1137,7 @@ mod tests {
         assert!(ctl.pending_way().is_none());
         assert!(matches!(ctl.undo_last_draw(&mut editor), Outcome::Edited(_)));
         assert_eq!(ctl.pending_len(), 0);
-        // 再右键：没有绘制步骤，不碰其它历史
+        // Right-click again: no drawing step, leave other history untouched
         let undo_len = editor.history().undo_len();
         assert_eq!(ctl.undo_last_draw(&mut editor), Outcome::None);
         assert_eq!(editor.history().undo_len(), undo_len);
@@ -1209,11 +1211,11 @@ mod tests {
 
     #[test]
     fn chain_merge_order_handles_reversed_and_duplicate_endpoints() {
-        // B 反向接入（B 首 = 4，B 尾 = A 尾 3），仍是同一条链。
+        // B joins in reverse (B first = 4, B last = A last 3); still the same chain.
         let reversed = chain_merge_order(&[(ObjectId(10), ids(&[1, 2, 3])), (ObjectId(11), ids(&[4, 3]))]);
         assert_eq!(reversed, vec![vec![ObjectId(10), ObjectId(11)]]);
 
-        // B 首 = A 首（都从节点 1 出发）也能成链；重复路径只算一次。
+        // B first = A first (both start from node 1) can still form a chain; duplicate ways count once.
         let head_to_head = chain_merge_order(&[
             (ObjectId(10), ids(&[1, 2, 3])),
             (ObjectId(11), ids(&[1, 4])),
@@ -1238,7 +1240,7 @@ mod tests {
 
     #[test]
     fn chain_merge_order_skips_cycle_branch_and_closed_ways() {
-        // 环：1-2-3-1，边数 = 顶点数，不成链。
+        // Cycle: 1-2-3-1, edges = vertices, not a chain.
         assert!(
             chain_merge_order(&[
                 (ObjectId(10), ids(&[1, 2])),
@@ -1247,7 +1249,7 @@ mod tests {
             ])
             .is_empty()
         );
-        // 分叉：节点 2 接三条路径。
+        // Branch: node 2 connects three ways.
         assert!(
             chain_merge_order(&[
                 (ObjectId(10), ids(&[1, 2])),
@@ -1256,7 +1258,7 @@ mod tests {
             ])
             .is_empty()
         );
-        // 闭合路径与互不相邻的路径都不参与合并。
+        // Closed ways and mutually disconnected ways do not take part in merging.
         assert!(
             chain_merge_order(&[
                 (ObjectId(10), ids(&[1, 2, 1])),
@@ -1280,18 +1282,21 @@ mod tests {
         let undo_before = editor.history().undo_len();
 
         let outcome = ctl.merge_chain_ways(&mut editor, &[last, first, middle]);
-        assert_eq!(outcome, Outcome::Edited("合并路径".into()));
+        assert_eq!(outcome, Outcome::Edited("Merge ways".into()));
         assert_eq!(editor.history().undo_len(), undo_before + 1);
-        // 链从端点出发合并，保留的路径 ID 取决于起点方向；节点数必须等于各路径去重后的总数。
+        // The chain is merged starting from an endpoint, so the surviving way ID depends on the starting direction; the node count must equal the total after deduplication.
         let visible = visible_way_ids(&editor);
         assert_eq!(visible.len(), 1);
         let merged = way_nodes(&editor, visible[0]);
         assert_eq!(merged.len(), nodes.len());
         let mut reversed = nodes.clone();
         reversed.reverse();
-        assert!(merged == nodes || merged == reversed, "合并顺序应为正向或反向");
+        assert!(
+            merged == nodes || merged == reversed,
+            "merge order must be forward or reversed"
+        );
 
-        // 一条撤销回退整批合并。
+        // One undo reverts the whole merge batch.
         assert!(editor.undo().unwrap());
         assert_eq!(way_nodes(&editor, first), nodes[0..3].to_vec());
         assert_eq!(way_nodes(&editor, middle), nodes[2..5].to_vec());
@@ -1306,27 +1311,27 @@ mod tests {
         let b = add_node(&mut editor, 47.0, 8.001);
         let c = add_node(&mut editor, 47.0, 8.002);
         let d = add_node(&mut editor, 47.0, 8.003);
-        // A = 1→2→3；B = 1→4（B 首 = A 首），合并需自动把 B 反转接到 A 前面。
+        // A = 1->2->3; B = 1->4 (B first = A first); merging must automatically flip B and attach it before A.
         let way_a = add_way(&mut editor, vec![a, b, c]);
         let way_b = add_way(&mut editor, vec![a, d]);
         let mut ctl = EditController::new(ToolKind::Select);
 
         let outcome = ctl.merge_chain_ways(&mut editor, &[way_a, way_b]);
-        assert_eq!(outcome, Outcome::Edited("合并路径".into()));
+        assert_eq!(outcome, Outcome::Edited("Merge ways".into()));
         let visible = visible_way_ids(&editor);
         assert_eq!(visible.len(), 1);
         let merged = way_nodes(&editor, visible[0]);
         assert_eq!(merged.len(), 4);
-        // 自动处理方向后必须首尾相接（正向或反向均可）。
+        // After automatic direction handling the nodes must be end-to-end (forward or reverse both fine).
         assert!(
             merged == vec![c, b, a, d] || merged == vec![d, a, b, c],
-            "反向接入的路径应被自动翻转后合并：{merged:?}"
+            "a way attached in reverse must be flipped automatically before merging: {merged:?}"
         );
     }
 
     #[test]
     fn merge_chain_ways_rejects_non_chain_selection() {
-        // 互不相邻：不产生任何命令。
+        // Mutually disconnected: no command is produced.
         let mut editor = Editor::new(DataSet::new());
         let a = add_node(&mut editor, 0.0, 0.0);
         let b = add_node(&mut editor, 0.0, 0.001);
@@ -1343,7 +1348,7 @@ mod tests {
         assert_eq!(editor.history().undo_len(), undo_before);
         assert_eq!(visible_way_ids(&editor).len(), 2);
 
-        // 成环：整条分量跳过。
+        // Cycle: skip the whole component.
         let mut editor = Editor::new(DataSet::new());
         let p1 = add_node(&mut editor, 0.0, 0.0);
         let p2 = add_node(&mut editor, 0.0, 0.001);
@@ -1358,7 +1363,7 @@ mod tests {
         ));
         assert_eq!(visible_way_ids(&editor).len(), 3);
 
-        // 分叉：节点 p2 处三条路径相接。
+        // Branch: three ways meet at node p2.
         let mut editor = Editor::new(DataSet::new());
         let q1 = add_node(&mut editor, 0.0, 0.0);
         let q2 = add_node(&mut editor, 0.0, 0.001);
@@ -1386,16 +1391,16 @@ mod tests {
         let undo_before = editor.history().undo_len();
 
         let outcome = ctl.split_ways_at_node(&mut editor, nodes[1]);
-        assert_eq!(outcome, Outcome::Edited("分割路径".into()));
+        assert_eq!(outcome, Outcome::Edited("Split way".into()));
         assert_eq!(editor.history().undo_len(), undo_before + 1);
-        // 原路径保留前半段，新路径复制后半段。
+        // The original way keeps the first half; the new way copies the second half.
         assert_eq!(way_nodes(&editor, way), nodes[0..2].to_vec());
         let visible = visible_way_ids(&editor);
         assert_eq!(visible.len(), 2);
         let new_way = *visible.iter().find(|id| **id != way).unwrap();
         assert_eq!(way_nodes(&editor, new_way), nodes[1..4].to_vec());
 
-        // 一次撤销恢复原路径并移除新路径。
+        // One undo restores the original way and removes the new way.
         assert!(editor.undo().unwrap());
         assert_eq!(visible_way_ids(&editor), vec![way]);
         assert_eq!(way_nodes(&editor, way), nodes);
@@ -1442,8 +1447,8 @@ mod tests {
         let undo_before = editor.history().undo_len();
 
         let outcome = ctl.split_ways_at_node(&mut editor, shared);
-        assert_eq!(outcome, Outcome::Edited("分割路径".into()));
-        // 两条路径各分一段，一次批处理只占一条历史。
+        assert_eq!(outcome, Outcome::Edited("Split way".into()));
+        // Both ways are split; one batch takes only one history entry.
         assert_eq!(editor.history().undo_len(), undo_before + 1);
         assert_eq!(visible_way_ids(&editor).len(), 4);
         assert_eq!(way_nodes(&editor, way_a), vec![a, shared]);

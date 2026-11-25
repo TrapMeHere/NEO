@@ -1,4 +1,4 @@
-//! `neo-cli` 的库接口，方便测试冷启动和更新检查而不必拉起进程。
+//! Library interface of `neo-cli`, so cold-start and update checks can be tested without spawning the process.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -11,42 +11,42 @@ use neo_io::{SynthSpec, XmlReadOptions, read_gpx, read_osm_xml};
 use neo_scene::{SceneBuilder, StreamingScene};
 use neo_store::DataSet;
 
-/// 打开结果。
+/// Result of opening a data source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenReport {
-    /// 节点。
+    /// Nodes.
     pub nodes: usize,
-    /// way。
+    /// Ways.
     pub ways: usize,
-    /// relation。
+    /// Relations.
     pub relations: usize,
-    /// 来源描述。
+    /// Source description.
     pub source: String,
 }
 
-/// 场景冒烟结果。
+/// Scene smoke-test result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SceneReport {
-    /// 第一次构建的微秒数。
+    /// Microseconds of the first build.
     pub build_micros: u64,
-    /// 顶点数。
+    /// Vertex count.
     pub vertices: usize,
-    /// 流式缓存里的构建次数。第二次同瓦片应为 1。
+    /// Build count in the streaming cache. A second access to the same tile should be 1.
     pub builds: u64,
 }
 
-/// 有更新时的提示。
+/// Notification when an update is available.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateOffer {
-    /// 当前版本。
+    /// Current version.
     pub current: String,
-    /// 清单里的版本。
+    /// Version from the manifest.
     pub latest: String,
-    /// 下载地址。
+    /// Download URL.
     pub url: String,
 }
 
-/// 按扩展名打开 OSM XML、PBF 或 GPX。
+/// Opens OSM XML, PBF, or GPX by file extension.
 pub fn open_path(path: &Path) -> anyhow::Result<OpenReport> {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("data");
     if name.to_ascii_lowercase().ends_with(".pbf") {
@@ -57,7 +57,7 @@ pub fn open_path(path: &Path) -> anyhow::Result<OpenReport> {
     open_bytes(name, &bytes)
 }
 
-/// 从字节打开 GPX 或 OSM XML。PBF 走 [`open_path`]。
+/// Opens GPX or OSM XML from bytes. PBF goes through [`open_path`].
 pub fn open_bytes(name: &str, bytes: &[u8]) -> anyhow::Result<OpenReport> {
     let mut data = DataSet::new();
     let lower = name.to_ascii_lowercase();
@@ -71,7 +71,7 @@ pub fn open_bytes(name: &str, bytes: &[u8]) -> anyhow::Result<OpenReport> {
     Ok(report(&data, name))
 }
 
-/// 生成合成数据并计数。这是安装包冷启动冒烟用的同一条导入路径。
+/// Generates synthetic data and counts it. This is the same import path used by the installer cold-start smoke test.
 pub fn open_synth(nodes: usize) -> anyhow::Result<OpenReport> {
     let (data, ways, relations) = neo_io::generate(&SynthSpec::with_nodes(nodes))?;
     Ok(OpenReport {
@@ -82,7 +82,7 @@ pub fn open_synth(nodes: usize) -> anyhow::Result<OpenReport> {
     })
 }
 
-/// 构建一帧并确认同瓦片的第二次访问不再重建。
+/// Builds one frame and confirms that a second access to the same tile does not rebuild.
 pub fn scene_bench(nodes: usize) -> anyhow::Result<SceneReport> {
     let (mut data, _, _) = neo_io::generate(&SynthSpec::with_nodes(nodes))?;
     let builder = SceneBuilder::with_dataset(&mut data);
@@ -102,7 +102,7 @@ pub fn scene_bench(nodes: usize) -> anyhow::Result<SceneReport> {
     })
 }
 
-/// 比较当前版本和更新清单。清单是 `{"version":"x.y.z","url":"..."}`。
+/// Compares the current version with the update manifest. The manifest is `{"version":"x.y.z","url":"..."}`.
 pub fn check_update(current: &str, manifest_json: &str) -> anyhow::Result<Option<UpdateOffer>> {
     let value: serde_json::Value = serde_json::from_str(manifest_json)?;
     let latest = value
@@ -122,10 +122,10 @@ pub fn check_update(current: &str, manifest_json: &str) -> anyhow::Result<Option
     }
 }
 
-/// 预设覆盖率 Markdown。前面两行是当前嵌入的 npm 包版本和条数。
+/// Preset coverage Markdown. The first two lines are the versions and counts of the currently embedded npm packages.
 pub fn presets_markdown() -> String {
     let mut out = format!(
-        "schema {}（{} 条）\nnsi {}（{} 条品牌建议）\n\n",
+        "schema {} ({} entries)\nnsi {} ({} brand suggestions)\n\n",
         neo_style::schema_package_version(),
         neo_style::schema_presets().len(),
         neo_style::nsi_package_version(),
@@ -135,7 +135,7 @@ pub fn presets_markdown() -> String {
     out
 }
 
-/// 拼一条 TMS URL，供安装包和影像面板共用。
+/// Builds one TMS URL, shared by the installer and the imagery panel.
 pub fn imagery_example(z: u32, x: u32, y: u32) -> String {
     neo_style::tms_url("https://tile.openstreetmap.org/{z}/{x}/{y}.png", z, x, y)
 }

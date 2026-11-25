@@ -1,4 +1,4 @@
-//! NeoApp::plugins 方法。行为与拆分前的 app.rs 相同。
+//! NeoApp::plugins methods. Same behavior as before the app.rs split.
 
 use neo_i18n::{t, tf};
 use std::path::Path;

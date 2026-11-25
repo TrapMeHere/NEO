@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-# 用 glob 让成员可以增量落地（没有 Cargo.toml 的目录自动忽略）。
+# Use a glob so members can land incrementally (directories without a Cargo.toml are ignored automatically).
 members = ["crates/*", "apps/*"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# 1.97 是 wasmtime 50（wasm-plugins feature）的最低要求；默认构建仍兼容 1.95 语法。
+# 1.97 is the minimum for wasmtime 50 (wasm-plugins feature); default builds still stay compatible with 1.95 syntax.
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/TrapMeHere/NEO"
@@ -73,6 +73,7 @@ wasmtime = "50"
 wgpu = "30.0"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
 ] }
@@ -95,7 +96,7 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
-# 新的 cargo 清单 lint：workspace 依赖表是"备选库"，允许暂时未被任何 crate 使用。
+# New cargo manifest lint: the workspace dependency table is a "candidate pool", so it may legally be unused by every crate for now.
 [workspace.lints.cargo]
 unused_workspace_dependencies = "warn"
 unused_workspace_package_fields = "warn"

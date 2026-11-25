@@ -1,8 +1,8 @@
 [book]
 title = "NEO — Next Editor for OSM"
 authors = ["NEO contributors"]
-language = "zh-CN"
-description = "Rust + wgpu 原生 OpenStreetMap 编辑器：使用教程与开发指南"
+language = "en"
+description = "Native OpenStreetMap editor in Rust + wgpu: user guide and developer guide"
 src = "docs"
 build-dir = "book"
 git-repository-url = "https://github.com/TrapMeHere/NEO"

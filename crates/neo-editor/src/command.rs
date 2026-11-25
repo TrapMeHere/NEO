@@ -1,4 +1,4 @@
-//! 命令契约。
+//! Command contract.
 
 use std::any::Any;
 
@@ -8,32 +8,32 @@ use neo_store::{DataSet, Referrers};
 use crate::editor::EditContext;
 use crate::journal::JournalCommand;
 
-/// 编辑错误。
+/// Edit error.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CommandError {
-    /// 对象不存在。
+    /// The object does not exist.
     #[error("{kind} {id} not found")]
     NotFound {
-        /// 对象种类。
+        /// Object kind.
         kind: ObjectKind,
-        /// 对象 ID。
+        /// Object ID.
         id: ObjectId,
     },
-    /// 对象仍被引用，不能删除。
+    /// The object is still referenced and cannot be deleted.
     #[error("{kind} {id} is still referenced by {what}")]
     Referenced {
-        /// 对象种类。
+        /// Object kind.
         kind: ObjectKind,
-        /// 对象 ID。
+        /// Object ID.
         id: ObjectId,
-        /// 引用者描述（way 数 / relation 等）。
+        /// Description of the referrers (way count / relations, etc.).
         what: String,
     },
-    /// 参数非法。
+    /// Invalid argument.
     #[error("invalid edit: {0}")]
     Invalid(String),
-    /// 存储错误。
+    /// Storage error.
     #[error("store error: {0}")]
     Store(String),
 }
@@ -44,61 +44,61 @@ impl From<neo_core::NeoError> for CommandError {
     }
 }
 
-/// 命令类型。
+/// Command kind.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum CommandKind {
-    /// 添加节点。
+    /// Add a node.
     AddNode,
-    /// 添加 way。
+    /// Add a way.
     AddWay,
-    /// 添加 relation。
+    /// Add a relation.
     AddRelation,
-    /// 移动节点。
+    /// Move a node.
     MoveNode,
-    /// 修改标签。
+    /// Modify tags.
     SetTags,
-    /// 修改 way 节点序列。
+    /// Modify the way's node sequence.
     SetWayNodes,
-    /// 修改 relation 成员。
+    /// Modify a relation's members.
     SetRelationMembers,
-    /// 删除对象。
+    /// Delete an object.
     Delete,
-    /// 分割 way。
+    /// Split a way.
     SplitWay,
-    /// 合并 way。
+    /// Merge ways.
     MergeWay,
-    /// 反转 way。
+    /// Reverse a way.
     ReverseWay,
 }
 
 impl CommandKind {
-    /// 是否可与同类命令合并（拖动合并）。
+    /// Whether it can be merged with commands of the same kind (drag merging).
     pub fn mergeable(self) -> bool {
         matches!(self, Self::MoveNode | Self::SetTags)
     }
 }
 
-/// 可撤销编辑命令。
+/// An undoable edit command.
 pub trait Command: Send {
-    /// 类型。
+    /// Kind.
     fn kind(&self) -> CommandKind;
-    /// 标签。
+    /// Label.
     fn label(&self) -> &'static str;
-    /// 预检查（无副作用）。
+    /// Precheck (no side effects).
     fn precheck(&self, _data: &DataSet, _referrers: &Referrers) -> Result<(), CommandError> {
         Ok(())
     }
-    /// 正向执行。
+    /// Apply forward.
     fn apply(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError>;
-    /// 逆操作。
+    /// Inverse operation.
     fn undo(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError>;
-    /// 合并更新命令。
+    /// Merge an updating command.
     fn merge(&mut self, _newer: &dyn Command) -> bool {
         false
     }
-    /// journal 记录。
+    /// Journal record.
     fn record(&self) -> JournalCommand;
-    /// 向下转型（用于合并）。
+    /// Downcast (for merging).
     fn as_any(&self) -> &dyn Any;
 }

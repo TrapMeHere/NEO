@@ -1,4 +1,4 @@
-//! NeoApp::core 方法。行为与拆分前的 app.rs 相同。
+//! NeoApp::core methods. Same behavior as before the app.rs split.
 
 use anyhow::{Context, Result};
 use neo_core::{ObjectId, ObjectKind};
@@ -17,16 +17,15 @@ use super::{
 };
 
 impl NeoApp {
-    /// 构造：接管 wgpu，恢
-    /// journal（若有），加载初始数据
+    /// Constructor: takes over wgpu, restores the
+    /// journal (if any), and loads the initial data
     pub fn new(cc: &eframe::CreationContext<'_>) -> Result<Self> {
-        neo_i18n::init_from_env();
         let render_state = cc.wgpu_render_state.as_ref().context(t("app.error.no_wgpu"))?;
         neo_ui::apply_modern_style(&cc.egui_ctx);
         install_fonts(&cc.egui_ctx);
         let device = render_state.device.clone();
-        // wgpu 默认的未捕获错误处理器是 panic；改成记录日志，至少让用户能保存
-        // 数据并看到错误，而不是无控制台直接消失
+        // wgpu's default uncaught-error handler panics; log instead so the user can at least save
+        // data and see the error, rather than the process vanishing with no console
         device.on_uncaptured_error(std::sync::Arc::new(|err| {
             tracing::error!("wgpu uncaptured error: {err}");
         }));
@@ -278,11 +277,8 @@ impl NeoApp {
     }
 
     pub(super) fn set_editor(&mut self, mut editor: Editor, label: String) {
-        // 换数据集必须
-        // journal 基线；否则旧文档的命令会被重放到新数据上
-        //
-        // Editor 还没
-        // sink，先显式清空文件
+        // Switching datasets must reset the journal baseline; otherwise commands from the old document would be replayed onto the new data.
+        // The Editor has no reset sink yet, so clear the file explicitly.
         let _ = std::fs::File::create(&self.journal_path);
         editor.reset_journal();
         self.builder = super::scene_builder(&mut editor);
@@ -296,14 +292,14 @@ impl NeoApp {
         self.download_state.bbox = None;
         self.bbox_drag = None;
         self.downloaded_bboxes.clear();
-        // 不清理 pending_download_bbox：下载成功后可能刚 set_editor 再记入范围。
+        // Do not clear pending_download_bbox: after a successful download we may have just called set_editor and then record the extent.
         self.controller.reset_pending();
         self.drag = None;
         self.data_listed = true;
         self.persist_state();
     }
 
-    /// 写入用户设置和界面相机
+    /// Write user settings and the UI camera
     pub(super) fn persist_state(&self) {
         let (lat, lon) = self.camera.center.to_latlon().to_degrees();
         save_state(&AppState {
@@ -335,10 +331,10 @@ impl NeoApp {
         });
     }
 
-    /// 用户主动「缩放到数据」。启动和换数据不会调用。
+    /// User-initiated "zoom to data". Startup and dataset switches do not call this.
     pub(super) fn reset_view(&mut self) {
-        // 2%~98% 分位点拟合：边界外的稀
-        // way（跨境道路等）不应把初始视野拉到 z11
+        // Fit using the 2%–98% percentiles: sparse
+        // ways outside the boundary (cross-border roads etc.) should not drag the initial view out to z11
         let mut xs: Vec<f64> = Vec::new();
         let mut ys: Vec<f64> = Vec::new();
         for node in self.editor.data().iter_nodes() {
@@ -382,14 +378,14 @@ impl NeoApp {
                 rebuild = true;
                 reasons.push_str("rebase ");
             }
-            // 缩放会改变可见范围与 LOD，必须重建；否则"放大再缩小"后会保留
-            // 高倍率时的裁剪结果，导致地图变空（用户反馈的真实 bug）。
+            // Zooming changes the visible extent and LOD, so a rebuild is required; otherwise "zoom in then out" keeps
+            // the culling result from the high zoom level and the map goes blank (a real bug reported by users).
             let zoom_delta = (scene.camera.zoom - self.camera.zoom).abs();
             if zoom_delta > 0.25 || node_lod_band(scene.camera.zoom) != node_lod_band(self.camera.zoom) {
                 rebuild = true;
                 reasons.push_str("zoom ");
             }
-            // 窗口尺寸变化会改变裁剪范围；不重建会留下未绘制的空白边缘
+            // A window resize changes the culling extent; without a rebuild you get unrendered blank edges
             if scene.camera.viewport != self.camera.viewport {
                 rebuild = true;
                 reasons.push_str("viewport ");
@@ -397,7 +393,7 @@ impl NeoApp {
             let mpp = self.camera.meters_per_px();
             let view_w = f64::from(self.camera.viewport[0]) * mpp;
             let view_h = f64::from(self.camera.viewport[1]) * mpp;
-            // 平移阈值必须小于 cull_margin（5%），否则新进入视口的边缘会白一截。
+            // The pan threshold must be smaller than cull_margin (5%), otherwise newly entering viewport edges show a white strip.
             if (scene.camera.center.x - self.camera.center.x).abs() > view_w * 0.04
                 || (scene.camera.center.y - self.camera.center.y).abs() > view_h * 0.04
             {
@@ -466,7 +462,7 @@ impl NeoApp {
         self.resync_tags();
     }
 
-    /// 读取一个对象的标签（字符串对）；对象不存在时返回 `None`。
+    /// Read one object's tags (string pairs); returns `None` when the object does not exist.
     pub(super) fn object_tag_strings(&self, kind: ObjectKind, id: ObjectId) -> Option<Vec<(String, String)>> {
         let data = self.editor.data();
         let pairs: &[(neo_core::Sym, neo_core::Sym)] = match kind {
@@ -492,16 +488,16 @@ impl NeoApp {
         )
     }
 
-    /// 让标签编辑器在下一帧按当前数据重算（撤销/重做/删除/外部修改后调用）。
+    /// Make the tag editor recompute from current data next frame (called after undo/redo/deletion/external changes).
     ///
-    /// 行模型由面板每帧按「选中集合 + 数据版本」自动同步，这里只需让缓存失效。
+    /// The row model is synced by the panel every frame from "selection + data version"; here we only need to invalidate the cache.
     pub(super) fn resync_tags(&mut self) {
         self.tags.invalidate();
     }
 
-    /// 一次标签修改（单选/多选相同）：对每个目标对象套用「添加/覆盖 + 删除」。
+    /// One tag edit (same for single/multi selection): apply "add/overwrite + delete" to each target object.
     ///
-    /// 所有改动用一次 `execute_batch` 提交，撤销时算一步。
+    /// All changes are committed with one `execute_batch`, counting as one undo step.
     pub(super) fn apply_tag_edit(&mut self, edit: neo_ui::TagEdit) {
         let mut commands: Vec<Box<dyn neo_editor::Command>> = Vec::new();
         for &(kind, id) in &edit.targets {
@@ -554,8 +550,8 @@ impl NeoApp {
         }
     }
 
-    /// 选中对象列表（右
-    /// 选择"面板）
+    /// Selected-object list (right
+    /// "Selection" panel)
     pub(super) fn selection_list(&self) -> Vec<(ObjectKind, ObjectId)> {
         let selection = self.editor.selection();
         let mut out = Vec::with_capacity(selection.len());
@@ -590,7 +586,7 @@ impl NeoApp {
         }
     }
 
-    /// 替换当前数据集前确认未保存修改（打开/下载/恢复共用）
+    /// Confirm unsaved changes before replacing the current dataset (shared by open/download/recovery)
     pub(super) fn confirm_discard(&self) -> bool {
         if self.skip_unsaved_confirm || !self.editor.history().is_dirty() {
             return true;
@@ -603,7 +599,7 @@ impl NeoApp {
             == rfd::MessageDialogResult::Ok
     }
 
-    /// 关闭图层/应用前是否需要弹未保存确认。
+    /// Whether to show the unsaved-changes confirmation before closing a layer/the app.
     pub(super) fn needs_unsaved_prompt(&self, dirty: bool) -> bool {
         dirty && !self.skip_unsaved_confirm
     }
@@ -615,7 +611,7 @@ impl NeoApp {
         });
     }
 
-    /// 绘制未保存确认框，并在确认后执行关闭图层或退出。
+    /// Draw the unsaved-changes confirmation and, after confirmation, close the layer or exit.
     pub(super) fn draw_unsaved_prompt(&mut self, ctx: &egui::Context) {
         let Some(mut prompt) = self.unsaved_prompt.take() else {
             return;
@@ -667,8 +663,8 @@ impl NeoApp {
     }
 }
 
-/// 在 `current` 上套用一次批量编辑：先删除 `remove` 里的 key，再写入 `set`
-/// （已存在的 key 覆盖值，新 key 追加）。
+/// Apply one batch edit onto `current`: first remove the keys in `remove`, then write `set`
+/// (existing keys get their values overwritten, new keys are appended).
 fn merged_tags(
     current: &[(String, String)],
     set: &[(String, String)],
@@ -689,7 +685,7 @@ fn merged_tags(
     next
 }
 
-/// 两组标签是否等价（与顺序无关；同一 key 以最后出现的为准）。
+/// Whether two tag sets are equivalent (order-independent; for duplicate keys the last occurrence wins).
 fn same_tags(left: &[(String, String)], right: &[(String, String)]) -> bool {
     fn normalized(tags: &[(String, String)]) -> Vec<(&str, &str)> {
         let mut rows: Vec<(&str, &str)> = tags

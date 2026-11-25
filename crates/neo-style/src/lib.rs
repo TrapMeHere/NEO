@@ -1,13 +1,13 @@
-//! # neo-style — 样式、预设与过滤器
+//! # neo-style — styles, presets and filters
 //!
-//! 本期实现"内置配色规则"的最小闭环（MapCSS 子集解析器在里程碑 4）：
+//! This phase implements the minimal closed loop of "built-in color rules" (the MapCSS subset parser lands in milestone 4):
 //!
-//! * 样式表不依赖 `neo-store` / GPU / UI，只依赖 `neo-core` 的符号类型；
-//! * Sym 由调用方（`neo-scene`）预先驻留后注入，避免样式层反向依赖数据层；
-//! * 颜色用 4 字节，直接进顶点。
+//! * the stylesheet does not depend on `neo-store` / GPU / UI, only on symbol types from `neo-core`;
+//! * Syms are interned beforehand by the caller (`neo-scene`) and injected, avoiding a reverse dependency from the style layer onto the data layer;
+//! * colors are 4 bytes and go straight into vertices.
 //!
-//! 设计要点（docs/11）：MapCSS 是 JOSM 的实际样式语言，兼容它是"完整替代"的必要条件；
-//! 但第一阶段先用手写规则跑通渲染管线，MapCSS 解析器作为独立模块后接。
+//! Design notes (docs/11): MapCSS is JOSM's de facto styling language, and compatibility is a prerequisite for "complete replacement";
+//! but phase one first gets the render pipeline working with hand-written rules, with the MapCSS parser as a separate module added later.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -37,7 +37,7 @@ pub use schema::{
     schema_preset, schema_presets, suggestion_presets,
 };
 
-/// 样式用到的 tag key（由调用方驻留后注入）。
+/// Tag keys used by styles (interned and injected by the caller).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StyleKeys {
     /// `highway`
@@ -54,40 +54,40 @@ pub struct StyleKeys {
     pub area: Sym,
 }
 
-/// 调色板（RGBA）。
+/// Palette (RGBA).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Colors {
-    /// 地图背景。
+    /// Map background.
     pub background: [u8; 4],
-    /// 普通道路。
+    /// Ordinary roads.
     pub road: [u8; 4],
-    /// 主干道。
+    /// Trunk roads.
     pub road_major: [u8; 4],
-    /// 铁路。
+    /// Railways.
     pub rail: [u8; 4],
-    /// 建筑填充。
+    /// Building fill.
     pub building: [u8; 4],
-    /// 水体填充。
+    /// Water fill.
     pub water: [u8; 4],
-    /// 绿地填充。
+    /// Green-space fill.
     pub green: [u8; 4],
-    /// 通用面填充（amenity/shop 等 area preset 回退色）。
+    /// Generic area fill (fallback color for area presets like amenity/shop).
     pub area: [u8; 4],
-    /// 默认线（未知 way）。
+    /// Default line (unknown way).
     pub line_default: [u8; 4],
-    /// 节点图标。
+    /// Node icon.
     pub node: [u8; 4],
-    /// 选中对象。
+    /// Selected objects.
     pub selection: [u8; 4],
-    /// 桥梁外描边（casing）。
+    /// Bridge casing.
     pub bridge_casing: [u8; 4],
-    /// 隧道外描边（casing）。
+    /// Tunnel casing.
     pub tunnel_casing: [u8; 4],
-    /// 过水路面（ford）的水色外描边。
+    /// Water-colored casing of fords.
     pub ford_water: [u8; 4],
-    /// 路堤坡侧刻线（梯状坡面）色。
+    /// Color of embankment side hachures (terraced slope).
     pub embankment: [u8; 4],
-    /// 路堑坡侧刻线（梳状齿线）色。
+    /// Color of cutting side hachures (comb-like teeth).
     pub cutting: [u8; 4],
 }
 
@@ -114,64 +114,64 @@ impl Default for Colors {
     }
 }
 
-/// way 的外描边（casing）：由场景层在本体下方扩宽绘制。
+/// Way casing: the scene layer draws it widened beneath the body.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CasingStyle {
-    /// 描边颜色。
+    /// Casing color.
     pub color: [u8; 4],
-    /// 描边宽度（屏幕像素）。
+    /// Casing width (screen pixels).
     pub width_px: f32,
-    /// 虚线图案（屏幕像素）；`None` 为实线。
+    /// Dash pattern (screen pixels); `None` means solid.
     pub dashes: Option<Vec<f32>>,
 }
 
-/// 坡侧刻线朝向。
+/// Slope-side hachure direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HachureSide {
-    /// 点序左侧。
+    /// Left of the point order.
     Left,
-    /// 点序右侧。
+    /// Right of the point order.
     Right,
-    /// 两侧。
+    /// Both sides.
     Both,
 }
 
-/// 路堤 / 路堑的坡侧刻线（hachure）样式。
+/// Hachure style for embankment / cutting slopes.
 ///
-/// 路堤与路堑靠**符号形状 + 颜色**区分（只靠刻线朝向在小比例尺下看不出来）：
-/// 路堤是带外缘坡脚线的“梯状坡面”，路堑是不带外缘线的“梳状齿线”。
+/// Embankments and cuttings are distinguished by **symbol shape + color** (hachure direction alone is invisible at small scales):
+/// an embankment is a "terraced slope" with an outer slope-foot line, a cutting is "comb-like teeth" without an outer line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HachureStyle {
-    /// 刻线颜色。
+    /// Hachure color.
     pub color: [u8; 4],
-    /// 沿 way 的间隔（屏幕像素）。
+    /// Interval along the way (screen pixels).
     pub spacing_px: f32,
-    /// 单根刻线长度（屏幕像素）。
+    /// Length of a single hachure (screen pixels).
     pub length_px: f32,
-    /// 单根刻线宽度（屏幕像素）；外缘线也用这个宽度。
+    /// Width of a single hachure (screen pixels); the outer slope-foot line uses this width too.
     pub width_px: f32,
-    /// 刻线朝向。
+    /// Hachure direction.
     pub side: HachureSide,
-    /// 是否在刻线外端再画一条平行的坡脚线（路堤的“梯状”符号）。
+    /// Whether to draw a parallel slope-foot line at the outer end of the hachures (the embankment's "terraced" symbol).
     pub baseline: bool,
 }
 
-/// 从标签解析出的结构物事实（桥、隧道、路堤、路堑、过水路面）。
+/// Structure facts parsed from tags (bridge, tunnel, embankment, cutting, ford).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StructureFacts {
-    /// `bridge=*`（真值）。
+    /// `bridge=*` (truthy).
     pub bridge: bool,
-    /// `tunnel=*`（真值）。
+    /// `tunnel=*` (truthy).
     pub tunnel: bool,
-    /// 路堤及坡侧。
+    /// Embankment and its slope side.
     pub embankment: Option<HachureSide>,
-    /// 路堑及坡侧。
+    /// Cutting and its slope side.
     pub cutting: Option<HachureSide>,
-    /// `ford=*` 或 `highway=ford`。
+    /// `ford=*` or `highway=ford`.
     pub ford: bool,
 }
 
-/// tag 值是否为真：非空，且不是 `no` / `false` / `0`（大小写不敏感）。
+/// Whether a tag value is truthy: non-empty and not `no` / `false` / `0` (case-insensitive).
 fn tag_value_is_true(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty()
@@ -180,7 +180,7 @@ fn tag_value_is_true(value: &str) -> bool {
         && value != "0"
 }
 
-/// 从 `embankment` / `cutting` 的值解析坡侧，无法识别时用 `default`。
+/// Parse the slope side from `embankment` / `cutting` values, falling back to `default` when unrecognized.
 fn hachure_side_from_value(value: &str, default: HachureSide) -> HachureSide {
     if value.eq_ignore_ascii_case("left") {
         HachureSide::Left
@@ -193,12 +193,12 @@ fn hachure_side_from_value(value: &str, default: HachureSide) -> HachureSide {
     }
 }
 
-/// 从字符串标签解析结构物事实（键名与真值判断均大小写不敏感）。
+/// Parse structure facts from string tags (key names and truthiness checks are case-insensitive).
 ///
-/// - `bridge` / `tunnel` 键为真即为真（`viaduct`、`building_passage` 等各类取值均算）；
-/// - `man_made=embankment` 或 `embankment` 键为真 → 路堤，坡侧默认右侧；
-/// - `man_made=cutting` 或 `cutting` 键为真 → 路堑，坡侧默认左侧；
-/// - `ford` 键为真，或 `highway=ford` → 过水路面。
+/// - a truthy `bridge` / `tunnel` key means true (any value such as `viaduct`, `building_passage` counts);
+/// - `man_made=embankment` or a truthy `embankment` key → embankment, slope side defaults to right;
+/// - `man_made=cutting` or a truthy `cutting` key → cutting, slope side defaults to left;
+/// - a truthy `ford` key, or `highway=ford` → ford.
 pub fn structure_facts<K: AsRef<str>, V: AsRef<str>>(tags: &[(K, V)]) -> StructureFacts {
     let value_of = |key: &str| -> Option<&str> {
         tags.iter()
@@ -232,25 +232,25 @@ pub fn structure_facts<K: AsRef<str>, V: AsRef<str>>(tags: &[(K, V)]) -> Structu
     }
 }
 
-/// 样式表。
+/// Stylesheet.
 #[derive(Clone, Debug)]
 pub struct StyleSheet {
-    /// 内置调色板。
+    /// Built-in palette.
     pub colors: Colors,
-    /// tag key 符号。
+    /// Tag key symbols.
     pub keys: StyleKeys,
-    /// 道路线宽（屏幕像素）。
+    /// Road line width (screen pixels).
     pub way_width_px: f32,
-    /// 节点图标半径（屏幕像素）。
+    /// Node icon radius (screen pixels).
     pub node_radius_px: f32,
-    /// 小于该屏幕长度的 way 在低 zoom 时被 LOD 跳过。
+    /// Ways shorter than this on screen are skipped by LOD at low zoom.
     pub min_way_length_px: f32,
-    /// 可选 MapCSS 样式表（编译为 Sym 条件）。
+    /// Optional MapCSS stylesheet (compiled to Sym conditions).
     pub mapcss: Option<CompiledMapCss>,
 }
 
 impl StyleSheet {
-    /// 构造。
+    /// Construct.
     pub fn new(colors: Colors, keys: StyleKeys) -> Self {
         Self {
             colors,
@@ -262,7 +262,7 @@ impl StyleSheet {
         }
     }
 
-    /// 安装编译后的 MapCSS。
+    /// Install the compiled MapCSS.
     pub fn set_mapcss(&mut self, mapcss: CompiledMapCss) {
         self.mapcss = Some(mapcss);
     }
@@ -271,7 +271,7 @@ impl StyleSheet {
         tags.iter().find_map(|&(k, v)| (k == key).then_some(v))
     }
 
-    /// way 的线颜色。
+    /// Line color of a way.
     pub fn way_color(&self, tags: &[(Sym, Sym)]) -> [u8; 4] {
         if Self::tag(tags, self.keys.highway).is_some() {
             self.colors.road
@@ -282,17 +282,17 @@ impl StyleSheet {
         }
     }
 
-    /// 线宽倍数（主干道更宽）。
+    /// Line-width multiplier (trunk roads are wider).
     pub fn way_width_scale(&self, tags: &[(Sym, Sym)]) -> f32 {
         if Self::tag(tags, self.keys.highway).is_some() {
-            // highway 的具体等级在 MapCSS 阶段细化；这里只区分有无。
+            // The concrete highway class is refined in the MapCSS phase; here only presence/absence is distinguished.
             1.0
         } else {
             0.7
         }
     }
 
-    /// 如果该 way 应作为面填充，返回填充色（仅 Sym 快速路径；完整语义见 [`Self::area_fill`]）。
+    /// If the way should be filled as an area, return the fill color (Sym fast path only; full semantics in [`Self::area_fill`]).
     pub fn fill_color(&self, tags: &[(Sym, Sym)]) -> Option<[u8; 4]> {
         if Self::tag(tags, self.keys.building).is_some() {
             return Some(self.colors.building);
@@ -300,7 +300,7 @@ impl StyleSheet {
         None
     }
 
-    /// 按已解析的字符串标签决定面填充色（preset geometry + area 语义）。
+    /// Decide the area fill color from parsed string tags (preset geometry + area semantics).
     pub fn area_fill(&self, tags: &[(&str, &str)]) -> Option<[u8; 4]> {
         if !tags_imply_area(tags) {
             return None;
@@ -325,22 +325,22 @@ impl StyleSheet {
         Some(self.colors.area)
     }
 
-    /// 是否整条 way 应被 LOD 跳过（长度低于阈值）。
+    /// Whether the whole way should be skipped by LOD (length below the threshold).
     pub fn lod_skip(&self, screen_length_px: f32) -> bool {
         screen_length_px < self.min_way_length_px
     }
 }
 
-/// 一个内置预设：一组可直接写入标签编辑器的 tag。
+/// A built-in preset: a set of tags that can be written straight into the tag editor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Preset {
-    /// 稳定 id（i18n key 为 `preset.<id>`）。
+    /// Stable id (i18n key is `preset.<id>`).
     pub id: &'static str,
-    /// 建议标签（key, value）。
+    /// Suggested tags (key, value).
     pub tags: &'static [(&'static str, &'static str)],
 }
 
-/// 阶段 4 的内置预设（v1，覆盖最常见的编辑对象）。
+/// Phase 4 built-in presets (v1, covering the most common editing objects).
 pub fn builtin_presets() -> &'static [Preset] {
     &[
         Preset {
@@ -378,47 +378,47 @@ pub fn builtin_presets() -> &'static [Preset] {
     ]
 }
 
-/// 一条 way 的最终样式。
+/// Final style of one way.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WayStyle {
-    /// 线色。
+    /// Line color.
     pub color: [u8; 4],
-    /// 面填充色（None 表示只画线）。
+    /// Area fill color (None means draw lines only).
     pub fill_color: Option<[u8; 4]>,
-    /// 线宽（屏幕像素）。
+    /// Line width (screen pixels).
     pub width_px: f32,
-    /// MapCSS `dashes`（屏幕像素；奇偶交替实/虚）。
+    /// MapCSS `dashes` (screen pixels; alternating solid/dash).
     pub dashes: Option<Vec<f32>>,
-    /// MapCSS `text`：标签键。
+    /// MapCSS `text`: label key.
     pub text: Option<String>,
-    /// 文字颜色。
+    /// Text color.
     pub text_color: Option<[u8; 4]>,
-    /// 字号（屏幕像素）。
+    /// Font size (screen pixels).
     pub font_size_px: Option<f32>,
-    /// 文字位置。
+    /// Text position.
     pub text_position: Option<String>,
-    /// MapCSS 图标路径（相对 assets）。
+    /// MapCSS icon path (relative to assets).
     pub icon_image: Option<String>,
-    /// 图标宽度（屏幕像素）。
+    /// Icon width (screen pixels).
     pub icon_width_px: Option<f32>,
-    /// 外描边（桥 / 隧道 / 过水路面）。
+    /// Casing (bridge / tunnel / ford).
     pub casing: Option<CasingStyle>,
-    /// 坡侧刻线（路堤 / 路堑）。
+    /// Slope-side hachures (embankment / cutting).
     pub hachure: Option<HachureStyle>,
-    /// 图层偏置：桥 +1、隧道 -1、其它 0；场景层据此决定叠放顺序。
+    /// Layer bias: bridge +1, tunnel -1, others 0; the scene layer uses it to decide stacking order.
     pub layer_bias: i16,
 }
 
-/// 桥/隧道/过水路面外描边比本体每侧宽出的屏幕像素。
+/// Screen pixels by which the bridge/tunnel/ford casing is wider than the body on each side.
 ///
-/// 轮廓总宽 = 本体线宽 + 2 × 该值；取 2.5 px 是为了在深色底图上仍能读出 2–3 px 的边。
+/// Total outline width = body line width + 2 × this value; 2.5 px is chosen so a 2–3 px edge remains legible on dark basemaps.
 pub const STRUCTURE_CASING_HALO_PX: f32 = 2.5;
 
 impl StyleSheet {
-    /// 内置外描边：优先级 bridge > tunnel > ford。
+    /// Built-in casing: priority bridge > tunnel > ford.
     ///
-    /// `width_px` 为该 way 本体的线宽，外描边在其基础上加宽：每侧 `STRUCTURE_CASING_HALO_PX`，
-    /// 使轮廓在深色底图上能看出 2–3 像素的边。
+    /// `width_px` is the body line width of the way; the casing widens it by `STRUCTURE_CASING_HALO_PX` on each side,
+    /// so the outline shows a 2–3 pixel edge on dark basemaps.
     fn builtin_casing(&self, facts: &StructureFacts, width_px: f32) -> Option<CasingStyle> {
         let with_halo = width_px + STRUCTURE_CASING_HALO_PX * 2.0;
         if facts.bridge {
@@ -444,11 +444,11 @@ impl StyleSheet {
         }
     }
 
-    /// 内置坡侧刻线：路堤优先于路堑。
+    /// Built-in slope-side hachures: embankment takes priority over cutting.
     ///
-    /// 两者用不同符号 + 不同色相，避免只靠刻线朝向区分：
-    /// * 路堤：刻线长而疏（7 / 12 px），外端再画坡脚线 → 近看是“梯状坡面”；
-    /// * 路堑：刻线短而密（4 / 6 px），没有外缘线 → 近看是“梳状齿线”。
+    /// The two use different symbols + different hues, so they are not distinguished by hachure direction alone:
+    /// * embankment: long, sparse hachures (7 / 12 px) plus an outer slope-foot line → looks like a "terraced slope" up close;
+    /// * cutting: short, dense hachures (4 / 6 px) with no outer line → looks like "comb-like teeth" up close.
     fn builtin_hachure(&self, facts: &StructureFacts) -> Option<HachureStyle> {
         if let Some(side) = facts.embankment {
             return Some(HachureStyle {
@@ -471,7 +471,7 @@ impl StyleSheet {
         })
     }
 
-    /// 图层偏置：桥 +1、隧道 -1、其它 0。
+    /// Layer bias: bridge +1, tunnel -1, others 0.
     fn layer_bias(facts: &StructureFacts) -> i16 {
         if facts.bridge {
             1
@@ -482,7 +482,7 @@ impl StyleSheet {
         }
     }
 
-    /// 解析最终外描边：MapCSS 显式声明 `casing-*` 时替换内置，否则用内置。
+    /// Resolve the final casing: an explicit MapCSS `casing-*` declaration replaces the built-in one, otherwise use the built-in one.
     fn resolve_casing(
         &self,
         facts: &StructureFacts,
@@ -503,12 +503,12 @@ impl StyleSheet {
         self.builtin_casing(facts, width_px)
     }
 
-    /// 计算 way 样式：MapCSS 命中则使用其声明，否则回退内置调色板。
+    /// Compute the way style: use MapCSS declarations on a hit, otherwise fall back to the built-in palette.
     ///
-    /// `names` 为已解析的 `(key, value)` 字符串对；用于判断 area preset / `area=*` 语义。
+    /// `names` are parsed `(key, value)` string pairs; used to decide area preset / `area=*` semantics.
     pub fn way_style(&self, tags: &[(Sym, Sym)], zoom: f32, names: &[(&str, &str)]) -> WayStyle {
         let fallback_fill = || self.fill_color(tags).or_else(|| self.area_fill(names));
-        // 结构物（桥/隧道/路堤/路堑/过水路面）由字符串标签判定：Sym 无法还原字符串。
+        // Structures (bridge/tunnel/embankment/cutting/ford) are determined from string tags: Syms cannot recover strings.
         let facts = structure_facts(names);
         if let Some(mapcss) = &self.mapcss
             && let Some(decl) = mapcss.style(Element::Way, tags, zoom)
@@ -527,8 +527,8 @@ impl StyleSheet {
                 .unwrap_or_else(|| self.way_width_px * self.way_width_scale(tags));
             return WayStyle {
                 color: with_alpha(decl.color.unwrap_or_else(|| self.way_color(tags))),
-                // 命中规则但没有 fill-color 时仍回退内置填充（否则一条通用
-                // way 规则会让所有面失去颜色）。`fill-color: none` 则保持透明。
+                // When a rule matches but has no fill-color, still fall back to the built-in fill (otherwise a generic
+                // way rule would remove colors from every area). `fill-color: none` keeps it transparent.
                 fill_color: if decl.clear_fill {
                     None
                 } else {
@@ -567,7 +567,7 @@ impl StyleSheet {
         }
     }
 
-    /// 计算节点样式。未命中 MapCSS 时用调色板里的节点色。
+    /// Compute the node style. Uses the palette node color when MapCSS does not match.
     pub fn node_style(&self, tags: &[(Sym, Sym)], zoom: f32) -> NodeStyle {
         if let Some(mapcss) = &self.mapcss
             && let Some(decl) = mapcss.style(Element::Node, tags, zoom)
@@ -590,14 +590,14 @@ impl StyleSheet {
     }
 }
 
-/// 闭合 way 的标签是否应按面渲染（对齐 iD：`area=*`、areaKeys、再看预设）。
+/// Whether a closed way's tags should render as an area (aligned with iD: `area=*`, areaKeys, then presets).
 ///
-/// - `area=no` → 否
-/// - `area=*`（其它值）→ 是
-/// - 常见 areaKeys（`building`/`landuse`/`leisure`/…）→ 是
-/// - 已有 **line** 预设可匹配 → 否（闭合道路仍是线；避免 `highway/service_area`
-///   因更高 `matchScore` 压过 `highway/service`）
-/// - 否则若仅 area 预设匹配 → 是
+/// - `area=no` → no
+/// - `area=*` (any other value) → yes
+/// - common areaKeys (`building`/`landuse`/`leisure`/…) → yes
+/// - an existing **line** preset matches → no (closed roads stay lines; avoids `highway/service_area`
+///   overriding `highway/service` due to a higher `matchScore`)
+/// - otherwise, if only an area preset matches → yes
 pub fn tags_imply_area<K: AsRef<str>, V: AsRef<str>>(tags: &[(K, V)]) -> bool {
     let value_of = |key: &str| -> Option<&str> {
         tags.iter()
@@ -645,7 +645,7 @@ fn area_keys_imply<K: AsRef<str>, V: AsRef<str>>(tags: &[(K, V)]) -> bool {
                 return true;
             }
             "natural" => {
-                // 线性自然要素：闭合也不当面积。
+                // Linear natural features: never treated as areas even when closed.
                 if matches!(
                     value,
                     "coastline" | "cliff" | "tree_row" | "ridge" | "arete" | "valley" | "gorge"
@@ -667,18 +667,18 @@ fn area_keys_imply<K: AsRef<str>, V: AsRef<str>>(tags: &[(K, V)]) -> bool {
     false
 }
 
-/// 一个节点的最终样式。
+/// Final style of one node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeStyle {
-    /// 点的颜色。
+    /// Point color.
     pub color: [u8; 4],
-    /// 文字颜色。
+    /// Text color.
     pub text_color: Option<[u8; 4]>,
-    /// 字号（屏幕像素）。
+    /// Font size (screen pixels).
     pub font_size_px: Option<f32>,
-    /// 图标。`poi:` 开头的由界面直接画，其余当作 assets 路径。
+    /// Icon. Ones starting with `poi:` are drawn directly by the UI; the rest are asset paths.
     pub icon_image: Option<String>,
-    /// 图标宽度（屏幕像素）。
+    /// Icon width (screen pixels).
     pub icon_width_px: Option<f32>,
 }
 
@@ -708,7 +708,7 @@ mod area_tests {
 
     #[test]
     fn closed_service_road_is_not_area_without_area_yes() {
-        // schema 里 service_area 的 matchScore 高于 service；不能因闭合就认成面。
+        // In the schema, service_area's matchScore is higher than service's; being closed must not make it an area.
         assert!(!tags_imply_area(&[("highway", "service"), ("access", "private")]));
         assert!(tags_imply_area(&[("highway", "service"), ("area", "yes")]));
     }
@@ -768,7 +768,7 @@ mod structure_tests {
         StyleSheet::new(Colors::default(), test_keys())
     }
 
-    /// 测试用稳定 intern：同一字符串得到同一 Sym，不依赖真实符号表。
+    /// Stable interner for tests: the same string yields the same Sym, without depending on the real symbol table.
     fn intern(text: &str) -> Sym {
         let mut hash: u32 = 2_166_136_261;
         for byte in text.bytes() {
@@ -780,12 +780,12 @@ mod structure_tests {
 
     fn sheet_with_css(css: &str) -> StyleSheet {
         let mut style_sheet = sheet();
-        let compiled = MapCss::parse(css).expect("MapCSS 应能解析").compile(intern);
+        let compiled = MapCss::parse(css).expect("MapCSS should parse").compile(intern);
         style_sheet.set_mapcss(compiled);
         style_sheet
     }
 
-    /// `highway=residential` 的 Sym 标签。
+    /// Sym tags for `highway=residential`.
     fn highway_tags() -> Vec<(Sym, Sym)> {
         vec![(Sym::from_raw(1), Sym::from_raw(100))]
     }
@@ -796,7 +796,7 @@ mod structure_tests {
         tags
     }
 
-    /// 与 `tags_with` 配对的字符串标签。
+    /// String tags paired with `tags_with`.
     fn names_with(key: &'static str, value: &'static str) -> Vec<(&'static str, &'static str)> {
         vec![("highway", "residential"), (key, value)]
     }
@@ -809,7 +809,7 @@ mod structure_tests {
         assert!(!structure_facts(&[("bridge", "false")]).bridge);
         assert!(structure_facts(&[("tunnel", "building_passage")]).tunnel);
         assert!(!structure_facts(&[("tunnel", "0")]).tunnel);
-        // 真值判断大小写不敏感。
+        // Truthiness checks are case-insensitive.
         assert!(structure_facts(&[("bridge", "YES")]).bridge);
     }
 
@@ -855,7 +855,7 @@ mod structure_tests {
         let sheet = sheet();
         let style = sheet.way_style(&tags_with("bridge", "yes"), 16.0, &names_with("bridge", "yes"));
         let width = style.width_px;
-        let casing = style.casing.expect("桥梁应有外描边");
+        let casing = style.casing.expect("bridge should have a casing");
         assert_eq!(casing.color, sheet.colors.bridge_casing);
         assert!((casing.width_px - (width + STRUCTURE_CASING_HALO_PX * 2.0)).abs() < 1e-6);
         assert!(casing.dashes.is_none());
@@ -871,7 +871,7 @@ mod structure_tests {
             16.0,
             &names_with("tunnel", "building_passage"),
         );
-        let casing = style.casing.expect("隧道应有外描边");
+        let casing = style.casing.expect("tunnel should have a casing");
         assert_eq!(casing.color, sheet.colors.tunnel_casing);
         assert_eq!(casing.dashes, Some(vec![8.0, 5.0]));
         assert_eq!(style.layer_bias, -1);
@@ -887,7 +887,7 @@ mod structure_tests {
             &[("highway", "residential"), ("bridge", "yes"), ("tunnel", "yes")],
         );
         assert_eq!(
-            style.casing.expect("应有外描边").color,
+            style.casing.expect("should have a casing").color,
             Colors::default().bridge_casing
         );
         assert_eq!(style.layer_bias, 1);
@@ -898,7 +898,7 @@ mod structure_tests {
         let sheet = sheet();
         let style = sheet.way_style(&tags_with("ford", "yes"), 16.0, &names_with("ford", "yes"));
         let width = style.width_px;
-        let casing = style.casing.expect("过水路面应有水色外描边");
+        let casing = style.casing.expect("ford should have a water-colored casing");
         assert_eq!(casing.color, sheet.colors.ford_water);
         assert!((casing.width_px - (width + STRUCTURE_CASING_HALO_PX * 2.0)).abs() < 1e-6);
         assert_eq!(style.layer_bias, 0);
@@ -912,38 +912,41 @@ mod structure_tests {
             16.0,
             &names_with("embankment", "left"),
         );
-        let embankment = style.hachure.expect("路堤应有坡侧刻线");
+        let embankment = style.hachure.expect("embankment should have hachures");
         assert_eq!(embankment.side, HachureSide::Left);
         assert_eq!(embankment.color, sheet.colors.embankment);
         assert_eq!(embankment.spacing_px, 12.0);
         assert_eq!(embankment.length_px, 7.0);
         assert_eq!(embankment.width_px, 1.2);
-        // 路堤带外缘坡脚线（梯状坡面）。
+        // Embankments have an outer slope-foot line (terraced slope).
         assert!(embankment.baseline);
         assert!(style.casing.is_none());
 
-        // 路堑：默认左侧、短而密、无外缘线（梳状齿线）、颜色不同。
+        // Cutting: defaults to the left side, short and dense, no outer line (comb-like teeth), different color.
         let cutting = sheet.way_style(
             &tags_with("man_made", "cutting"),
             16.0,
             &names_with("man_made", "cutting"),
         );
-        let cutting = cutting.hachure.expect("路堑应有坡侧刻线");
+        let cutting = cutting.hachure.expect("cutting should have hachures");
         assert_eq!(cutting.side, HachureSide::Left);
         assert_eq!(cutting.color, sheet.colors.cutting);
         assert_eq!(cutting.spacing_px, 6.0);
         assert_eq!(cutting.length_px, 4.0);
         assert!(!cutting.baseline);
-        // 两种符号必须在形状和颜色上都不同，不能只靠朝向。
+        // The two symbols must differ in both shape and color, not just direction.
         assert_ne!(embankment.color, cutting.color);
         assert_ne!(embankment.baseline, cutting.baseline);
         assert_ne!(embankment.length_px, cutting.length_px);
 
-        // 路堤优先于路堑。
+        // Embankment takes priority over cutting.
         let mut names = names_with("embankment", "both");
         names.push(("cutting", "left"));
         let both = sheet.way_style(&tags_with("embankment", "both"), 16.0, &names);
-        assert_eq!(both.hachure.expect("路堤应有坡侧刻线").side, HachureSide::Both);
+        assert_eq!(
+            both.hachure.expect("embankment should have hachures").side,
+            HachureSide::Both
+        );
     }
 
     #[test]
@@ -958,7 +961,7 @@ mod structure_tests {
     fn mapcss_casing_overrides_builtin() {
         let sheet = sheet_with_css("way[bridge] { casing-width: 6; casing-color: #112233; }");
         let style = sheet.way_style(&tags_with("bridge", "yes"), 16.0, &names_with("bridge", "yes"));
-        let casing = style.casing.expect("MapCSS 应覆盖出外描边");
+        let casing = style.casing.expect("MapCSS should override the casing");
         assert_eq!(casing.color, [0x11, 0x22, 0x33, 255]);
         assert_eq!(casing.width_px, 6.0);
         assert!(casing.dashes.is_none());
@@ -969,9 +972,9 @@ mod structure_tests {
         let sheet = sheet_with_css("way[bridge] { casing-dashes: 4, 2; }");
         let style = sheet.way_style(&tags_with("bridge", "yes"), 16.0, &names_with("bridge", "yes"));
         let width = style.width_px;
-        let casing = style.casing.expect("应命中 MapCSS casing 声明");
+        let casing = style.casing.expect("should match the MapCSS casing declaration");
         assert_eq!(casing.dashes, Some(vec![4.0, 2.0]));
-        // 颜色缺省用 bridge_casing，宽度缺省用 width + 2 × 每侧留边。
+        // Color defaults to bridge_casing, width defaults to width + 2 × per-side halo.
         assert_eq!(casing.color, sheet.colors.bridge_casing);
         assert!((casing.width_px - (width + STRUCTURE_CASING_HALO_PX * 2.0)).abs() < 1e-6);
     }
@@ -981,9 +984,11 @@ mod structure_tests {
         let sheet = sheet_with_css("way { width: 5; }");
         let style = sheet.way_style(&tags_with("bridge", "yes"), 16.0, &names_with("bridge", "yes"));
         assert_eq!(style.width_px, 5.0);
-        let casing = style.casing.expect("未声明 casing-* 时应保留内置外描边");
+        let casing = style
+            .casing
+            .expect("built-in casing should be kept when casing-* is not declared");
         assert_eq!(casing.color, sheet.colors.bridge_casing);
-        // 内置外描边宽度基于该 way 的最终 width_px。
+        // The built-in casing width is based on the way's final width_px.
         assert!((casing.width_px - (5.0 + STRUCTURE_CASING_HALO_PX * 2.0)).abs() < 1e-6);
     }
 }

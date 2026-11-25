@@ -1,42 +1,42 @@
-//! Node 的 SoA 存储。
+//! SoA storage for nodes.
 //!
 //! ```text
 //! ids   [ i64 | i64 | i64 | ... ]   ┐
-//! lat   [ i32 | i32 | i32 | ... ]   │ 同一槽位下标 i 对应同一对象
+//! lat   [ i32 | i32 | i32 | ... ]   │ the same slot index i corresponds to the same object
 //! lon   [ i32 | i32 | i32 | ... ]   │
 //! tags  [ u32 | u32 | u32 | ... ]   │
 //! meta  [ 32B | 32B | 32B | ... ]   ┘
-//! alive [ 1B  | 1B  | ... ]         ← 由 SlotAllocator 管理
+//! alive [ 1B  | 1B  | ... ]         ← managed by SlotAllocator
 //! ```
 //!
-//! 1000 万节点：4+4+4+4+32 = 48 字节/节点 ≈ 480 MB（加位图与 id 索引后约 700 MB），
-//! 对比 `Vec<Box<Node>>` 的 100+ 字节/节点 + 指针追逐，这是数量级的差别。
+//! 10M nodes: 4+4+4+4+32 = 48 bytes/node ≈ 480 MB (about 700 MB with bitsets and the id index),
+//! compared with 100+ bytes/node plus pointer chasing for `Vec<Box<Node>>`, this is an order-of-magnitude difference.
 
 use neo_core::{Handle, LatLon, Meta, ObjectId, SlotAllocator};
 use neo_osm::Tags;
 
 use crate::tag_store::{TagSetId, TagStore};
 
-/// Node 的只读快照视图（不含 tag 内容，需配 `TagStore` 解析）。
+/// Read-only snapshot view of a Node (tag contents excluded; resolve via `TagStore`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NodeRef {
-    /// 句柄。
+    /// Handle.
     pub handle: Handle<NodeSlot>,
-    /// 外部 ID。
+    /// External ID.
     pub id: ObjectId,
-    /// 坐标。
+    /// Coordinates.
     pub pos: LatLon,
-    /// tag 集合句柄。
+    /// Tag set handle.
     pub tags: TagSetId,
-    /// 元数据。
+    /// Metadata.
     pub meta: Meta,
 }
 
-/// 标记类型：句柄的 phantom 参数。
+/// Marker type: the phantom parameter of the handle.
 #[derive(Debug)]
 pub struct NodeSlot;
 
-/// Node 的 SoA 存储。
+/// SoA storage for nodes.
 #[derive(Debug, Default)]
 pub struct NodeStore {
     ids: Vec<ObjectId>,
@@ -48,19 +48,19 @@ pub struct NodeStore {
 }
 
 impl NodeStore {
-    /// 空存储。
+    /// Empty storage.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 预分配容量。
+    /// Preallocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         let mut s = Self::new();
         s.reserve(capacity);
         s
     }
 
-    /// 预分配。
+    /// Preallocate.
     pub fn reserve(&mut self, additional: usize) {
         self.ids.reserve(additional);
         self.lat.reserve(additional);
@@ -70,25 +70,25 @@ impl NodeStore {
         self.alloc.reserve(additional);
     }
 
-    /// 槽位总数（含已删除）。
+    /// Total number of slots (including deleted).
     #[inline]
     pub fn slot_len(&self) -> usize {
         self.ids.len()
     }
 
-    /// 存活节点数。
+    /// Number of live nodes.
     #[inline]
     pub fn len(&self) -> usize {
         self.alloc.live_len()
     }
 
-    /// 是否没有存活节点。
+    /// Whether there are no live nodes.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// 追加节点（导入路径；不复用空闲槽位）。
+    /// Append a node (import path; does not reuse free slots).
     pub fn push(&mut self, id: ObjectId, pos: LatLon, tags: TagSetId, meta: Meta) -> Handle<NodeSlot> {
         let (index, generation) = self.alloc.alloc();
         let i = index as usize;
@@ -107,19 +107,19 @@ impl NodeStore {
         Handle::new(index, generation)
     }
 
-    /// 句柄是否有效。
+    /// Whether a handle is valid.
     #[inline]
     pub fn contains(&self, handle: Handle<NodeSlot>) -> bool {
         self.alloc.is_valid(handle)
     }
 
-    /// 槽位当前的 generation（用于从脏位图还原句柄）。
+    /// Current generation of a slot (used to reconstruct handles from the dirty bitset).
     #[inline]
     pub fn generation(&self, index: u32) -> Option<u32> {
         self.alloc.generation(index)
     }
 
-    /// 读取节点快照。
+    /// Read a node snapshot.
     pub fn get(&self, handle: Handle<NodeSlot>) -> Option<NodeRef> {
         if !self.contains(handle) {
             return None;
@@ -137,13 +137,13 @@ impl NodeStore {
         })
     }
 
-    /// 外部 ID。
+    /// External ID.
     #[inline]
     pub fn id(&self, handle: Handle<NodeSlot>) -> Option<ObjectId> {
         self.contains(handle).then(|| self.ids[handle.index() as usize])
     }
 
-    /// 坐标（渲染/几何热路径，避免构造完整视图）。
+    /// Coordinates (render/geometry hot path, avoiding construction of a full view).
     #[inline]
     pub fn position(&self, handle: Handle<NodeSlot>) -> Option<LatLon> {
         if !self.contains(handle) {
@@ -156,7 +156,7 @@ impl NodeStore {
         ))
     }
 
-    /// 修改坐标，返回旧值。失效句柄返回 `None`。
+    /// Modify coordinates and return the old value. Returns `None` for a stale handle.
     pub fn set_position(&mut self, handle: Handle<NodeSlot>, pos: LatLon) -> Option<LatLon> {
         if !self.contains(handle) {
             return None;
@@ -171,7 +171,7 @@ impl NodeStore {
         Some(old)
     }
 
-    /// 替换外部 ID（上传成功后把负 ID 映射为服务端新 ID）。
+    /// Replace the external ID (maps a negative local ID to the new server ID after a successful upload).
     pub fn set_id(&mut self, handle: Handle<NodeSlot>, id: ObjectId) -> bool {
         if !self.contains(handle) {
             return false;
@@ -180,7 +180,7 @@ impl NodeStore {
         true
     }
 
-    /// 替换 tag 集合句柄。
+    /// Replace the tag set handle.
     pub fn set_tags(&mut self, handle: Handle<NodeSlot>, tags: TagSetId) -> bool {
         if !self.contains(handle) {
             return false;
@@ -189,7 +189,7 @@ impl NodeStore {
         true
     }
 
-    /// 替换元数据。
+    /// Replace metadata.
     pub fn set_meta(&mut self, handle: Handle<NodeSlot>, meta: Meta) -> bool {
         if !self.contains(handle) {
             return false;
@@ -198,14 +198,14 @@ impl NodeStore {
         true
     }
 
-    /// 删除节点（逻辑删除 + 槽位回收）。
+    /// Delete a node (logical delete + slot recycling).
     pub fn remove(&mut self, handle: Handle<NodeSlot>) -> Option<NodeRef> {
         let view = self.get(handle)?;
         self.alloc.free(handle.index());
         Some(view)
     }
 
-    /// 迭代所有存活节点快照。
+    /// Iterate snapshots of all live nodes.
     pub fn iter(&self) -> impl Iterator<Item = NodeRef> + '_ {
         (0..self.slot_len()).filter_map(|i| {
             let generation = self.alloc.generation(i as u32)?;
@@ -213,13 +213,13 @@ impl NodeStore {
         })
     }
 
-    /// 把 tags 解析成领域对象（需要 pool 访问时用）。
+    /// Resolve tags into a domain object (for cases that need pool access).
     pub fn tags_of(&self, handle: Handle<NodeSlot>, tags: &TagStore) -> Option<Tags> {
         let t = self.get(handle)?;
         Some(Tags::from_pairs(tags.iter(t.tags)))
     }
 
-    /// 估算堆内存。
+    /// Estimate heap memory.
     pub fn mem_bytes(&self) -> neo_core::ByteSize {
         use core::mem::size_of;
         use neo_core::ByteSize;

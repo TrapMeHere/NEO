@@ -1,176 +1,176 @@
-# 04 空间索引与几何构建
+# 04 Spatial Index and Geometry Construction
 
-> 状态：草案 v0.1 ｜ 日期：2026-11-15 ｜ 归属 crate：`neo-geo`、`neo-scene`
-> 相关：[01-system-architecture.md](01-system-architecture.md) ｜ [02-workspace-and-dependency-rules.md](02-workspace-and-dependency-rules.md) ｜ [05-renderer-wgpu.md](05-renderer-wgpu.md) ｜ [11-style-presets-mapcss.md](11-style-presets-mapcss.md) ｜ [12-validation.md](12-validation.md) ｜ [ADR-0005](adr/0005-wgpu-egui-shared-device.md) ｜ [14-performance-and-verification.md](14-performance-and-verification.md)
+> Status: draft v0.1 | Date: 2026-11-15 | Owning crates: `neo-geo`, `neo-scene`
+> Related: [01-system-architecture.md](01-system-architecture.md) | [02-workspace-and-dependency-rules.md](02-workspace-and-dependency-rules.md) | [05-renderer-wgpu.md](05-renderer-wgpu.md) | [11-style-presets-mapcss.md](11-style-presets-mapcss.md) | [12-validation.md](12-validation.md) | [ADR-0005](adr/0005-wgpu-egui-shared-device.md) | [14-performance-and-verification.md](14-performance-and-verification.md)
 
-## 摘要
+## Summary
 
-- NEO 的几何层分两段：`neo-geo`（投影、几何生成、索引、拾取，**无 GPU 依赖**）与 `neo-scene`（可见集、LOD、批次装配 `SceneFrame`/`MapVertex`，**无 GPU 依赖**）。
-- 坐标栈四级：`LonLat`（WGS84 度）→ `WorldPoint`（投影平面，默认 EPSG:3857 米，f64）→ **重定基**（f64→f32，原点对齐 2^16 m 网格）→ `Screen`（物理像素）。
-- 精度策略是「f64 存、f32 画、按视口重定基」：f32 在世界极值 ±2.0e7 m 处的 ulp 约 2 m，会把 19 级缩放下的一栋楼抖动到十几个像素；重定基到 ≤1e5 m 后误差降到毫米级。
-- 绘制量由**视口**决定而不是由总对象数决定：对象 R-tree 只负责 `O(log n + k)` 出候选，之后全部由可见集、LOD 与批次控制，1M 与 10M 对象在同一视口下工作量同阶。
-- 索引双层：**对象层**（rstar 0.14 `RTree<ObjEntry>`，Node 点 / Way 预计算 AABB / Relation 派生 bbox）+ **视口层**（屏幕空间 256 px 分桶，随可见集重建，服务 hover 与精确拾取）。
-- 索引与几何都用 NEO 自有类型实现 `RTreeObject`/`PointDistance`；**不启用 geo 0.33.1 的 rstar 互操作**（见 §2.8、§5）。
-- 面几何走 earcutr 0.5.0（平坦填充的正确选择），失败不 panic：降级为描边并交给 Validator 报告自相交。
-- 命中有 CPU 与 GPU 两条方案，默认 CPU（已有索引），GPU ID buffer 作为密集区/多边形内部的补充，默认关闭（见 [05-renderer-wgpu.md](05-renderer-wgpu.md) §2.10）。
+- NEO's geometry layer has two stages: `neo-geo` (projection, geometry generation, indexing, picking, **no GPU dependency**) and `neo-scene` (visible set, LOD, batch assembly `SceneFrame`/`MapVertex`, **no GPU dependency**).
+- The coordinate stack has four levels: `LonLat` (WGS84 degrees) → `WorldPoint` (projection plane, EPSG:3857 meters by default, f64) → **rebasing** (f64→f32, origin aligned to the 2^16 m grid) → `Screen` (physical pixels).
+- The precision strategy is "store in f64, draw in f32, rebase per viewport": the f32 ulp at the world extreme of ±2.0e7 m is about 2 m, which would make a building at zoom level 19 jitter by a dozen pixels; after rebasing to ≤1e5 m the error drops to millimeter level.
+- Draw volume is determined by the **viewport**, not by the total object count: the object R-tree only produces candidates in `O(log n + k)`, after which everything is controlled by the visible set, LOD, and batches, so 1M and 10M objects cost the same order of work in the same viewport.
+- Two-tier indexing: **object tier** (rstar 0.14 `RTree<ObjEntry>`, Node points / precomputed Way AABBs / derived Relation bboxes) + **viewport tier** (256 px screen-space buckets, rebuilt with the visible set, serving hover and precise picking).
+- Both indexes and geometry implement `RTreeObject`/`PointDistance` with NEO's own types; **geo 0.33.1's rstar interop is not enabled** (see §2.8, §5).
+- Area geometry goes through earcutr 0.5.0 (the correct choice for flat fills); failure never panics: it degrades to stroking and reports self-intersection to the Validator.
+- Hit testing has both CPU and GPU implementations, with CPU as the default (the index already exists); the GPU ID buffer is a fallback for dense regions/polygon interiors and is off by default (see [05-renderer-wgpu.md](05-renderer-wgpu.md) §2.10).
 
-## 1 目标与范围
+## 1 Goals and Scope
 
-### 1.1 目标
+### 1.1 Goals
 
-1. 在 1M–10M+ OSM 对象的全量数据层上，视口内几何生成与拾取不随总量线性劣化。
-2. 完整覆盖 JOSM 的工作流所需的几何语义：闭合判定、multipolygon/内环、`area=no`、未闭合 multipolygon、relation 成员顺序无关的 bbox。
-3. 支持多投影（默认 EPSG:3857，可切 EPSG:4326 与 proj 0.32 提供的其它 CRS），且投影切换不重建索引。
-4. 拾取行为与 JOSM 一致：node 优先于 way、way 优先于 area；容差以屏幕像素表达并随 zoom 变化；框选是纯几何选择，不受渲染 LOD 与拾取优先级影响。
-5. 为 `neo-render` 提供**已量化、可直接上传**的顶点/索引批次；渲染层不得回溯查询数据模型。
+1. On full data layers of 1M–10M+ OSM objects, geometry generation and picking within the viewport must not degrade linearly with the total count.
+2. Fully cover the geometry semantics needed for JOSM's workflows: closure detection, multipolygon/inner rings, `area=no`, unclosed multipolygons, and relation-member-order-independent bboxes.
+3. Support multiple projections (EPSG:3857 by default, switchable to EPSG:4326 and other CRSs provided by proj 0.32), and projection switches must not rebuild the index.
+4. Picking behavior consistent with JOSM: node takes priority over way, way over area; tolerance is expressed in screen pixels and varies with zoom; box selection is a pure geometric selection unaffected by render LOD and picking priority.
+5. Provide `neo-render` with **quantized, directly uploadable** vertex/index batches; the render layer must never query back into the data model.
 
-### 1.2 非目标
+### 1.2 Non-goals
 
-- 不做拓扑编辑与命令合并（属 `neo-editor`/`neo-store`），几何层只消费不可变的 `WayView`/`RelationView` 快照。
-- 不做样式语义（MapCSS 求值属 `neo-style`），几何层只接收「已解析出的绘制参数」：宽度、颜色、虚线模式、是否填充。
-- 不做法线贴图、挤出建模、真实 3D 建筑（Phase 2 议题，见 [05](05-renderer-wgpu.md) §2.7）。
+- No topological editing or command merging (that belongs to `neo-editor`/`neo-store`); the geometry layer only consumes immutable `WayView`/`RelationView` snapshots.
+- No style semantics (MapCSS evaluation belongs to `neo-style`); the geometry layer only receives "already-resolved drawing parameters": width, color, dash pattern, whether to fill.
+- No normal mapping, extrusion modeling, or true 3D buildings (a Phase 2 topic, see [05](05-renderer-wgpu.md) §2.7).
 
-### 1.3 分层与依赖方向
+### 1.3 Layering and Dependency Direction
 
-| crate / 模块 | 职责 | 允许依赖 | 明确禁止 |
+| crate / module | Responsibility | Allowed dependencies | Explicitly prohibited |
 |---|---|---|---|
-| `neo-geo::projection` | 投影、瓦片、相机、坐标变换 | `proj` 0.32、`geo` 0.33.1（仅几何算法） | 任何 GPU/egui 类型 |
-| `neo-geo::geometry` | polyline/面构造、抽稀、三角化、法线 | `earcutr` 0.5、`geo` 0.33.1 | 索引、样式 |
-| `neo-geo::index` | 对象 R-tree、段索引、脏队列 | `rstar` 0.14 | `neo-store`（只收快照） |
-| `neo-geo::hit` | 命中测试与优先级 | 上述三者 | GPU |
-| `neo-scene::visible` | 可见集、LOD、屏幕空间分桶 | `neo-geo`、`neo-style`（只读规则结果） | wgpu |
+| `neo-geo::projection` | Projection, tiles, camera, coordinate transforms | `proj` 0.32, `geo` 0.33.1 (geometry algorithms only) | Any GPU/egui types |
+| `neo-geo::geometry` | Polyline/area construction, simplification, triangulation, normals | `earcutr` 0.5, `geo` 0.33.1 | Indexes, styles |
+| `neo-geo::index` | Object R-tree, segment index, dirty queue | `rstar` 0.14 | `neo-store` (takes snapshots only) |
+| `neo-geo::hit` | Hit testing and priority | The three above | GPU |
+| `neo-scene::visible` | Visible set, LOD, screen-space buckets | `neo-geo`, `neo-style` (style rule results only) | wgpu |
 | `neo-scene::frame` | `SceneFrame`/`RenderBatch`/`MapVertex` | `bytemuck` 1.25 | wgpu |
 
-> 依赖方向单向：`store → editor → geo → scene → render`。`neo-render` 不得依赖 `neo-store`/`neo-editor`/`neo-ui`（见 [ADR-0005](adr/0005-wgpu-egui-shared-device.md)）。
+> Dependencies flow one way: `store → editor → geo → scene → render`. `neo-render` must not depend on `neo-store`/`neo-editor`/`neo-ui` (see [ADR-0005](adr/0005-wgpu-egui-shared-device.md)).
 
-## 2 设计
+## 2 Design
 
-### 2.1 坐标栈
+### 2.1 Coordinate Stack
 
-| 层 | 类型 | 单位 | 精度要求 | 负责方 | 生命周期 |
+| Level | Type | Unit | Precision requirement | Owner | Lifetime |
 |---|---|---|---|---|---|
-| L0 `LonLat` | `{lon: f64, lat: f64}` | 度（WGS84） | 存储层用 E7 定点（i32，1e-7°≈1.1 cm），与 PBF `granularity=100` 位对齐 | `neo-osm` | 永久 |
-| L1 `WorldPoint` | `{x: f64, y: f64}` | 投影平面单位（3857 为米） | f64，误差 <1e-9 m | `neo-geo::projection` | 缓存 |
-| L2 `Rebased` | `[f32; 2]` | 米，相对 `rebase_origin` | 重定基后 ≤1e-2 m | `neo-scene::frame` | 按 `version` |
-| L3 `Screen` | `[f32; 2]` | 物理像素 | 0.5 px | `neo-render`（顶点着色器仿射） | 每帧 |
+| L0 `LonLat` | `{lon: f64, lat: f64}` | degrees (WGS84) | Storage layer uses E7 fixed point (i32, 1e-7°≈1.1 cm), bit-aligned with PBF `granularity=100` | `neo-osm` | permanent |
+| L1 `WorldPoint` | `{x: f64, y: f64}` | projection plane units (meters for 3857) | f64, error <1e-9 m | `neo-geo::projection` | cached |
+| L2 `Rebased` | `[f32; 2]` | meters, relative to `rebase_origin` | ≤1e-2 m after rebasing | `neo-scene::frame` | keyed by `version` |
+| L3 `Screen` | `[f32; 2]` | physical pixels | 0.5 px | `neo-render` (vertex-shader affine) | per frame |
 
-`MapVertex.pos` 承载 **L2**，不是 L3。CPU 完成投影与重定基（几何相关，只在 `version` 变化时重算），GPU 用 uniform 里的 scale/offset 完成每帧仿射。这是「CPU 做坐标变换、GPU 做批量合成」的具体切分：不是把几何搬上 GPU，也不是每帧重写顶点。
+`MapVertex.pos` carries **L2**, not L3. The CPU performs projection and rebasing (geometry-related, recomputed only when `version` changes), and the GPU performs the per-frame affine with scale/offset from a uniform. This is the concrete split for "CPU does coordinate transforms, GPU does batch compositing": it neither moves geometry onto the GPU nor rewrites vertices every frame.
 
-### 2.2 WebMercator 与定点精度
+### 2.2 WebMercator and Fixed-Point Precision
 
 ```
-正向（R = 6378137）:
-  x = R * λ                                   λ 为弧度
+Forward (R = 6378137):
+  x = R * λ                                   λ in radians
   y = R * asinh(tan φ) = R * ln(tan(π/4 + φ/2))
-反向:
+Inverse:
   φ = 2 * atan(exp(y / R)) - π/2
   λ = x / R
-世界范围: ±20037508.342789244 m（即 ±R*π），纬度有效域 ±85.05112878°
+World extent: ±20037508.342789244 m (i.e. ±R*π), valid latitude domain ±85.05112878°
 ```
 
-精度预算（这是选型依据，不是实测性能）：
+Precision budget (this is the selection rationale, not measured performance):
 
-| 量 | f32 可用精度 | 结论 |
+| Quantity | Usable f32 precision | Conclusion |
 |---|---|---|
-| 世界极值 2.0e7 m 处 ulp | 2^(24-23) = **2 m** | 不可直接存世界坐标 |
-| 重定基后 1.0e5 m 处 ulp | 2^(16-23) ≈ **7.8 mm** | 满足 19 级（约 0.18 地面米/px） |
-| f64 在 2.0e7 m 处 ulp | ≈3.7e-9 m | 投影/索引层足够 |
+| ulp at the world extreme of 2.0e7 m | 2^(24-23) = **2 m** | World coordinates cannot be stored directly |
+| ulp at 1.0e5 m after rebasing | 2^(16-23) ≈ **7.8 mm** | Sufficient for level 19 (about 0.18 ground meters/px) |
+| f64 ulp at 2.0e7 m | ≈3.7e-9 m | Plenty for projection/index layers |
 
-重定基规则：`rebase_origin = round(viewport_center / 65536 m) * 65536 m`。相机在同一个 64 km 网格内平移时 `MapVertex` 零改动；跨格才 `version += 1` 并重写顶点。这样「拖地图」在绝大多数帧里只更新一个 uniform，而不是重传顶点。
+Rebasing rule: `rebase_origin = round(viewport_center / 65536 m) * 65536 m`. While the camera pans within the same 64 km grid, `MapVertex` is untouched; only crossing a cell triggers `version += 1` and rewrites vertices. This way "dragging the map" updates just one uniform in the vast majority of frames, instead of re-uploading vertices.
 
-### 2.3 多投影与 proj 0.32
+### 2.3 Multiple Projections and proj 0.32
 
-JOSM 支持 EPSG:3857（默认）、EPSG:4326、UTM 分区、Gauss-Krüger、Swiss LV95/LV03 等，且带一套自维护的 EPSG 定义库与按需下载的 NTv2 `.gsb` 网格。NEO 的对应策略：
+JOSM supports EPSG:3857 (default), EPSG:4326, UTM zones, Gauss-Krüger, Swiss LV95/LV03, etc., together with its own EPSG definition library and on-demand NTv2 `.gsb` grids. NEO's corresponding strategy:
 
-| 投影族 | 用途 | 实现 | 备注 |
+| Projection family | Use | Implementation | Notes |
 |---|---|---|---|
-| WebMercator (3857) | 默认渲染、瓦片影像 | 手写（§2.2） | 无外部依赖、可离线；保角 |
-| Geographic (4326) | 经纬度显示、调试、`project` 子命令 | 恒等 + 度→米装饰 | 非保角，线宽需按 `scale_factor` 补偿 |
-| 其它 EPSG（UTM/GK/LV95/…） | JOSM 迁移用户、国家坐标系 | `proj` 0.32 + PROJ 运行时 | CRS 字符串来自配置，见下 |
+| WebMercator (3857) | Default rendering, tile imagery | Hand-written (§2.2) | No external dependency, works offline; conformal |
+| Geographic (4326) | Lon/lat display, debugging, `project` subcommand | Identity + degrees→meters decoration | Not conformal; line width needs `scale_factor` compensation |
+| Other EPSG (UTM/GK/LV95/…) | JOSM migrators, national coordinate systems | `proj` 0.32 + PROJ runtime | CRS strings come from config, see below |
 
 ```rust
-// neo-geo/src/projection/proj_bridge.rs（签名以 proj 0.32 文档为准）
-let ctx = proj::Proj::new_known_crs("EPSG:4326", "EPSG:32633", None)?; // > 待验证：proj 0.32 具体构造函数名
+// neo-geo/src/projection/proj_bridge.rs (signatures follow the proj 0.32 docs)
+let ctx = proj::Proj::new_known_crs("EPSG:4326", "EPSG:32633", None)?; // > To be verified: exact constructor name in proj 0.32
 let p: (f64, f64) = ctx.convert((lon, lat))?;
 ```
 
-- **PROJ 运行时**（libproj / proj.db）是外部资产，随安装包分发而不是编进二进制；缺失时降级为「仅 3857/4326」并把投影选择项灰显，绝不 panic。
-- NTv2 `.gsb` 网格有独立使用条款（JOSM 侧同样按需下载），NEO 默认不下载、不打包，只提示用户手动放置。**> 待验证**：`.gsb` 的再分发条款与 PROJ 默认查找路径。
-- 投影切换不重建索引：索引存 `WorldPoint`（当前投影），换投影时后台按新投影重算 AABB，用双缓冲交换，期间旧模型继续渲染（见 §2.8 重建策略）。
+- The **PROJ runtime** (libproj / proj.db) is an external asset distributed with the installer rather than compiled into the binary; when missing, it degrades to "3857/4326 only" and grays out projection options — never panics.
+- NTv2 `.gsb` grids have separate terms of use (JOSM also downloads them on demand); NEO does not download or bundle them by default and only tells the user to place them manually. **> To be verified**: the redistribution terms of `.gsb` and PROJ's default lookup paths.
+- Projection switches do not rebuild the index: the index stores `WorldPoint` (in the current projection); when the projection changes, AABBs are recomputed in the background under the new projection and swapped via double buffering, while the old model keeps rendering (see the rebuild strategy in §2.8).
 
-### 2.4 相机、缩放与瓦片（`z/x/y`）
+### 2.4 Camera, Zoom, and Tiles (`z/x/y`)
 
 ```rust
-世界宽度 W = 40075016.685578488 m
-px_per_world_m = 2^zoom * 256.0 / W              // 256 px 瓦片基准
+World width W = 40075016.685578488 m
+px_per_world_m = 2^zoom * 256.0 / W              // 256 px tile baseline
 world_m_per_px = W / (2^zoom * 256.0)
-ground_m_per_px = world_m_per_px * cos(lat)      // Mercator 比例因子 1/cos φ 的反向
-瓦片 z/x/y: n = 2^z; x = floor((lon+180)/360 * n)
+ground_m_per_px = world_m_per_px * cos(lat)      // inverse of the Mercator scale factor 1/cos φ
+Tile z/x/y: n = 2^z; x = floor((lon+180)/360 * n)
       y = floor((1 - asinh(tan φ)/π) / 2 * n)
 ```
 
-- `zoom` 是 f64 连续量（滚轮可停在小数），只在跨越 **整数级 ±0.01** 时切 LOD（§2.9），避免滚动时抖动式重算。
-- 视口查询用 `view_bounds()`：屏幕矩形反投影成投影平面 AABB，再按 **1 个瓦片（≤256 m 或当前 LOD 阈值）外扩**，抵消屏幕空间线宽与标签的外溢。
-- 瓦片编号仅用于影像层与 `bounds` 对齐；矢量对象不按瓦片切分（对象是跨瓦片的），这点与栅格地图库不同。
+- `zoom` is a continuous f64 (the wheel can stop at fractional values); LOD switches only when crossing **integer levels ±0.01** (§2.9), avoiding jittery recomputation while scrolling.
+- Viewport queries use `view_bounds()`: the screen rectangle is unprojected into a projection-plane AABB, then expanded by **one tile (≤256 m or the current LOD threshold)** to offset overflow from screen-space line width and labels.
+- Tile numbering is used only for the imagery layer and `bounds` alignment; vector objects are not split by tile (objects span tiles), which differs from raster map libraries.
 
 ### 2.5 Way → polyline
 
-1. **取引用**：从 `store` 拿成员 node 快照（缺失节点 → 记 `incomplete`，polyline 断开成多段，不猜）。
-2. **投影**：逐点 `to_world`，写入 `Vec<[f64;2]>`；对 3857 走手写快路径，其它投影走 proj。
-3. **抽稀（屏幕空间）**：Douglas–Peucker，epsilon = `0.5 px * world_m_per_px`，在**投影平面**上做（不在经纬度上做，否则中纬度误差被 cos φ 放大）。抽稀结果与 zoom 绑定：LOD 档位变化才重抽。
-4. **闭合判定**：`closed = pts.len() >= 4 && first == last`（按索引 1e-9 比较，不按绝对距离）；闭合 **不等于** 面：还需 `area != 0`、`area=no` 未置位、且不是 `natural=coastline` 之类的线性特征。JOSM 的 MapCSS `area` 选择器甚至匹配未闭合 way，语义差异清单见 [11](11-style-presets-mapcss.md) §2.5。
-5. **弧长与虚线相位**：预计算 `cum_len`，虚线在片元着色器里按弧长取模，避免 CPU 切段。
-6. **节流**：几何重建按**帧预算**切块——每次最多处理 `min(dirty.len(), 2000)` 个对象，剩余留到下一帧；`dirty` 集合按 `ObjId` 去重（拖动共享节点会一次产生上百个 Way 脏标记）。
+1. **Fetch references**: take the member node snapshots from `store` (a missing node → record `incomplete`, split the polyline into multiple parts, do not guess).
+2. **Project**: `to_world` point by point into `Vec<[f64;2]>`; use the hand-written fast path for 3857 and proj for other projections.
+3. **Simplify (screen space)**: Douglas–Peucker with epsilon = `0.5 px * world_m_per_px`, performed **on the projection plane** (not in lon/lat, otherwise the error at mid-latitudes is amplified by cos φ). Simplification results are tied to zoom: they are recomputed only when the LOD level changes.
+4. **Closure detection**: `closed = pts.len() >= 4 && first == last` (compared by index to 1e-9, not by absolute distance); closed **does not** equal area: it also requires `area != 0`, `area=no` not set, and not a linear feature such as `natural=coastline`. JOSM's MapCSS `area` selector even matches unclosed ways; the semantic difference list is in [11](11-style-presets-mapcss.md) §2.5.
+5. **Arc length and dash phase**: precompute `cum_len`; dashes are taken modulo arc length in the fragment shader, avoiding CPU segment splitting.
+6. **Throttling**: geometry rebuilds are chunked by **frame budget** — at most `min(dirty.len(), 2000)` objects per pass, with the rest deferred to the next frame; the `dirty` set is deduplicated by `ObjId` (dragging a shared node produces hundreds of Way dirty marks at once).
 
-### 2.6 multipolygon 组装、内环与三角化
+### 2.6 multipolygon Assembly, Inner Rings, and Triangulation
 
 ```
 relation(type=multipolygon|boundary)
-   │ 按 role 分类: outer / inner / (空 role 视为 outer, 与 JOSM 一致)
+   │ classify by role: outer / inner / (empty role treated as outer, as in JOSM)
    ▼
-环拼接 (ring assembly): 首尾相接的 way 链 → 闭合环
-   │ 未闭合 → :unclosed_multipolygon 语义, 只描边不填充
+ring assembly: way chains joined end to end → closed rings
+   │ unclosed → :unclosed_multipolygon semantics, stroke only, no fill
    ▼
-嵌套深度 (nesting depth): 环之间的包含次数 → 偶数=外环, 奇数=内环
-   │ (支持 relation 成员里嵌套 relation: 递归展开, 深度上限 8 防环)
+nesting depth: containment counts between rings → even = outer ring, odd = inner ring
+   │ (supports nested relations among members: recursively expand, depth cap 8 to prevent cycles)
    ▼
-earcutr: 平铺 [outer ring, hole0, hole1, …] + hole_indices
-   │ dims = 2, 环必须闭合、不自交
+earcutr: flatten [outer ring, hole0, hole1, …] + hole_indices
+   │ dims = 2, rings must be closed and non-self-intersecting
    ▼
 AreaGeom { verts, tris: Vec<u32>, rings, ok }
 ```
 
 ```rust
 // neo-geo/src/geometry/tess.rs
-let mut verts: Vec<f64> = Vec::new();     // 扁平 [x0,y0, x1,y1, …]
-let mut holes: Vec<usize> = Vec::new();   // 每个孔环起始的**顶点下标**（不是坐标下标）
+let mut verts: Vec<f64> = Vec::new();     // flat [x0,y0, x1,y1, …]
+let mut holes: Vec<usize> = Vec::new();   // **vertex index** where each hole ring starts (not a coordinate index)
 verts.extend_from_slice(outer_flat);
 for hole in holes_flat { holes.push(verts.len() / 2); verts.extend_from_slice(hole); }
-let idx: Vec<usize> = earcutr::earcut(&verts, &holes, 2)?;  // 顶点下标 → u32 索引
+let idx: Vec<usize> = earcutr::earcut(&verts, &holes, 2)?;  // vertex indices → u32 indices
 ```
 
-- earcutr 0.5 的 `earcut` 返回 `Result<Vec<usize>, Error>`，但**只覆盖极少失败路径**：自交环会静默产出退化三角形，所以 NEO 在调用前做 `ring_is_simple()`（`geo::Intersects` 自检，仅对面积 > 阈值且首次生成的环做，结果按 `(rel_id, version)` 缓存）。
-- 失败/退化回退：`ok = false` → 该关系只走 stroke 管线（描边），并向 `neo-validate` 投递一条 `MultipolygonTest` 级别的几何问题；渲染不 panic、不留空洞色块。
-- `area=no` 的闭合 way 走 polyline 而非 fill；roundabout 是线不是面，别把「闭合」当「面积」。
-- 环方向（顺时针/逆时针）**不做归一化后写回数据**：方向是 OSM 数据的语义（`:clockwise`/`:anticlockwise` 伪类需要它），只在三角化入口按需翻转副本。
+- earcutr 0.5's `earcut` returns `Result<Vec<usize>, Error>`, but **only covers very few failure paths**: self-intersecting rings silently produce degenerate triangles, so NEO runs `ring_is_simple()` before calling it (a `geo::Intersects` self-check, performed only for rings above an area threshold and on first generation, cached by `(rel_id, version)`).
+- Failure/degeneration fallback: `ok = false` → that relation uses only the stroke pipeline, and a `MultipolygonTest`-level geometry issue is posted to `neo-validate`; rendering does not panic and leaves no hole-colored patches.
+- A closed way with `area=no` goes through polyline rather than fill; a roundabout is a line, not an area — do not mistake "closed" for "area".
+- Ring orientation (clockwise/counterclockwise) is **not normalized and written back into the data**: orientation is semantics of OSM data (`:clockwise`/`:anticlockwise` pseudo-classes need it); it is only flipped on a copy at the triangulation entry point when necessary.
 
-### 2.7 线宽扩展与屏幕空间抗锯齿
+### 2.7 Line Width Expansion and Screen-Space Anti-Aliasing
 
-- `MapVertex` 携带 `normal`（段方向的法线，投影平面单位向量）、`across ∈ {-1, +1}`、`half_width`（**像素**）。顶点着色器：`pos_px = affine(pos_world) + normal * half_width * across`，于是线宽与 zoom 无关，GPU 侧只做一次乘加。
-- 连接（join）：miter（默认，限 `miter_limit = 2.0`，超限退 bevel）/ bevel / round。round join 由「端点补一个半径 = half_width 的圆片」实现，不生成扇面几何。
-- 转折处抗锯齿：片元着色器用 `abs(across) - 1.0 + 1.0/px` 的解析覆盖率做 alpha 衰减（1 px 过渡带）。因此线段**不依赖 MSAA**；MSAA 只用于面与图标的斜边（见 [05](05-renderer-wgpu.md) §2.7）。
-- casing（道路描边）不是一条「更宽的线 + 一条窄线叠画」那么简单：它要两趟绘制且 z 序相邻，因此 `RenderBatch` 显式带 `casing_of` 关系，由 `neo-scene` 保证相邻批次，避免被别的对象的 z-index 插队。
+- `MapVertex` carries `normal` (the segment direction's normal, a unit vector in the projection plane), `across ∈ {-1, +1}`, and `half_width` (**pixels**). Vertex shader: `pos_px = affine(pos_world) + normal * half_width * across`, so line width is independent of zoom and the GPU side does only one multiply-add.
+- Joins: miter (default, limited to `miter_limit = 2.0`, falling back to bevel beyond that) / bevel / round. Round joins are implemented by "adding a disc of radius = half_width at the endpoint" rather than generating fan geometry.
+- Anti-aliasing at corners: the fragment shader attenuates alpha using the analytic coverage `abs(across) - 1.0 + 1.0/px` (a 1 px transition band). Thus line segments **do not depend on MSAA**; MSAA is used only for the slanted edges of areas and icons (see [05](05-renderer-wgpu.md) §2.7).
+- Casing (road outline) is not as simple as "draw a wider line + a narrower line stacked": it requires two passes with adjacent z-order, so `RenderBatch` explicitly carries a `casing_of` relationship, and `neo-scene` guarantees adjacent batches so other objects' z-index cannot interleave.
 
-### 2.8 双层空间索引
+### 2.8 Two-Tier Spatial Index
 
-**对象层**（`rstar::RTree<ObjEntry>`，NEO 自有类型，见下）：
+**Object tier** (`rstar::RTree<ObjEntry>`, NEO's own type, see below):
 
-| 对象 | envelope | 说明 |
+| Object | envelope | Notes |
 |---|---|---|
-| Node | `AABB::from_point([x, y])` | 单点；聚簇（同一坐标多点）不合并，由渲染层合批 |
-| Way | 预计算 AABB（顶点包围盒） | 解析时算一次，节点移动后重算并 `upsert` |
-| Relation | 成员 bbox 的并集（**派生、缓存**） | 成员增删/移动 → 失效重算；嵌套 relation 递归但带上限 |
-| Segment | 每段一条 `AABB::from_corners` | 独立段树，仅用于线拾取（`PointDistance` 段距离） |
+| Node | `AABB::from_point([x, y])` | Single point; clusters (multiple points at the same coordinate) are not merged; the render layer batches them |
+| Way | Precomputed AABB (vertex bounding box) | Computed once at parse time; recomputed and `upsert`ed after node moves |
+| Relation | Union of member bboxes (**derived, cached**) | Member add/remove/move → invalidated and recomputed; nested relations recurse with a cap |
+| Segment | One `AABB::from_corners` per segment | Separate segment tree, used only for line picking (`PointDistance` segment distance) |
 
 ```rust
 impl rstar::RTreeObject for ObjEntry {
@@ -178,57 +178,57 @@ impl rstar::RTreeObject for ObjEntry {
     fn envelope(&self) -> Self::Envelope { self.env }
 }
 impl rstar::PointDistance for SegmentEntry {
-    fn distance_2(&self, p: &[f64; 2]) -> f64 { /* 夹紧投影到线段的平方距离 */ }
+    fn distance_2(&self, p: &[f64; 2]) -> f64 { /* squared distance to the clamped projection onto the segment */ }
 }
 ```
 
-**视口层**（屏幕空间分桶，随 `VisibleSet` 重建）：
+**Viewport tier** (screen-space buckets, rebuilt with `VisibleSet`):
 
-- 网格 256×256 px；每个 cell 存该区域内的 `ObjId` 列表（按绘制顺序）。
-- 用途：hover 拾取的 O(1) 起步、标签避让的邻域查询、`hit_all` 的候选收窄。
-- 只在 `version` 或相机变化时重建，随可见集同批次产出，不单独维护。
+- 256×256 px grid; each cell stores the list of `ObjId`s in that region (in draw order).
+- Uses: O(1) starting point for hover picking, neighborhood queries for label avoidance, candidate narrowing for `hit_all`.
+- Rebuilt only when `version` or the camera changes, produced in the same batch as the visible set, not maintained separately.
 
-**bulk_load 时机与增量策略**：
+**bulk_load timing and incremental strategy**:
 
-| 时机 | 操作 | 说明 |
+| Timing | Operation | Notes |
 |---|---|---|
-| 初次解析/导入完成 | `RTree::bulk_load(Vec<ObjEntry>)` | `O(n log n)`，比逐条 `insert` 快得多；**唯一允许的整树构建路径** |
-| 单次编辑（含 undo/redo） | `remove(&old)` + `insert(new)` | 每次重平衡；脏集合按帧批量刷 |
-| 下载区域合并 | 按键排序后批量 `insert` | 新 id 密集，排序后插入可减少分裂 |
-| churn > 10% 或单帧脏 > 50k | 后台 `rayon` 重建 + 双缓冲 swap | 重建期间读旧树；swap 在帧边界，指针交换后旧树延迟 1 帧释放 |
-| 投影切换 | 同上重建（换 CRS 后所有坐标失效） | 复用同一重建通道 |
+| Initial parse/import completes | `RTree::bulk_load(Vec<ObjEntry>)` | `O(n log n)`, much faster than inserting one by one; **the only allowed whole-tree construction path** |
+| Single edit (including undo/redo) | `remove(&old)` + `insert(new)` | Rebalances each time; the dirty set is flushed in per-frame batches |
+| Download region merge | Sort by key, then batch `insert` | New ids are dense; sorted insertion reduces splits |
+| churn > 10% or per-frame dirty > 50k | Background `rayon` rebuild + double-buffer swap | The old tree is read during rebuild; the swap happens at a frame boundary and the old tree is released 1 frame after the pointer swap |
+| Projection switch | Rebuild as above (all coordinates become invalid after a CRS change) | Reuses the same rebuild channel |
 
-> 关键约束：`geo` 0.33.1 通过 `geo-types` 的 `rstar_0_12` feature 绑定 **rstar 0.12**，而 NEO 用 **rstar 0.14**。因此 `neo-geo` **不启用** geo 的 rstar 互操作（`geo-types` 的 rstar feature 关闭），`geo` 只当纯几何算法库用；需要把 geo 类型喂给索引时用 newtype 适配（`struct GeoAabb(geo::Rect<f64>)` 手写 `RTreeObject`），不做全局类型别名。
+> Key constraint: `geo` 0.33.1 binds **rstar 0.12** through the `rstar_0_12` feature of `geo-types`, while NEO uses **rstar 0.14**. Therefore `neo-geo` **does not enable** geo's rstar interop (the rstar feature of `geo-types` is off), and `geo` is used purely as a geometry algorithm library; when geo types must be fed into the index, they are adapted with newtypes (`struct GeoAabb(geo::Rect<f64>)` with a hand-written `RTreeObject`), with no global type aliases.
 
-### 2.9 LOD 策略
+### 2.9 LOD Strategy
 
-| zoom | 绘制内容 | 抽稀 epsilon | 备注 |
+| zoom | What is drawn | Simplify epsilon | Notes |
 |---|---|---|---|
-| 0–7 | `highway ∈ {motorway,trunk,primary}` 骨架、`place` 点、大面积 water/landuse | 2.0 px | 小面直接丢弃（<4 px² 不可见） |
-| 8–12 | + secondary/tertiary/rail/waterway | 1.0 px | 建筑合并为 footprint 色块 |
-| 13–15 | 全部 way 样式 | 0.5 px | 建筑单独填充 |
-| 16–18 | 全顶点、POI 图标、名称标注 | 0（仅去重复点） | 标签开始避让 |
-| ≥19 | 全细节 + 编辑手柄/节点标记（overlay） | 0 | 手柄属 UI 层，不入 `SceneFrame` |
+| 0–7 | `highway ∈ {motorway,trunk,primary}` skeleton, `place` points, large water/landuse areas | 2.0 px | Small areas are dropped outright (<4 px² is invisible) |
+| 8–12 | + secondary/tertiary/rail/waterway | 1.0 px | Buildings merged into footprint color patches |
+| 13–15 | All way styles | 0.5 px | Buildings filled individually |
+| 16–18 | All vertices, POI icons, name labels | 0 (dedupe points only) | Labels begin avoiding collisions |
+| ≥19 | Full detail + editing handles/node markers (overlay) | 0 | Handles belong to the UI layer and do not enter `SceneFrame` |
 
-LOD 判定集中在一处（`Lod::for_zoom`），避免样式、几何、渲染各自抄一份阈值。`VisibleStats` 暴露 `objects / vertices / batches / culled_lod` 便于验收。
+LOD decisions are centralized in one place (`Lod::for_zoom`), so styles, geometry, and rendering do not each duplicate the thresholds. `VisibleStats` exposes `objects / vertices / batches / culled_lod` for acceptance checks.
 
-### 2.10 命中测试
+### 2.10 Hit Testing
 
-1. **屏幕半径 → 投影平面距离**：`r_world = radius_px / px_per_world_m`。注意这**不是**地面米：地面容差 = `r_world * cos(lat)`。JOSM 在投影空间里判距，NEO 保持一致，并在 UI 上把容差表述为「像素」而非「米」。
-2. **候选**：`locate_in_envelope_intersecting(AABB::from_point(p).expanded(r_world))`。
-3. **精确距离**：`PointDistance` 的段树用 `nearest_neighbor_iter_with_distance_2` 排序；node 用欧氏距离。
-4. **优先级**（同距离时，与 JOSM 心智一致）：`node` > `way`（段） > `closed way` 面积内部 > `relation` 成员。面积内部命中只在没有更近的线/点、且该样式允许拾取面积时生效。
-5. **多边形内部**：`geo` 的 `PreparedGeometry`（`algorithm::indexed::prepared_geometry`）一次构建多次查询，比每次 `Contains` 快；仍先用对象 AABB 粗筛。
-6. **容差随 zoom 变化**：`radius_px` 固定 8 px（可配置），因为它是屏幕量，zoom 变化时容差自然收敛；不要用固定的地面米容差——低 zoom 下会命中一片对象。
-7. **候选阶段过滤**：可见性（如节点 LOD）在候选阶段判定，而不是命中后回退，否则「最上层的不可见对象」会盖住下面可选的。
+1. **Screen radius → projection-plane distance**: `r_world = radius_px / px_per_world_m`. Note this is **not** ground meters: ground tolerance = `r_world * cos(lat)`. JOSM tests distance in projected space, and NEO stays consistent while expressing tolerance as "pixels" rather than "meters" in the UI.
+2. **Candidates**: `locate_in_envelope_intersecting(AABB::from_point(p).expanded(r_world))`.
+3. **Exact distance**: the segment tree uses `nearest_neighbor_iter_with_distance_2` for ordering; nodes use Euclidean distance.
+4. **Priority** (at equal distance, consistent with JOSM's mental model): `node` > `way` (segment) > `closed way` interior area > `relation` member. Interior-area hits only apply when there is no closer line/point and the style allows area picking.
+5. **Polygon interior**: `geo`'s `PreparedGeometry` (`algorithm::indexed::prepared_geometry`) is built once and queried many times, faster than calling `Contains` each time; still prefilter with object AABBs first.
+6. **Tolerance varies with zoom**: `radius_px` is fixed at 8 px (configurable) because it is a screen-space quantity, so tolerance converges naturally as zoom changes; do not use a fixed ground-meter tolerance — at low zoom it would hit a whole cluster of objects.
+7. **Candidate-stage filtering**: visibility (such as node LOD) is decided at the candidate stage, not by falling back after a hit, otherwise "the topmost invisible object" would cover selectable objects below it.
 
-| 方案 | 精度 | 成本 | 结论 |
+| Option | Precision | Cost | Conclusion |
 |---|---|---|---|
-| CPU（索引 + 解析距离） | 线/点亚像素，面积需 `Contains` | 与候选数同阶 | **默认**，hover 与点击都用它 |
-| GPU ID buffer（R32Uint） | 与像素完全一致，含三角化误差 | 一次 pass + readback 同步 | 密集区/面积内部兜底，默认关（细节见 [05](05-renderer-wgpu.md) §2.10） |
-| 混合 | CPU 先出候选，GPU 只在候选 > 32 时介入 | 两套结果需一致 | Phase 2，先做一致性回归再启用 |
+| CPU (index + analytic distance) | Line/point sub-pixel; areas need `Contains` | Same order as candidate count | **Default**; used for both hover and click |
+| GPU ID buffer (R32Uint) | Exactly pixel-consistent, including triangulation error | One pass + readback synchronization | Fallback for dense regions/area interiors, off by default (details in [05](05-renderer-wgpu.md) §2.10) |
+| Hybrid | CPU produces candidates first; GPU only intervenes when candidates > 32 | Two result sets must agree | Phase 2; run consistency regressions before enabling |
 
-## 3 关键接口
+## 3 Key Interfaces
 
 ```rust
 // ── neo-geo/src/projection.rs ───────────────────────────────────────────────
@@ -237,34 +237,34 @@ pub struct WorldPoint { pub x: f64, pub y: f64 }
 pub struct Aabb { pub min: [f64; 2], pub max: [f64; 2] }
 
 pub enum ProjectionKind {
-    WebMercator,                                   // EPSG:3857，默认，无外部依赖
-    Geographic,                                    // EPSG:4326，调试/显示
-    Proj { epsg: u32, crs: String },               // proj 0.32 后端
+    WebMercator,                                   // EPSG:3857, default, no external dependency
+    Geographic,                                    // EPSG:4326, debugging/display
+    Proj { epsg: u32, crs: String },               // proj 0.32 backend
 }
 
 pub trait Projection: Send + Sync {
     fn kind(&self) -> ProjectionKind;
     fn to_world(&self, ll: LonLat) -> WorldPoint;
     fn to_lonlat(&self, w: WorldPoint) -> LonLat;
-    fn is_conformal(&self) -> bool;                // 保角性：决定线宽/圆半径补偿
-    fn scale_factor(&self, ll: LonLat) -> f64;     // 局部比例：投影米 → 地面米
-    fn tile_scheme(&self) -> Option<TileScheme>;   // 仅 WebMercator
+    fn is_conformal(&self) -> bool;                // conformality: decides line width/circle radius compensation
+    fn scale_factor(&self, ll: LonLat) -> f64;     // local scale: projected meters → ground meters
+    fn tile_scheme(&self) -> Option<TileScheme>;   // WebMercator only
 }
 
 // ── neo-geo/src/camera.rs ───────────────────────────────────────────────────
 pub struct Camera {
     pub center: LonLat,
-    pub zoom: f64,             // 连续缩放级别
-    pub viewport_px: [u32; 2], // 物理像素
-    pub ppp: f32,              // pixels_per_point（分数，不要取整）
+    pub zoom: f64,             // continuous zoom level
+    pub viewport_px: [u32; 2], // physical pixels
+    pub ppp: f32,              // pixels_per_point (fractional; do not round)
 }
 impl Camera {
     pub fn px_per_world_m(&self) -> f64;          // 2^zoom * 256 / W
     pub fn world_m_per_px(&self) -> f64;
-    pub fn ground_m_per_px(&self) -> f64;         // 乘 cos(lat)
+    pub fn ground_m_per_px(&self) -> f64;         // multiplied by cos(lat)
     pub fn view_bounds(&self, margin_px: f32) -> Aabb;
-    pub fn rebase_origin(&self) -> WorldPoint;    // 2^16 m 网格对齐
-    pub fn to_screen(&self, w: WorldPoint) -> [f32; 2];   // 仅 UI/调试
+    pub fn rebase_origin(&self) -> WorldPoint;    // 2^16 m grid aligned
+    pub fn to_screen(&self, w: WorldPoint) -> [f32; 2];   // UI/debugging only
     pub fn screen_to_lonlat(&self, px: [f32; 2]) -> LonLat;
     pub fn screen_to_world(&self, px: [f32; 2]) -> WorldPoint;
 }
@@ -273,7 +273,7 @@ impl Camera {
 pub struct Polyline { pub pts: Vec<[f64; 2]>, pub closed: bool, pub cum_len: Vec<f32>, pub aabb: Aabb }
 pub struct AreaGeom { pub verts: Vec<[f64; 2]>, pub tris: Vec<u32>, pub rings: Vec<Ring>, pub ok: bool }
 
-pub struct GeometryBuilder { /* earcutr 复用缓冲、抽稀工作区 */ }
+pub struct GeometryBuilder { /* earcutr reusable buffers, simplification workspace */ }
 impl GeometryBuilder {
     pub fn build_way(&mut self, way: WayView<'_>, cam: &Camera, lod: Lod) -> Polyline;
     pub fn build_area(&mut self, mp: MultiPolygonView<'_>) -> AreaGeom;
@@ -284,14 +284,14 @@ impl GeometryBuilder {
 // ── neo-geo/src/index.rs ────────────────────────────────────────────────────
 pub struct ObjEntry { pub id: ObjId, pub env: Aabb, pub osm_id: i64, pub derived: bool }
 
-pub struct SpatialIndex { /* rstar::RTree<ObjEntry> + 段树 + 脏队列 + 重建状态 */ }
+pub struct SpatialIndex { /* rstar::RTree<ObjEntry> + segment tree + dirty queue + rebuild state */ }
 impl SpatialIndex {
     pub fn new() -> Self;
     pub fn bulk_load(&mut self, entries: Vec<ObjEntry>);
     pub fn upsert(&mut self, e: ObjEntry);
     pub fn remove(&mut self, id: ObjId);
     pub fn flush_dirty(&mut self, budget: usize) -> DirtyStats;
-    pub fn rebuild_if_needed(&mut self, force: bool) -> Option<RebuildHandle>; // 后台 + swap
+    pub fn rebuild_if_needed(&mut self, force: bool) -> Option<RebuildHandle>; // background + swap
     pub fn candidates(&self, area: Aabb) -> impl Iterator<Item = ObjId> + '_;
     pub fn nearest_segments(&self, p: [f64; 2], max_d: f64) -> impl Iterator<Item = (ObjId, f64)> + '_;
     pub fn stats(&self) -> IndexStats;
@@ -315,84 +315,84 @@ impl<'a> HitTester<'a> {
 pub struct VisibleSet { pub objects: Vec<ObjId>, pub batches: Vec<RenderBatch>, pub stats: VisibleStats }
 impl VisibleSet {
     pub fn rebuild(index: &SpatialIndex, cam: &Camera, style: &StyleSheet) -> Self;
-    pub fn bucket_at(&self, px: [f32; 2]) -> &[ObjId];   // 屏幕空间索引，256 px 网格
+    pub fn bucket_at(&self, px: [f32; 2]) -> &[ObjId];   // screen-space index, 256 px grid
 }
 ```
 
-## 4 数据流
+## 4 Data Flow
 
 ```
-逻辑编辑 / 下载 / undo
-        │  Command（增量）
+logical edit / download / undo
+        │  Command (incremental)
         ▼
-  neo-store  ──►  dirty(objects) ──►  VisibleSet 失效
+  neo-store  ──►  dirty(objects) ──►  VisibleSet invalidated
         │
-        ├─►  neo-geo::geometry   投影 → 抽稀 → 闭合判定 → 法线 → 三角化
-        │        └─ Polyline / AreaGeom（投影平面 f64 + 屏幕量参数）
-        ├─►  neo-geo::index      upsert/remove；churn>10% 触发后台重建
+        ├─►  neo-geo::geometry   project → simplify → closure test → normals → triangulate
+        │        └─ Polyline / AreaGeom (projection-plane f64 + screen-space parameters)
+        ├─►  neo-geo::index      upsert/remove; churn>10% triggers background rebuild
         ▼
-  neo-scene::visible  (cam, style) ──► VisibleSet { objects, batches, 分桶 }
-        │  重定基 f64→f32，LOD 过滤，按 (layer, z-index, casing) 排序合批
+  neo-scene::visible  (cam, style) ──► VisibleSet { objects, batches, buckets }
+        │  rebase f64→f32, LOD filtering, sort and batch by (layer, z-index, casing)
         ▼
-  neo-scene::frame    SceneFrame { MapVertex[], 索引, RenderBatch[], LabelBatch }
+  neo-scene::frame    SceneFrame { MapVertex[], indices, RenderBatch[], LabelBatch }
         ▼
-  neo-render          BufferPool 上传（`version` 变化才传）→ egui paint callback
+  neo-render          BufferPool upload (only when `version` changes) → egui paint callback
 ```
 
-一帧内的判定顺序（避免「每帧全量重建」）：
+Decision order within a frame (avoiding "full rebuild every frame"):
 
 ```
 frame:
-  input ──► Camera 更新（f64）
+  input ──► Camera update (f64)
      │
-     ├─ zoom 跨 LOD 档 或 rebase 跨网格 ──► version+1 ──► 几何重建（分帧预算）
-     ├─ style 变更 ──────────────────────► version+1 ──► 只重算受影响的 tag 指纹桶
+     ├─ zoom crosses LOD level or rebase crosses grid ──► version+1 ──► geometry rebuild (frame budget)
+     ├─ style change ──────────────────────────────────► version+1 ──► recompute only affected tag-fingerprint buckets
      │
-     ├─ 索引查询 view_bounds(margin) ──► 候选（O(log n + k)）
-     ├─ LOD 丢弃 + 合批 ──► RenderBatch[]
-     └─ 仅当 `version` 变化：upload；每帧：uniform 更新（camera scale/offset）
+     ├─ index query view_bounds(margin) ──► candidates (O(log n + k))
+     ├─ LOD culling + batching ──► RenderBatch[]
+     └─ upload only when `version` changes; every frame: uniform update (camera scale/offset)
 ```
 
-## 5 权衡与替代
+## 5 Tradeoffs and Alternatives
 
-| 决策 | 备选 | 取此的理由 | 代价 |
+| Decision | Alternative | Why this one | Cost |
 |---|---|---|---|
-| 自有类型 + rstar 0.14 | 用 geo 的 rstar 0.12 互操作 | 单一 rstar 版本；`PointDistance` 可对段树定制 | 需手写 4 个 trait impl；不能用 `geo::algorithm::rstar` 的现成封装 |
-| f64 世界 + f32 重定基 | 全 f64 顶点 | 顶点带宽减半，且 19 级下误差 <0.1 px | 多一层 rebase 逻辑与跨格重建 |
-| 按 `version` 重建几何 | 每帧全量重投影 | CPU 与 zoom 变化解耦，pan 几乎零成本 | `version` 边界有一次性成本尖峰，需分帧预算 |
-| 屏幕空间分桶 | 直接用对象 R-tree 拾取 | hover 每帧都查，分桶把常数降到 O(1) | 额外内存（约 8 B/可见对象），随可见集重建 |
-| earcutr 而非 spade/Delaunay | `geo` 的 `spade` 特性 | 平坦 2D 填充不需要良好形状的三角形，earcut 更省 | 自交输入静默退化，需自检 |
-| CPU 拾取默认开启 | 全 GPU ID buffer | 无同步成本、无 1 帧延迟、无需 extra pass | 面积内部判定依赖三角化一致性 |
-| geo 关闭默认特性（`earcut`/`spade`/`multithreading`） | `geo = "0.33.1"` 默认 | 默认会拉 **earcut 0.4.5**（与 earcutr 0.5 重复）与 rstar 0.12 | 只按需开 `Contains`/`Simplify` 所需特性，升级时需复核 |
+| Own types + rstar 0.14 | Use geo's rstar 0.12 interop | A single rstar version; `PointDistance` can be customized for the segment tree | Must hand-write 4 trait impls; cannot use the ready-made `geo::algorithm::rstar` wrappers |
+| f64 world + f32 rebasing | All-f64 vertices | Halves vertex bandwidth, and error at level 19 is <0.1 px | One extra rebase layer and cross-cell rebuilds |
+| Rebuild geometry per `version` | Reproject everything every frame | Decouples CPU work from zoom changes; panning costs nearly nothing | One-time cost spikes at `version` boundaries need a frame budget |
+| Screen-space buckets | Pick directly from the object R-tree | Hover queries run every frame; buckets reduce the constant to O(1) | Extra memory (~8 B/visible object), rebuilt with the visible set |
+| earcutr rather than spade/Delaunay | `geo`'s `spade` feature | Flat 2D fills do not need well-shaped triangles; earcut is cheaper | Self-intersecting input silently degrades, requiring self-checks |
+| CPU picking on by default | Full GPU ID buffer | No synchronization cost, no 1-frame latency, no extra pass | Interior-area detection depends on triangulation consistency |
+| Disable geo's default features (`earcut`/`spade`/`multithreading`) | `geo = "0.33.1"` defaults | Defaults pull in **earcut 0.4.5** (duplicating earcutr 0.5) and rstar 0.12 | Enable only the features needed for `Contains`/`Simplify`; re-verify on upgrades |
 
-## 6 风险
+## 6 Risks
 
-| # | 风险 | 影响 | 缓解 |
+| # | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R1 | 精度不足：重定基漏做或 origin 未对齐 | 高 zoom 下几何抖动/开裂 | 单元测试断言「极值坐标 + 重定基后误差 < 1 cm」；debug 断言坐标范围 |
-| R2 | earcutr 对自交环静默产坏三角形 | 面出现伪影/穿透 | 首次生成自检 + 失败回退描边 + Validator 报告 |
-| R3 | 索引重建与渲染线程竞争 | 掉帧、偶发卡顿 | 双缓冲 + 帧边界 swap；重建在 rayon 池外单独 1 线程，避免抢渲染 |
-| R4 | relation 派生 bbox 失效不全 | 大 relation 整块消失 | 成员变动统一走 `invalidate_relation()`；每日一致性校验（bbox ⊇ 成员 bbox） |
-| R5 | 多投影下 AABB 非矩形语义（投影后仍是 AABB，但比例不同） | 容差在东西/南北向不等 | `is_conformal()` 为 false 时按主轴统一容差，UI 说明 |
-| R6 | JOSM 语义漂移（`area` 匹配未闭合 way、未闭合 multipolygon） | 与 JOSM 视觉不一致 | 语义差异清单进 [11](11-style-presets-mapcss.md) §2.5，并做对照渲染回归 |
-| R7 | proj 运行时缺失/`.gsb` 网格缺失 | 投影选项不可用或精度降级 | 启动探测 + 明确降级提示，禁止 panic |
+| R1 | Insufficient precision: rebasing omitted or origin not aligned | Geometry jitter/cracking at high zoom | Unit tests assert "extreme coordinates + rebased error < 1 cm"; debug assertions on coordinate range |
+| R2 | earcutr silently produces bad triangles for self-intersecting rings | Artifacts/punch-through in areas | Self-check on first generation + stroke fallback on failure + Validator report |
+| R3 | Index rebuild races with the render thread | Dropped frames, occasional stalls | Double buffering + swap at frame boundaries; rebuild on a dedicated thread outside the rayon pool to avoid contending with rendering |
+| R4 | Incomplete invalidation of derived relation bboxes | Large relations disappear wholesale | All member changes go through `invalidate_relation()`; daily consistency checks (bbox ⊇ member bboxes) |
+| R5 | AABB is non-rectangular under multiple projections (still an AABB after projection, but proportions differ) | Tolerance unequal east-west vs north-south | When `is_conformal()` is false, use a single tolerance along the principal axis and explain it in the UI |
+| R6 | JOSM semantic drift (`area` matching unclosed ways, unclosed multipolygons) | Visual inconsistency with JOSM | The semantic difference list goes into [11](11-style-presets-mapcss.md) §2.5, with side-by-side render regressions |
+| R7 | proj runtime missing/`.gsb` grids missing | Projection options unavailable or precision degraded | Startup probing + explicit degradation notice; panicking is prohibited |
 
-## 7 验收标准
+## 7 Acceptance Criteria
 
-1. **精度**：在 EPSG:3857 极值附近（±180°, ±85°）与参考机目标城市各取 1e4 个点，`to_world → 重定基 → 回投影` 往返误差 < 1 cm；渲染位置与 CPU `to_screen` 偏差 < 0.5 px（19 级）。
-2. **索引**：1M / 10M 对象两档数据集，`view_bounds` 查询候选返回正确（与暴力扫描逐项比对）；`bulk_load` 后 `size()` 与输入一致；1000 次随机 `upsert`/`remove` 后仍与暴力扫描一致。
-3. **几何**：闭合判定、`area=no`、未闭合 multipolygon、内含 2 层孔洞的 relation 各 20 例与 JOSM 渲染截图人工比对通过。
-4. **LOD**：在 0/8/13/16/19 五档 zoom 下，`VisibleStats.vertices` 随 zoom 单调（允许 ±10% 抖动），且**不随总对象数**从 1M 到 10M 显著增长。
-5. **拾取**：与 JOSM 同名操作的命中对象一致率 ≥ 95%（200 次人工点击回归）。
-6. **耗时**：索引查询、几何重建、拾取三项在参考机（i5-12400F / 32 GB / RTX 3070 / Windows）上的单次耗时【待实测，见 docs/14-performance-and-verification.md】。
+1. **Precision**: near the EPSG:3857 extremes (±180°, ±85°) and at a target city on the reference machine, sample 1e4 points each; the round-trip error of `to_world → rebase → back-project` is < 1 cm; the rendered position deviates from CPU `to_screen` by < 0.5 px (level 19).
+2. **Index**: for 1M / 10M object datasets, `view_bounds` candidate results are correct (compared item by item with a brute-force scan); after `bulk_load`, `size()` matches the input; after 1000 random `upsert`/`remove` operations it still matches the brute-force scan.
+3. **Geometry**: 20 cases each of closure detection, `area=no`, unclosed multipolygons, and relations with 2 levels of holes pass manual comparison against JOSM render screenshots.
+4. **LOD**: at zoom levels 0/8/13/16/19, `VisibleStats.vertices` is monotonic with zoom (allowing ±10% jitter) and **does not grow significantly with total object count** from 1M to 10M.
+5. **Picking**: at least 95% agreement on hit objects with the same-named JOSM operations (200 manual click regressions).
+6. **Timing**: single-run timings for index queries, geometry rebuilds, and picking on the reference machine (i5-12400F / 32 GB / RTX 3070 / Windows) are [pending measurement, see docs/14-performance-and-verification.md].
 
-## 8 参考
+## 8 References
 
-- OSM PBF 的坐标精度（`granularity=100`、`lat = 1e-9*(lat_offset + granularity*lat)`）：<https://wiki.openstreetmap.org/wiki/PBF_Format>
-- Web Mercator 定义与世界范围：<https://epsg.io/3857>
-- JOSM 地图样式语义（`area` 匹配未闭合 way）：<https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation>
-- rstar 0.14 trait 与方法（`bulk_load`、`locate_in_envelope_intersecting`、`PointDistance`）：<https://docs.rs/rstar/0.14.0/rstar/>
-- earcutr 0.5.0 的 `earcut(vertices, hole_indices, dims)`：<https://docs.rs/earcutr/0.5.0/earcutr/>
-- geo 0.33.1 `Contains`/`PreparedGeometry`/`Simplify`：<https://docs.rs/geo/0.33.1/geo/>
-- JOSM 投影/`--projection` 与 `.gsb` 网格：<https://josm.openstreetmap.de/wiki/Help/CommandLineOptions>
-- 以下未在本仓库 vendor 中核实：`proj` 0.32 的构造 API 与线程安全性 **> 待验证**；PROJ `proj.db`/`.gsb` 的分发条款 **> 待验证**。
+- Coordinate precision of OSM PBF (`granularity=100`, `lat = 1e-9*(lat_offset + granularity*lat)`): <https://wiki.openstreetmap.org/wiki/PBF_Format>
+- Web Mercator definition and world extent: <https://epsg.io/3857>
+- JOSM map style semantics (`area` matching unclosed ways): <https://josm.openstreetmap.de/wiki/Help/Styles/MapCSSImplementation>
+- rstar 0.14 traits and methods (`bulk_load`, `locate_in_envelope_intersecting`, `PointDistance`): <https://docs.rs/rstar/0.14.0/rstar/>
+- earcutr 0.5.0's `earcut(vertices, hole_indices, dims)`: <https://docs.rs/earcutr/0.5.0/earcutr/>
+- geo 0.33.1 `Contains`/`PreparedGeometry`/`Simplify`: <https://docs.rs/geo/0.33.1/geo/>
+- JOSM projection/`--projection` and `.gsb` grids: <https://josm.openstreetmap.de/wiki/Help/CommandLineOptions>
+- Not verified against a vendored copy in this repository: the constructor API and thread safety of `proj` 0.32 **> To be verified**; distribution terms for PROJ `proj.db`/`.gsb` **> To be verified**.

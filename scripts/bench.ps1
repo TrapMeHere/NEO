@@ -1,9 +1,9 @@
-# NEO 性能验证脚本
+# NEO performance validation script
 #
-# 复现 docs/14 与 docs/prototypes/gate-1-prototype.md 中的全部数字。
-# 前置：Rust stable 工具链、已下载示例数据（见 README）。
+# Reproduces all numbers in docs/14 and docs/prototypes/gate-1-prototype.md.
+# Prerequisite: Rust stable toolchain, sample data downloaded (see README).
 #
-# 用法：
+# Usage:
 #   pwsh scripts/bench.ps1
 #   pwsh scripts/bench.ps1 -Pbf .research/data/bremen-latest.osm.pbf -Synth 1000000 -Iterations 30 -Runs 3
 
@@ -34,7 +34,7 @@ cargo build --release -p neo-prototype 2>&1 | Select-Object -Last 3
 $exe = Join-Path $repo 'out/cargo/release/neo-prototype.exe'
 if (-not (Test-Path $exe)) { throw "missing $exe" }
 
-# 运行并捕获：返回 @{ ExitCode; PeakRssMB; StdOut }
+# Run and capture: returns @{ ExitCode; PeakRssMB; StdOut }
 function Invoke-Prototype {
     param([string[]]$Arguments, [string]$LogName)
     $log = Join-Path $out "$LogName.stdout.txt"
@@ -42,7 +42,7 @@ function Invoke-Prototype {
     $p = Start-Process -FilePath $exe -ArgumentList $Arguments -PassThru -NoNewWindow `
         -RedirectStandardOutput $log -RedirectStandardError $err
     $p.WaitForExit()
-    # PeakWorkingSet64 在进程退出后仍可从保留的 Process 句柄读取（未 -Wait 时）
+    # PeakWorkingSet64 can still be read from the retained Process handle after exit (without -Wait)
     $peak = 0
     try { $peak = [int64]$p.PeakWorkingSet64 } catch { $peak = 0 }
     $text = Get-Content -Raw $log -ErrorAction SilentlyContinue
@@ -95,7 +95,7 @@ for ($i = 1; $i -le $Runs; $i++) {
 }
 
 # ---------------------------------------------------------------- summary
-# 从原型 stdout 解析进程内自报的峰值工作集（比父进程读 Process 句柄可靠）
+# Parse the in-process self-reported peak working set from the prototype stdout (more reliable than the parent reading the Process handle)
 function Get-PeakRss([string]$text) {
     if ($text -match 'peak working set: ([0-9.]+) MiB') { return [double]$Matches[1] }
     return 0.0

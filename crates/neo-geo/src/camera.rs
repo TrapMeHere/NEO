@@ -1,41 +1,41 @@
-//! 相机：世界坐标 ↔ 屏幕像素。
+//! Camera: world coordinates ↔ screen pixels.
 //!
-//! 约定：
+//! Conventions:
 //!
-//! * `zoom` 与 Web 瓦片一致：`像素/米 = TILE_SIZE * 2^zoom / 赤道周长`；
-//! * 屏幕 y 向下，世界 y 也向下（WebMercator y 朝南），因此无需翻转；
-//! * 相机只存 `center`(WorldPoint) + `zoom` + `viewport`(物理像素)，是纯值类型，
-//!   可以安全地在 UI 线程与渲染线程之间复制/比较。
+//! * `zoom` matches Web tiles: `pixels/meter = TILE_SIZE * 2^zoom / equatorial circumference`;
+//! * screen y points down and world y also points down (WebMercator y faces south), so no flip is needed;
+//! * the camera stores only `center` (WorldPoint) + `zoom` + `viewport` (physical pixels) and is a plain value type,
+//!   so it can safely be copied/compared between the UI thread and the render thread.
 //!
-//! **原点重基（origin rebasing）**：GPU 顶点用相对原点的 `f32` 米坐标，原点由
-//! [`Camera::origin`] 给出；相机平移超过阈值后需要重建几何批次。阈值取
-//! [`REBASE_THRESHOLD_M`]（4 km），在该范围内 f32 的精度仍远小于 1 像素。
+//! **Origin rebasing**: GPU vertices use `f32` meter coordinates relative to an origin supplied by
+//! [`Camera::origin`]; after the camera pans beyond a threshold the geometry batches must be rebuilt. The threshold is
+//! [`REBASE_THRESHOLD_M`] (4 km); within that range f32 precision is still far below 1 pixel.
 
 use crate::world::{EARTH_CIRCUMFERENCE_M, WorldBounds, WorldPoint};
 use neo_core::LatLon;
 
-/// Web 瓦片边长（像素）。
+/// Web tile edge length (pixels).
 pub const TILE_SIZE: f64 = 256.0;
 
-/// 原点重基阈值（米）。相机中心离批次原点超过该距离就需要重建批次。
+/// Origin rebasing threshold (meters). Rebuild the batch once the camera center is farther than this from the batch origin.
 pub const REBASE_THRESHOLD_M: f64 = 4_000.0;
 
-/// 缩放范围（与常见瓦片服务一致）。
+/// Zoom range (consistent with common tile services).
 pub const MIN_ZOOM: f64 = 0.0;
-/// 缩放上限（OSM 数据精度约 1e-7 度，再放大没有意义）。
+/// Maximum zoom (OSM data precision is about 1e-7 degrees; zooming further is meaningless).
 pub const MAX_ZOOM: f64 = 22.0;
 
-/// 屏幕像素坐标。
+/// Screen pixel coordinates.
 pub type ScreenPoint = [f32; 2];
 
-/// 地图相机。
+/// Map camera.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
-    /// 视图中心（世界坐标）。
+    /// View center (world coordinates).
     pub center: WorldPoint,
-    /// 缩放级别。
+    /// Zoom level.
     pub zoom: f64,
-    /// 视口尺寸（物理像素）。
+    /// Viewport size (physical pixels).
     pub viewport: [u32; 2],
 }
 
@@ -50,7 +50,7 @@ impl Default for Camera {
 }
 
 impl Camera {
-    /// 构造。
+    /// Construct.
     pub fn new(center: WorldPoint, zoom: f64, viewport: [u32; 2]) -> Self {
         Self {
             center,
@@ -59,30 +59,30 @@ impl Camera {
         }
     }
 
-    /// 以经纬度为中心构造。
+    /// Construct centered on a lon/lat.
     pub fn from_latlon(center: LatLon, zoom: f64, viewport: [u32; 2]) -> Self {
         Self::new(WorldPoint::from_latlon(center), zoom, viewport)
     }
 
-    /// 每米多少像素。
+    /// How many pixels per meter.
     #[inline]
     pub fn px_per_meter(&self) -> f64 {
         TILE_SIZE * self.zoom.exp2() / EARTH_CIRCUMFERENCE_M
     }
 
-    /// 每像素多少米。
+    /// How many meters per pixel.
     #[inline]
     pub fn meters_per_px(&self) -> f64 {
         1.0 / self.px_per_meter()
     }
 
-    /// 视口宽高（f64 像素）。
+    /// Viewport width/height (f64 pixels).
     #[inline]
     pub fn viewport_f64(&self) -> (f64, f64) {
         (self.viewport[0] as f64, self.viewport[1] as f64)
     }
 
-    /// 世界坐标 → 屏幕像素。
+    /// World coordinates → screen pixels.
     #[inline]
     pub fn world_to_screen(&self, p: WorldPoint) -> ScreenPoint {
         let ppm = self.px_per_meter();
@@ -93,7 +93,7 @@ impl Camera {
         ]
     }
 
-    /// 屏幕像素 → 世界坐标。
+    /// Screen pixels → world coordinates.
     #[inline]
     pub fn screen_to_world(&self, s: ScreenPoint) -> WorldPoint {
         let mpp = self.meters_per_px();
@@ -104,13 +104,13 @@ impl Camera {
         )
     }
 
-    /// 世界坐标 → 经纬度。
+    /// World coordinates → lon/lat.
     #[inline]
     pub fn world_to_latlon(&self, p: WorldPoint) -> LatLon {
         p.to_latlon()
     }
 
-    /// 当前视口覆盖的世界范围。
+    /// World extent currently covered by the viewport.
     pub fn visible_bounds(&self) -> WorldBounds {
         let mpp = self.meters_per_px();
         let (w, h) = self.viewport_f64();
@@ -122,35 +122,35 @@ impl Camera {
         }
     }
 
-    /// 屏幕像素距离对应的世界距离（米）。
+    /// World distance (meters) corresponding to a screen-pixel distance.
     #[inline]
     pub fn px_to_meters(&self, px: f32) -> f64 {
         f64::from(px) * self.meters_per_px()
     }
 
-    /// 世界距离对应的屏幕像素。
+    /// Screen pixels corresponding to a world distance.
     #[inline]
     pub fn meters_to_px(&self, meters: f64) -> f64 {
         meters * self.px_per_meter()
     }
 
-    /// 更新视口尺寸。
+    /// Update the viewport size.
     pub fn set_viewport(&mut self, viewport: [u32; 2]) {
         self.viewport = viewport;
     }
 
-    /// 平移（屏幕像素增量，正值 = 内容右/下移，相机中心左/上移）。
+    /// Pan (screen-pixel delta; a positive value moves the content right/down and the camera center left/up).
     pub fn pan_by_screen(&mut self, dx: f32, dy: f32) {
         let mpp = self.meters_per_px();
         self.center.x -= f64::from(dx) * mpp;
         self.center.y -= f64::from(dy) * mpp;
-        // 不允许把相机拖出世界范围（否则 to_latlon 会给出非法经纬度，
-        // 下载 bbox/会话保存都会写出坏值）。
+        // Never let the camera be dragged outside the world extent (otherwise to_latlon yields illegal lon/lat,
+        // and downloaded bbox/session saves write bad values).
         self.center.x = self.center.x.clamp(0.0, EARTH_CIRCUMFERENCE_M);
         self.center.y = self.center.y.clamp(0.0, EARTH_CIRCUMFERENCE_M);
     }
 
-    /// 以屏幕锚点缩放（滚轮缩放的标准行为：锚点下的地图点保持不动）。
+    /// Zoom around a screen anchor (standard wheel-zoom behavior: the map point under the anchor stays fixed).
     pub fn zoom_about(&mut self, anchor: ScreenPoint, delta_zoom: f64) {
         if !delta_zoom.is_finite() {
             return;
@@ -164,12 +164,12 @@ impl Camera {
         self.center.y = self.center.y.clamp(0.0, EARTH_CIRCUMFERENCE_M);
     }
 
-    /// 直接设置缩放（保持中心）。
+    /// Set the zoom directly (keeping the center).
     pub fn set_zoom(&mut self, zoom: f64) {
         self.zoom = sanitize_zoom(zoom);
     }
 
-    /// 让某个世界包围盒适配视口。
+    /// Fit a world bounding box to the viewport.
     pub fn fit_bounds(&mut self, bounds: &WorldBounds, padding_px: f64) {
         if bounds.is_empty() {
             return;
@@ -178,7 +178,7 @@ impl Camera {
         let (vw, vh) = self.viewport_f64();
         let avail_w = (vw - padding_px * 2.0).max(1.0);
         let avail_h = (vh - padding_px * 2.0).max(1.0);
-        // 退化 bbox（单点/单线）：保持当前缩放，不要直接跳到最大缩放。
+        // Degenerate bbox (single point/line): keep the current zoom rather than jumping straight to maximum zoom.
         if bw <= 1e-9 && bh <= 1e-9 {
             self.center = bounds.center();
             return;
@@ -191,20 +191,20 @@ impl Camera {
         self.center = bounds.center();
     }
 
-    /// 是否需要重基几何批次（与给定批次原点比较）。
+    /// Whether the geometry batches need rebasing (compared against the given batch origin).
     #[inline]
     pub fn needs_rebase(&self, batch_origin: WorldPoint) -> bool {
         self.center.dist(batch_origin) > REBASE_THRESHOLD_M
     }
 
-    /// 当前批次原点建议值（取视口中心）。
+    /// Suggested origin for the current batch (takes the viewport center).
     #[inline]
     pub fn suggested_origin(&self) -> WorldPoint {
         self.center
     }
 }
 
-/// NaN/∞ 会让 uniform 与顶点全变 NaN，整张地图空白且无日志；统一在这里兜底。
+/// NaN/∞ would turn the uniform and all vertices into NaN, leaving the whole map blank with no log; catch it here uniformly.
 fn sanitize_zoom(zoom: f64) -> f64 {
     if zoom.is_finite() {
         zoom.clamp(MIN_ZOOM, MAX_ZOOM)

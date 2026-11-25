@@ -1,6 +1,6 @@
-//! osmChange 0.6 读取与应用（上传 diff / 改动包导入）。
+//! osmChange 0.6 reading and applying (upload diff / changeset import).
 //!
-//! 输入形如：
+//! Input looks like:
 //! ```xml
 //! <osmChange version="0.6">
 //!   <create><node id="-1" lat=".." lon=".."/></create>
@@ -8,10 +8,10 @@
 //!   <delete><way id="20"/></delete>
 //! </osmChange>
 //! ```
-//! 语义：create → `ChangeState::Added`；modify → `Modified`；delete → `Deleted` 且
-//! `visible=false`（对象保留在 store 中，供撤销与再次导出）。
+//! Semantics: create → `ChangeState::Added`; modify → `Modified`; delete → `Deleted` and
+//! `visible=false` (the object stays in the store for undo and re-export).
 //!
-//! 注意：不存在 "OSC 0.3"；文件根元素版本是 0.6（docs/08）。
+//! Note: there is no "OSC 0.3"; the file root element version is 0.6 (docs/08).
 
 use std::io::BufRead;
 use std::path::Path;
@@ -23,16 +23,16 @@ use quick_xml::Reader as EventReader;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event};
 
-/// 应用统计。
+/// Apply statistics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OscApplyReport {
-    /// 新建节点/way/relation。
+    /// Created nodes/ways/relations.
     pub created: [u64; 3],
-    /// 修改节点/way/relation。
+    /// Modified nodes/ways/relations.
     pub modified: [u64; 3],
-    /// 删除节点/way/relation。
+    /// Deleted nodes/ways/relations.
     pub deleted: [u64; 3],
-    /// 目标不存在而忽略的删除/修改。
+    /// Deletions/modifications ignored because the target does not exist.
     pub missing: u64,
 }
 
@@ -77,7 +77,7 @@ struct Draft {
     meta: Meta,
 }
 
-/// 从 osmChange XML 中读取并应用到数据集。
+/// Reads and applies osmChange XML to a dataset.
 pub fn read_osm_change<R: BufRead>(
     data: &mut DataSet,
     reader: R,
@@ -111,8 +111,8 @@ pub fn read_osm_change<R: BufRead>(
                 }
                 match name.as_ref() {
                     "create" | "modify" | "delete" => {
-                        // 自闭合的空块不改变当前状态（否则 `<delete/>` 之后的所有
-                        // 元素都会被当成 delete 执行）。
+                        // A self-closing empty block does not change the current state (otherwise every
+                        // element after `<delete/>` would be executed as a delete).
                         if !empty {
                             block = match name.as_ref() {
                                 "create" => Block::Create,
@@ -183,7 +183,7 @@ pub fn read_osm_change<R: BufRead>(
     Ok(report)
 }
 
-/// 从文件读取并应用。
+/// Reads from a file and applies.
 pub fn read_osm_change_file(data: &mut DataSet, path: impl AsRef<Path>) -> Result<OscApplyReport, NeoError> {
     let file = std::fs::File::open(path.as_ref())?;
     read_osm_change(data, std::io::BufReader::new(file), MissingPolicy::Skip)
@@ -199,7 +199,7 @@ fn parse_draft(kind: &str, e: &BytesStart) -> Result<Draft, NeoError> {
     let visible = attr_bool(e, "visible").unwrap_or(true);
     let (lat, lon) = match (attr_f64(e, "lat"), attr_f64(e, "lon")) {
         (Some(lat), Some(lon)) => {
-            // create/modify 的坐标必须合法；delete 可以省略。
+            // Coordinates must be valid for create/modify; they may be omitted for delete.
             let pos = LatLon::try_from_degrees(lat, lon).ok_or_else(|| {
                 NeoError::Parse(format!("element {id} has out-of-range coordinates {lat},{lon}"))
             })?;
@@ -260,7 +260,7 @@ fn apply_draft(
                 let tag_id = data.add_tags(&pairs);
                 data.nodes.set_tags(handle, tag_id);
                 let mut meta = d.meta;
-                // 不要用空串覆盖服务端 user；OSC 的 user 属性通常省略。
+                // Don't overwrite the server user with an empty string; OSC usually omits the user attribute.
                 meta.user = data.intern("");
                 if let Some(user) = previous_user {
                     meta.user = user;
@@ -282,7 +282,7 @@ fn apply_draft(
         "way" => match block {
             Block::Create | Block::Modify => {
                 if let Some(handle) = data.way_handle(id) {
-                    // 修改已有 way：缺失引用不能静默丢掉（会让上传的几何被截短）。
+                    // Modifying an existing way: missing references must not be silently dropped (that would truncate the uploaded geometry).
                     let mut handles = Vec::with_capacity(d.refs.len());
                     for r in &d.refs {
                         match data.node_handle(ObjectId(*r)) {

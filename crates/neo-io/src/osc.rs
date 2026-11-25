@@ -1,13 +1,13 @@
-//! osmChange 0.6 输出（上传 diff 格式）。
+//! osmChange 0.6 output (the upload diff format).
 //!
-//! 三个必须记住的规范事实（docs/09）：
+//! Three spec facts worth remembering (docs/09):
 //!
-//! 1. 文件根元素是 `<osmChange version="0.6">`，**不存在 "OSC 0.3"**；
-//! 2. 上传是单个 `application/xml` 请求体（不是 multipart；multipart 只用于 GPX）；
-//! 3. 本地新对象使用**负数 ID 占位**（`create` 块），服务端返回 `<diffResult>` 映射到正 ID。
+//! 1. The file root element is `<osmChange version="0.6">`; **there is no "OSC 0.3"**;
+//! 2. Upload is a single `application/xml` request body (not multipart; multipart is only for GPX);
+//! 3. Local new objects use **negative id placeholders** (in the `create` block); the server returns `<diffResult>` mapping them to positive ids.
 //!
-//! 这里手写 XML 序列化而不是依赖 quick-xml 的 writer：输出量小、可控性强，且便于
-//! 逐字节 golden test；读取侧（XML 导入）用到 quick-xml。
+//! XML serialization is hand-written here rather than using quick-xml's writer: output is small, fully controllable, and
+//! easy to golden-test byte by byte; the reading side (XML import) uses quick-xml.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Write};
@@ -16,33 +16,33 @@ use neo_core::{ObjectId, ObjectKind};
 use neo_osm::{ChangeState, Element};
 use neo_store::DataSet;
 
-/// 一次上传所需的变更（按 osmChange 动作分组）。
+/// Changes needed for one upload (grouped by osmChange action).
 #[derive(Clone, Default)]
 pub struct ChangeSet {
-    /// 新建对象。
+    /// New objects.
     pub create: Vec<Element>,
-    /// 修改对象。
+    /// Modified objects.
     pub modify: Vec<Element>,
-    /// 删除对象。
+    /// Deleted objects.
     pub delete: Vec<Element>,
 }
 
 impl ChangeSet {
-    /// 是否为空。
+    /// Whether it is empty.
     pub fn is_empty(&self) -> bool {
         self.create.is_empty() && self.modify.is_empty() && self.delete.is_empty()
     }
 
-    /// 元素总数。
+    /// Total element count.
     pub fn len(&self) -> usize {
         self.create.len() + self.modify.len() + self.delete.len()
     }
 
-    /// 按依赖关系切分成每块不超过 `max` 个元素的批次。
+    /// Splits into batches of at most `max` elements each, respecting dependencies.
     ///
-    /// 新建对象按“way/relation 引用新建节点/成员”做并查集，保证一个引用组不会被
-    /// 拆到两个 diff 里；修改/删除按确定性顺序切块。删除顺序已经在
-    /// [`collect_changeset`] 里按 relation → way → node 排好，切块保持该顺序。
+    /// New objects are union-found by "way/relation references a new node/member", so a reference group is never
+    /// split across two diffs; modifications/deletions are chunked in deterministic order. The deletion order is already
+    /// sorted as relation → way → node in [`collect_changeset`], and chunking preserves it.
     pub fn chunks(&self, max: usize) -> Result<Vec<ChangeSet>, neo_core::NeoError> {
         use std::collections::HashMap;
         if max == 0 {
@@ -51,9 +51,10 @@ impl ChangeSet {
         if self.len() <= max {
             return Ok(vec![self.clone()]);
         }
-        // 修改对象可能引用同一批新建对象（负 ID）。跨 diff 时服务端已把负 ID
-        // 映射成正 ID，但后续 diff 仍写负 ID 会失败；没有逐块重写引用前，
-        // 混合 create+modify 的大变更拒绝切块，避免上传出半坏数据。
+        // Modified objects may reference objects newly created in the same batch (negative ids). Across diffs the
+        // server has already mapped negative ids to positive ones, but later diffs writing negative ids would fail;
+        // until references are rewritten per chunk, large mixed create+modify changesets are not split, to avoid
+        // uploading half-broken data.
         if !self.create.is_empty() && !self.modify.is_empty() {
             return Err(neo_core::NeoError::Parse(
                 "mixed create+modify changeset exceeds chunk size; split the edit".into(),
@@ -137,17 +138,17 @@ impl ChangeSet {
     }
 }
 
-/// 从数据集与变更跟踪生成 osmChange 的 [`ChangeSet`]。
+/// Builds the [`ChangeSet`] for osmChange from a dataset and change tracking.
 ///
-/// 语义要点：
-/// * `Added` → create（本地负 ID 原样输出，服务端负责映射）；
-/// * `Modified` → modify（必须带服务端 version）；
-/// * `Deleted` → delete（同样带 version）；
-/// * `Unchanged` 不输出。
+/// Semantics:
+/// * `Added` → create (local negative ids are emitted as-is; the server maps them);
+/// * `Modified` → modify (must carry the server version);
+/// * `Deleted` → delete (also carrying the version);
+/// * `Unchanged` is not emitted.
 ///
-/// 收集**选中对象**的变更集；新建对象的依赖（新节点/新成员）自动带上。
+/// Collects the changes of **selected objects**; dependencies of new objects (new nodes/new members) are included automatically.
 ///
-/// 选中集合按 `(kind, id)` 过滤；未选中的修改不会上传，适合“小步提交”。
+/// The selection is filtered by `(kind, id)`; unselected modifications are not uploaded, which suits "small commits".
 pub fn collect_changeset_selected(
     data: &DataSet,
     selected: &std::collections::HashSet<(ObjectKind, ObjectId)>,
@@ -228,7 +229,7 @@ fn collect_changeset_filtered(
     Ok(set)
 }
 
-/// 收集整个数据集的变更（create/modify/delete 分组、确定性排序）。
+/// Collects the changes of the whole dataset (create/modify/delete grouping, deterministic ordering).
 pub fn collect_changeset(data: &DataSet) -> Result<ChangeSet, neo_core::NeoError> {
     let mut set = ChangeSet::default();
     for kind in ObjectKind::EDITABLE {
@@ -239,20 +240,21 @@ pub fn collect_changeset(data: &DataSet) -> Result<ChangeSet, neo_core::NeoError
             match state {
                 ChangeState::Added => set.create.push(element),
                 ChangeState::Modified => set.modify.push(element),
-                // 本地新建后又删除的对象从未在服务端存在过：上传 `<delete>` 负 ID
-                // 会让整个 changeset 失败，必须从 diff 里剔除。
+                // Objects created locally and then deleted never existed on the server: uploading `<delete>` with a
+                // negative id would fail the whole changeset, so they must be dropped from the diff.
                 ChangeState::Deleted if id.is_local() => {}
                 ChangeState::Deleted => set.delete.push(element),
                 ChangeState::Unchanged => {}
             }
         }
     }
-    // 确定性输出：同一编辑集每次导出的字节一致（golden test/审阅/缓存）。
+    // Deterministic output: the same edit set exports identical bytes every time (golden test/review/cache).
     set.create
         .sort_by_key(|element| (kind_order(element.kind()), element.id().0));
     set.modify
         .sort_by_key(|element| (kind_order(element.kind()), element.id().0));
-    // 删除必须按依赖序；服务端按文档顺序执行，先删仍被引用的对象会 412 整包失败。
+    // Deletion must follow dependency order; the server executes in document order, so deleting an object that is
+    // still referenced first makes the whole request fail with 412.
     sort_deletes(data, &mut set.delete);
     Ok(set)
 }
@@ -275,11 +277,11 @@ fn delete_order(kind: ObjectKind) -> u8 {
     }
 }
 
-/// 删除块的排序：先按种类（relation → way → node），relation 内部再按**祖先深度降序**。
+/// Ordering of the delete block: by kind first (relation → way → node), then within a relation by **ancestor depth, descending**.
 ///
-/// 服务端按文档顺序执行 `<delete>`：若子 relation 先于父 relation 被删，服务端会因为它
-/// 仍被父 relation 引用而 412（配合 `if-unused` 则变成"静默不删"）。所以父必须先于子。
-/// 深度相同则按 ID，保证导出字节稳定。
+/// The server executes `<delete>` in document order: if a child relation is deleted before its parent, the server
+/// returns 412 because it is still referenced by the parent (with `if-unused` it becomes "silently not deleted"). So parents must come before children.
+/// Equal depth falls back to id, keeping the exported bytes stable.
 fn sort_deletes(data: &DataSet, elements: &mut [Element]) {
     let deleted_relations: BTreeSet<ObjectId> = elements
         .iter()
@@ -303,9 +305,9 @@ fn sort_deletes(data: &DataSet, elements: &mut [Element]) {
     });
 }
 
-/// relation 在"被删集合"内的祖先深度：父 relation 的深度大于子 relation。
+/// Ancestor depth of a relation within the "deleted set": a parent relation's depth is greater than its child's.
 ///
-/// 遇到环返回 0（不阻塞导出，交给服务端报错），并靠 `visiting` 保证不死循环。
+/// Returns 0 on cycles (doesn't block export; the server reports the error), and `visiting` guarantees termination.
 fn relation_depth(
     data: &DataSet,
     id: ObjectId,
@@ -422,7 +424,7 @@ fn element_of(
     Ok(Some(element))
 }
 
-/// 把变更集写成 osmChange 0.6 XML。
+/// Writes a changeset as osmChange 0.6 XML.
 pub fn write_changeset<W: Write>(set: &ChangeSet, data: &DataSet, out: &mut W) -> io::Result<()> {
     writeln!(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")?;
     writeln!(out, "<osmChange version=\"0.6\" generator=\"NEO\">")?;
@@ -438,7 +440,8 @@ fn write_block<W: Write>(elements: &[Element], data: &DataSet, out: &mut W, acti
         return Ok(());
     }
     if action == "delete" {
-        // 让服务端只删除"仍未被引用"的对象：框外引用/他人 relation 不应让整包 412。
+        // Ask the server to delete only objects that are still unreferenced: out-of-bbox references or third-party
+        // relations should not fail the whole request with 412.
         writeln!(out, "  <delete if-unused=\"true\">")?;
     } else {
         writeln!(out, "  <{action}>")?;
@@ -450,9 +453,9 @@ fn write_block<W: Write>(elements: &[Element], data: &DataSet, out: &mut W, acti
     Ok(())
 }
 
-/// 给 osmChange 里每个 `<node>` / `<way>` / `<relation>` 写上 `changeset="…"`。
+/// Writes `changeset="…"` on every `<node>` / `<way>` / `<relation>` in the osmChange.
 ///
-/// OSM API 要求上传的每个对象都带打开中的 changeset id；本地导出可以没有这个属性。
+/// The OSM API requires every uploaded object to carry the id of an open changeset; local exports may omit this attribute.
 pub fn stamp_osmchange_changeset(osc: &str, changeset: i64) -> String {
     let mut out = String::with_capacity(osc.len().saturating_add(64));
     for (index, line) in osc.lines().enumerate() {

@@ -1,15 +1,15 @@
-//! # neo-core — NEO 的基础原语
+//! # neo-core — NEO's foundational primitives
 //!
-//! 这一层是整个 workspace 的叶子：**不依赖任何其他 NEO crate**，也不依赖 GUI、GPU、IO。
+//! This layer is the leaf of the whole workspace: it **depends on no other NEO crate**, nor on GUI, GPU, or IO.
 //!
-//! 提供四类基础原语：
+//! It provides four kinds of primitives:
 //!
-//! * [`ObjectId`] / [`ObjectKind`] —— 外部 OSM 标识与对象种类。OSM ID 绝不用作数组下标。
-//! * [`Handle<T>`] —— 内部带 generation 的类型化句柄，避免删除后旧句柄被错误复用。
-//! * [`Sym`] / [`StringPool`] —— 字符串驻留，让 Tag 在内存里只存 4 字节符号。
-//! * [`Coord`] / [`LatLon`] —— 定点坐标（1e-7 度，即 OSM API 精度），避免浮点漂移。
+//! * [`ObjectId`] / [`ObjectKind`] —— external OSM identifiers and object kinds. OSM IDs are never used as array indices.
+//! * [`Handle<T>`] —— internal typed handle with a generation, preventing stale handles from being reused after deletion.
+//! * [`Sym`] / [`StringPool`] —— string interning, so tags occupy only a 4-byte symbol in memory.
+//! * [`Coord`] / [`LatLon`] —— fixed-point coordinates (1e-7 degree, i.e. OSM API precision), avoiding floating-point drift.
 //!
-//! 设计约束见 `docs/03-osm-data-model-and-store.md`。
+//! Design constraints: `docs/03-osm-data-model-and-store.md`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

@@ -1,62 +1,53 @@
-# 构建与测试
+# Build and Test
 
-## 前置
+## Prerequisites
 
-- Rust stable（`rust-toolchain.toml` 固定 stable + rustfmt + clippy；MSRV 1.95）
-- Windows：Visual Studio Build Tools（MSVC），Windows 10/11 SDK
-- Linux：`libxkbcommon`、Wayland/X11、Vulkan 驱动等（`eframe` 依赖）
-- Python 3（仓库脚本：依赖检查、i18n、UI 冒烟）
-- Node.js 22。预设数据跟 iD 一样用 npm 声明：`@openstreetmap/id-tagging-schema` 和 `name-suggestion-index`。编译 `neo-style` 之前先在仓库根目录执行 `npm ci`
+- Rust stable (`rust-toolchain.toml` pins stable + rustfmt + clippy; MSRV 1.97)
+- Windows: Visual Studio Build Tools (MSVC), Windows 10/11 SDK
+- Linux: `libxkbcommon`, Wayland/X11, Vulkan drivers, etc. (`eframe` dependencies)
+- Python 3 (repository scripts: dependency, i18n, write-API and documentation-link checks)
+- Node.js 22. Preset data is declared with npm like iD: `@openstreetmap/id-tagging-schema` and `name-suggestion-index`. Run `npm ci` at the repository root before compiling `neo-style`
 
-## 常用命令
+## Common commands
 
-Windows 可直接双击 `scripts/build.cmd`（打开即构建）。它会装预设 npm 包、编 `neo-desktop`（不清理 `out/cargo`），再把 exe 与运行时依赖（`assets/fonts`、`assets/presets`）拷到 `out/neo-desktop/{debug|release}/`，与 exe 同层即可运行。可选参数：`-Release`、`-Run`、`-Workspace`。
+On Windows you can double-click `scripts/build.cmd` (it builds immediately). It installs the preset npm packages, builds `neo-desktop` (without cleaning `out/cargo`), then copies the exe and runtime dependencies (`assets/fonts`, `assets/presets`) to `out/neo-desktop/{debug|release}/`, side by side with the exe so it can run. Optional arguments: `-Release`, `-Run`, `-Workspace`.
 
 ```bash
-# 预设包（编译 neo-style 之前）
+# preset packages (before compiling neo-style)
 npm ci
 
-# 构建（release）
+# build (release)
 cargo build --release -p neo-desktop
-# 或：pwsh -File scripts/build.ps1 -Release
+# or: pwsh -File scripts/build.ps1 -Release
 
-# 运行
+# run
 cargo run -p neo-desktop
-# 或：pwsh -File scripts/build.ps1 -Run
+# or: pwsh -File scripts/build.ps1 -Run
 
-# 格式化 / lint（CI 门禁）
+# format / lint (CI gates)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 
-# 全量测试（master 已恢复测试源码）
+# full test suite
 cargo test --workspace
 
-# 单 crate
+# single crate
 cargo test -p neo-editor
 cargo test -p neo-geo picking
 ```
 
-`master` 的 CI 依次执行 format / clippy / check / test / `--all-features` check；`.github/workflows/test.yml` 保留 `test` 分支的历史基线。
+CI on `master` runs format / clippy / check / test / `--all-features` check in order, then the i18n, dependency, documentation-link and write-API scripts; `.github/workflows/test.yml` is a legacy workflow for the retired `test` branch and does not run on `master`.
 
-## 测试分层
+## Test layers
 
-| 层 | 位置 | 内容 |
+| Layer | Location | Contents |
 |---|---|---|
-| 单元测试 | 各 crate `#[cfg(test)]` | 数据模型、几何、LOD、命令、i18n |
-| 集成测试 | `crates/*/tests/` | PBF/XML/OSC roundtrip、并行导入取消、G3 验收 |
-| 文档检查 | `scripts/check-*.py` | 依赖方向、写 API、文档链接、i18n key |
-| UI 冒烟 | `test` 分支上的 `scripts/ui_check.ps1`（Windows） | 真实窗口 + 模拟鼠标/键盘 + 截图 |
+| Unit tests | `#[cfg(test)]` in each crate | data model, geometry, LOD, commands, i18n |
+| Integration tests | `crates/*/tests/` | PBF/XML/OSC roundtrip, parallel import cancellation, G3 acceptance |
+| Documentation checks | `scripts/check-*.py` | dependency direction, write API, documentation links, i18n keys |
+| Desktop smoke | Manual on Windows | launch the desktop app, open a small PBF, then exercise draw/select/undo and the main panels; screenshots can be saved under `out/ui-check/` (already in `.gitignore`) |
 
-```powershell
-# Windows UI 冒烟：启动 → 画线 → 撤销 → 选择 → 拖拽 → 截图
-powershell -ExecutionPolicy Bypass -File scripts\ui_check.ps1 start
-powershell -ExecutionPolicy Bypass -File scripts\ui_check.ps1 draw
-powershell -ExecutionPolicy Bypass -File scripts\ui_check.ps1 selectnode
-```
-
-截图输出在 `out/ui-check/`（已在 `.gitignore` 中）。
-
-## 性能验证
+## Performance verification
 
 ```powershell
 $env:NEO_PERF_LOG = "out\perf.log"
@@ -64,8 +55,8 @@ $env:NEO_SYNTH_N = "1000000"
 .\out\cargo\release\neo-desktop.exe
 ```
 
-日志包含 `scene build`、`gpu upload`、`ui frame`；阈值与基线见
-[14 性能与验证](../14-performance-and-verification.md)。
+The log contains `scene build`, `gpu upload`, and `ui frame`; thresholds and baselines see
+[14 Performance and Verification](../14-performance-and-verification.md).
 
 ## i18n
 
@@ -74,25 +65,24 @@ cargo test -p neo-i18n
 python scripts/check-i18n.py
 ```
 
-新增文本：编辑 `i18n/zh-CN.json` 与 `i18n/en-US.json`（`zh-TW.json` 可后补，缺失回退简体），代码使用
-`neo_i18n::t("key")` / `tf("key", &[("n","3")])`。
+Adding text: edit `i18n/zh-CN.json` and `i18n/en-US.json` (`zh-TW.json` can be added later; missing entries fall back to Simplified Chinese), and use
+`neo_i18n::t("key")` / `tf("key", &[("n","3")])` in code.
 
-## 文档站
+## Documentation site
 
 ```bash
 cargo install mdbook --version 0.4.52 --locked
 mdbook serve --open        # http://localhost:3000
-mdbook build               # 输出到 book/
+mdbook build               # output to book/
 ```
 
-## 常见问题
+## FAQ
 
-- **链接错误 `LNK1104` / 找不到 MSVC**：安装 VS Build Tools 的 C++ 工作负载。
-- **wgpu 初始化失败**：更新显卡驱动；Windows 需 DX12 支持。
-- **字体/预设显示异常**：字体与 `schema.neo`、`suggestions.neo` 已外置。`scripts/build.ps1` /
-  `package.ps1` 会把它们拷到 `out/neo-desktop/{debug|release}/assets/`（与 exe
-  同层）。也可设 `NEO_ASSET_DIR`，或从仓库根的 `assets/` 开发加载。`neo.ico`
-  仍由 `build.rs` 嵌入 exe。
-- **体积基线**：见 [binary-size-baseline.md](../prototypes/binary-size-baseline.md)；
-  复现 `pwsh -File scripts/bloat-baseline.ps1`。
-- **UI 测试找不到窗口**：确保桌面会话已登录、目标 exe 为 release 构建。
+- **Link error `LNK1104` / MSVC not found**: install the C++ workload of VS Build Tools.
+- **wgpu initialization fails**: update the graphics driver; Windows requires DX12 support.
+- **Fonts/presets display incorrectly**: fonts and `schema.neo`, `suggestions.neo` are external. `scripts/build.ps1` /
+  `package.ps1` copy them to `out/neo-desktop/{debug|release}/assets/` (side by side with the exe). You can also set `NEO_ASSET_DIR`, or load them from the repository root's `assets/` during development. `neo.ico`
+  is still embedded into the exe by `build.rs`.
+- **Size baseline**: see [binary-size-baseline.md](../prototypes/binary-size-baseline.md);
+  reproduce with `pwsh -File scripts/bloat-baseline.ps1`.
+- **UI test cannot find the window**: make sure the desktop session is logged in and the target exe is a release build.

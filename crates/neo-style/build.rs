@@ -1,6 +1,6 @@
-//! 生成外置预设文件 `assets/presets/schema.neo` 与 `suggestions.neo`（不编进二进制）。
+//! Generate the external preset files `assets/presets/schema.neo` and `suggestions.neo` (not compiled into the binary).
 //!
-//! 若文件已存在，无 Node 时沿用；否则报错提示先 `npm ci`。
+//! If the files already exist, reuse them when Node is absent; otherwise error out telling the user to run `npm ci` first.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -24,8 +24,8 @@ fn main() {
     );
     println!("cargo:rerun-if-changed={}", script.display());
     println!("cargo:rerun-if-env-changed=NODE");
-    // 不要把输出文件声明为输入：脚本每次都会重写它，否则 cargo 会永远重跑
-    // build script（增量构建退化为每次跑 node + 写 18 MB）。
+    // Do not declare the output file as an input: the script rewrites it every run, otherwise cargo would rerun
+    // the build script forever (incremental builds degrade to running node + writing 18 MB every time).
     let _ = std::fs::create_dir_all(&out_dir);
     let node = std::env::var("NODE").unwrap_or_else(|_| "node".to_owned());
 

@@ -1,75 +1,75 @@
-# ADR-0003：OSM 数据用 SoA + Arena + generation 句柄存储
+# ADR-0003: Store OSM data with SoA + Arena + generation handles
 
-- **状态**：accepted
-- **日期**：2026-11-15
-- **相关**：docs/03、ADR-0004、ADR-0009
+- **Status**: accepted
+- **Date**: 2026-11-15
+- **Related**: docs/03, ADR-0004, ADR-0009
 
-## 背景
+## Background
 
-OSM 数据是"大量小对象 + 稀疏引用"的图：
+OSM data is a graph of "many small objects + sparse references":
 
-- 千万级 Node（ID、坐标、tags、元数据）；
-- 百万级 Way（ID、节点引用序列、tags、元数据）；
-- 十万级 Relation（成员、角色、tags、元数据）；
-- 编辑时高频修改单个对象，并需要快速找到"引用它的 Way/Relation"。
+- Tens of millions of Nodes (ID, coordinates, tags, metadata);
+- Millions of Ways (ID, node reference sequence, tags, metadata);
+- Hundreds of thousands of Relations (members, roles, tags, metadata);
+- Editing frequently modifies individual objects and needs to quickly find the "Ways/Relations that reference it".
 
-Java JOSM 的 `OsmPrimitive` 对象模型适合 Java 的对象管理方式，但直接翻译到 Rust 会带来：
+Java JOSM's `OsmPrimitive` object model suits Java's style of object management, but translating it directly to Rust brings:
 
-1. 每个对象一次堆分配 + 指针追逐（缓存不友好）；
-2. `Vec<Box<Node>>` 无法做连续内存的批量处理（GPU 上传、并行几何构建）；
-3. 删除/撤销后，引用对象可能出现悬垂指针或"旧句柄指向新对象"的静默错误。
+1. One heap allocation per object + pointer chasing (cache-unfriendly);
+2. `Vec<Box<Node>>` cannot do batch processing over contiguous memory (GPU upload, parallel geometry building);
+3. After deletion/undo, referencing objects may have dangling pointers or silent "old handle points to new object" errors.
 
-## 决策
+## Decision
 
-采用 **SoA + Arena + 类型化 generation 句柄**：
+Adopt **SoA + Arena + typed generation handles**:
 
 ```text
 NodeStore {
     ids:   Vec<ObjectId>       // 8 B
-    lat/lon: Vec<i32>          // 4+4 B（定点 1e-7 度）
-    tags:  Vec<TagSetId>       // 4 B（指向 Tag arena 的一个区间）
+    lat/lon: Vec<i32>          // 4+4 B (fixed point, 1e-7 degrees)
+    tags:  Vec<TagSetId>       // 4 B (a range into the Tag arena)
     meta:  Vec<Meta>           // 32 B
     alloc: SlotAllocator       // generations + alive + freelist
 }
 ```
 
-- **句柄**：`Handle<T> { index: u32, generation: u32 }`，8 字节，`Copy`，与 `T` 的 trait bound 无关。
-- **失效检测**：槽位释放时 generation +1，旧句柄必然失效；`Handle` 永不复用旧代号。
-- **引用池**：Way 的节点引用放在连续 `Vec<Handle<Node>>` 中，每 way 记录 `(offset, len)`；编辑时追加新区间、旧区间在 compact 时回收。
-- **Tag arena**：所有 `(Sym, Sym)` 对连续存放，TagSet 只存区间；写路径 append-only，编辑无引用计数、无失效风险。
-- **字符串驻留**：tag 文本只存一份，`Sym` 4 字节。
-- **反向索引**：node→ways / node→relations / way→relations 用 CSR（一次 O(n+e) 构建，查询零分配）。
-- **世界坐标不进存储**：存储只保留权威经纬度定点值；WebMercator 世界坐标由 `neo-geo` 按需计算。
+- **Handle**: `Handle<T> { index: u32, generation: u32 }`, 8 bytes, `Copy`, independent of `T`'s trait bounds.
+- **Invalidation detection**: the generation is incremented when a slot is freed, so old handles are guaranteed invalid; `Handle` never reuses an old generation.
+- **Reference pool**: a Way's node references live in a contiguous `Vec<Handle<Node>>`, with each way recording `(offset, len)`; edits append a new range and old ranges are reclaimed during compact.
+- **Tag arena**: all `(Sym, Sym)` pairs are stored contiguously; a TagSet only stores ranges; the write path is append-only, so editing needs no reference counting and carries no invalidation risk.
+- **String interning**: tag text is stored only once, `Sym` is 4 bytes.
+- **Reverse indexes**: node→ways / node→relations / way→relations use CSR (built once in O(n+e), with zero-allocation queries).
+- **World coordinates do not enter storage**: storage keeps only the authoritative fixed-point lat/lon; WebMercator world coordinates are computed on demand by `neo-geo`.
 
-## 替代方案
+## Alternatives
 
-| 方案 | 放弃原因 |
+| Option | Why rejected |
 |---|---|
-| `Vec<Box<Node>>` / `Vec<Node>` + 指针 | 分配次数多、缓存差、无法批量 SoA 处理；删除 O(n) |
-| `slotmap`/`generational-arena` crate | 每类对象一个泛型 arena 仍是 AoS；无法按字段批量处理（如并行几何构建只读 lat/lon/tags） |
-| ECS（bevy_ecs / hecs） | 通用 ECS 的 archetype/Component 开销与 OSM 的"固定三类对象"不匹配；编辑事务语义需另建 |
-| `im`/`rpds` 持久化数据结构 | 单对象修改成本高（路径复制），千万级下内存膨胀 |
-| SQLite 作为主存储 | 每帧/每次拾取查询数据库不可能满足交互预算；只适合持久化/缓存（docs/10） |
-| 对象内嵌 `Vec<(String,String)>` | tag 文本重复存储，10M 对象下多出数百 MB 且分配次数爆炸 |
+| `Vec<Box<Node>>` / `Vec<Node>` + pointers | Many allocations, poor cache behavior, cannot do batch SoA processing; deletion is O(n) |
+| `slotmap`/`generational-arena` crates | One generic arena per object type is still AoS; cannot process column-wise (e.g., parallel geometry building that only reads lat/lon/tags) |
+| ECS (bevy_ecs / hecs) | A general ECS's archetype/Component overhead does not match OSM's "exactly three object types"; edit transaction semantics would have to be built separately |
+| `im`/`rpds` persistent data structures | Modifying a single object is expensive (path copying), and memory blows up at tens of millions of objects |
+| SQLite as primary storage | Querying a database every frame/for every pick cannot possibly meet the interaction budget; only suitable for persistence/caching (docs/10) |
+| Embedding `Vec<(String,String)>` in objects | tag text is stored repeatedly, adding hundreds of MB at 10M objects and exploding the number of allocations |
 
-## 后果
+## Consequences
 
-**收益**：
+**Benefits**:
 
-- 1000 万节点 ≈ 480 MB 数据区（48 B/节点），远低于 AoS 的 100+ B/节点 + 指针；
-- 几何构建、空间索引构建可对整列做顺序扫描/并行；
-- 删除安全：旧 Handle 不会静默指向新对象；
-- 渲染/验证/插件读取的是不可变视图（`DataSet` 的 `&` 或快照），与写路径隔离。
+- 10M nodes ≈ 480 MB data area (48 B/node), far below AoS's 100+ B/node + pointers;
+- Geometry building and spatial index building can scan whole columns sequentially or in parallel;
+- Safe deletion: old Handles never silently point to new objects;
+- Rendering/validation/plugins read an immutable view (`DataSet`'s `&` or a snapshot), isolated from the write path.
 
-**代价**：
+**Costs**:
 
-- 需要手写 arena/句柄逻辑与不变量测试（`neo-core`/`neo-store` 已覆盖）；
-- 编辑后引用区间追加会造成 arena 增长，需要 `compact()`（阶段 2 实现，见 docs/03 §2.7）；
-- ID→句柄需要额外哈希表（约 20 B/对象）；可用"排序数组 + 二分"在只读阶段替换；
-- 跨对象不变量（如 relation 成员顺序、way 节点顺序）必须由上层命令保证，存储层不校验。
+- Requires hand-written arena/handle logic and invariant tests (already covered by `neo-core`/`neo-store`);
+- Appending reference ranges after edits grows the arena, requiring `compact()` (implemented in phase 2, see docs/03 §2.7);
+- ID→handle needs an extra hash table (~20 B/object); can be replaced with "sorted array + binary search" during read-only phases;
+- Cross-object invariants (e.g., relation member order, way node order) must be guaranteed by upper-layer commands; the storage layer does not validate them.
 
-## 验证
+## Verification
 
-1. `neo-store` 单测：generation 失效、槽位复用、Way 引用区间连续、内存估算（48 B/节点）。
-2. 基准（docs/14）：100 万对象 SoA 构建/查询/修改的 P50/P95；内存估算 vs 进程 RSS。
-3. code review 检查点：任何"把 `Vec<Box<T>>` 加回存储层"的 PR 必须引用本 ADR 说明理由。
+1. `neo-store` unit tests: generation invalidation, slot reuse, contiguous Way reference ranges, memory estimation (48 B/node).
+2. Benchmarks (docs/14): P50/P95 of build/query/modify on 1M objects with SoA; memory estimate vs process RSS.
+3. Code review checkpoint: any PR that "adds `Vec<Box<T>>` back into the storage layer" must cite this ADR with a justification.

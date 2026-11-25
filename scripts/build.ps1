@@ -1,11 +1,11 @@
-﻿# 构建 NEO 桌面程序。双击 scripts\build.cmd，或在仓库根目录执行：
+﻿# Build the NEO desktop app. Double-click scripts\build.cmd, or run from the repo root:
 #   pwsh -File scripts\build.ps1
 #   pwsh -File scripts\build.ps1 -Release
 #   pwsh -File scripts\build.ps1 -Run
 #
-# 不清理 out\cargo 编译产物。编完后把 neo.exe / neo-editor.exe / neo-sync.exe /
-# neo-imagery.exe 与运行时依赖（fonts / presets / i18n）拷到
-# out\neo-desktop\{debug|release}\，可直接运行。
+# Does not clean the out\cargo build artifacts. After building, copies neo.exe / neo-editor.exe / neo-sync.exe /
+# neo-imagery.exe plus runtime dependencies (fonts / presets / i18n) to
+# out\neo-desktop\{debug|release}\, ready to run.
 
 param(
     [switch]$Release,
@@ -20,7 +20,7 @@ Set-Location $root
 $cargoHome = Join-Path $env:USERPROFILE ".cargo\bin"
 $env:Path = "$cargoHome;$env:Path"
 
-# 固定写到 out\cargo，避免被环境里的临时 CARGO_TARGET_DIR 拐走。
+# Always write to out\cargo so an ambient temporary CARGO_TARGET_DIR cannot hijack it.
 $env:CARGO_TARGET_DIR = Join-Path $root "out\cargo"
 
 function Find-NodeHome {
@@ -41,7 +41,7 @@ function Publish-DesktopBundle([string]$CargoDir, [string]$BundleDir) {
         try {
             Remove-Item -LiteralPath $BundleDir -Recurse -Force -ErrorAction Stop
         } catch {
-            throw "无法重建 $BundleDir（可能 exe 仍在运行）。请先关闭 neo / neo-editor 后重试。`n$($_.Exception.Message)"
+            throw "cannot rebuild $BundleDir (the exe may still be running). Close neo / neo-editor and retry.`n$($_.Exception.Message)"
         }
     }
     New-Item -ItemType Directory -Force -Path $BundleDir | Out-Null
@@ -100,7 +100,7 @@ function Publish-DesktopBundle([string]$CargoDir, [string]$BundleDir) {
 
 $nodeHome = Find-NodeHome
 if (-not $nodeHome) {
-    throw "找不到 Node.js 22。先安装 Node，或把可执行文件放到 TEMP\neo-node\node-v22.21.1-win-x64\"
+    throw "Node.js 22 not found. Install Node, or place the executable in TEMP\neo-node\node-v22.21.1-win-x64\"
 }
 $env:Path = $nodeHome + ";" + $env:Path
 $nodeVer = & node -v

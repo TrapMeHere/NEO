@@ -1,4 +1,4 @@
-//! 影像旁路消息。
+//! Imagery sidecar messages.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -11,61 +11,61 @@ use serde::{Deserialize, Serialize};
 
 use super::client::{SidecarError, spawn_sidecar};
 
-/// 影像旁路协议版本。
+/// Imagery sidecar protocol version.
 pub const PROTOCOL_VERSION: u32 = super::PROTOCOL_VERSION;
 
-/// 编辑器 → 影像旁路。
+/// Editor → imagery sidecar.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ImageryRequest {
-    /// 握手。
+    /// Handshake.
     Hello {
-        /// 编辑器侧协议版本。
+        /// Editor-side protocol version.
         version: u32,
     },
-    /// 下载一张图（含天地图请求头策略）。
+    /// Downloads one image (including the Tianditu request-header policy).
     Fetch {
-        /// 完整 URL。
+        /// Full URL.
         url: String,
     },
-    /// 计算 TMS 请求缩放级别（含天地图 z18 上限）。
+    /// Computes the TMS request zoom level (including the Tianditu z18 cap).
     CapZoom {
-        /// 预设 id。
+        /// Preset id.
         preset_id: String,
-        /// URL 模板。
+        /// URL template.
         url: String,
-        /// 相机缩放。
+        /// Camera zoom.
         camera_zoom: f64,
-        /// 预设声明的上限（没有则 22）。
+        /// Upper bound declared by the preset (22 when absent).
         preset_max_zoom: Option<u32>,
     },
 }
 
-/// 影像旁路 → 编辑器。
+/// Imagery sidecar → editor.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ImageryResponse {
-    /// 握手。
+    /// Handshake.
     Hello {
-        /// 旁路协议版本。
+        /// Sidecar protocol version.
         version: u32,
-        /// 是否兼容。
+        /// Whether compatible.
         ok: bool,
     },
-    /// 下载成功（base64）。
+    /// Download succeeded (base64).
     Fetched {
-        /// 图片字节。
+        /// Image bytes.
         #[serde(with = "b64")]
         bytes: Vec<u8>,
     },
-    /// 缩放级别。
+    /// Zoom level.
     Zoom {
-        /// 请求用的整数级别。
+        /// Integer level used for the request.
         zoom: u32,
     },
-    /// 错误。
+    /// Error.
     Error {
-        /// 消息。
+        /// Message.
         message: String,
     },
 }
@@ -87,21 +87,21 @@ mod b64 {
     }
 }
 
-/// 带请求 id 的信封（影像并发）。
+/// Envelope carrying a request id (imagery concurrency).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ImageryEnvelope<T> {
-    /// 协议版本。
+    /// Protocol version.
     pub v: u32,
-    /// 请求/应答配对 id。
+    /// Request/reply pairing id.
     pub id: u64,
-    /// 载荷。
+    /// Payload.
     #[serde(flatten)]
     pub body: T,
 }
 
 type PendingMap = Arc<Mutex<HashMap<u64, Sender<ImageryResponse>>>>;
 
-/// 影像会话：支持并发 fetch。
+/// Imagery session: supports concurrent fetches.
 pub struct ImagerySession {
     _child: Child,
     stdin: Mutex<ChildStdin>,
@@ -111,7 +111,7 @@ pub struct ImagerySession {
 }
 
 impl ImagerySession {
-    /// 启动并握手。
+    /// Starts and performs the handshake.
     pub fn open() -> Result<Self, SidecarError> {
         let mut child = spawn_sidecar("neo-imagery")?;
         let stdin = child
@@ -167,12 +167,12 @@ impl ImagerySession {
         }
     }
 
-    /// 是否可用。
+    /// Whether usable.
     pub fn ready(&self) -> bool {
         self.ready
     }
 
-    /// 同步调用（握手、CapZoom）。
+    /// Synchronous call (handshake, CapZoom).
     pub fn call(&self, request: ImageryRequest) -> Result<ImageryResponse, SidecarError> {
         let (tx, rx) = channel();
         self.send(request, tx)?;
@@ -180,7 +180,7 @@ impl ImagerySession {
             .map_err(|_| SidecarError::Protocol("imagery reply channel closed".into()))
     }
 
-    /// 异步下载：立刻返回接收端。
+    /// Asynchronous download: returns the receiver immediately.
     pub fn fetch_async(&self, url: String) -> Result<Receiver<ImageryResponse>, SidecarError> {
         let (tx, rx) = channel();
         self.send(ImageryRequest::Fetch { url }, tx)?;

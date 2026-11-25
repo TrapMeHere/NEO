@@ -1,6 +1,6 @@
-//! JOSM 会话文件读写（`.jos` XML 与 `.joz` ZIP 两种容器）。
+//! JOSM session file IO (`.jos` XML and `.joz` ZIP containers).
 //!
-//! 格式（docs/13 §P0「`.jos`/`.joz` 会话」；容忍未知插件图层段）：
+//! Format (docs/13 §P0 "`.jos`/`.joz` sessions"; unknown plugin layer sections are tolerated):
 //!
 //! ```xml
 //! <?xml version="1.0" encoding="UTF-8"?>
@@ -16,12 +16,12 @@
 //! </josm-session>
 //! ```
 //!
-//! * 读取时**未知元素/未知属性直接忽略**（JOSM 插件会写自定义图层段）；
-//! * `.joz` = ZIP 容器：`session.jos` + `layers/<序号>_<文件名>`，读取时解压到指定目录
-//!   并把 `file` 路径改写为解压后的路径。
+//! * Unknown elements/attributes are **ignored** on read (JOSM plugins write custom layer sections);
+//! * `.joz` = ZIP container: `session.jos` + `layers/<index>_<filename>`; on read, entries are extracted
+//!   into the given directory and `file` paths are rewritten to the extracted ones.
 //!
-//! 已知限制：不处理 JOSM 的 imagery 图层参数细节（只保留 name/type/file），
-//! 不处理插件扩展数据。
+//! Known limitations: JOSM imagery layer parameter details are not handled (only name/type/file are kept),
+//! and plugin extension data is not handled.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -32,20 +32,20 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
-/// 会话 schema 版本（与 JOSM 对齐的 0.1）。
+/// Session schema version (0.1, aligned with JOSM).
 pub const SESSION_VERSION: &str = "0.1";
 
-/// 会话错误。
+/// Session error.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SessionError {
-    /// XML 结构错误。
+    /// XML structure error.
     #[error("session xml: {0}")]
     Xml(String),
-    /// IO 错误。
+    /// IO error.
     #[error("session io: {0}")]
     Io(#[from] std::io::Error),
-    /// ZIP 错误。
+    /// ZIP error.
     #[error("session zip: {0}")]
     Zip(String),
 }
@@ -56,57 +56,57 @@ impl From<quick_xml::Error> for SessionError {
     }
 }
 
-/// 会话中的一个图层引用。
+/// A layer reference in a session.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionLayer {
-    /// 显示名。
+    /// Display name.
     pub name: String,
-    /// 图层类型（`osm-data` / `imagery` / 其他插件类型）。
+    /// Layer type (`osm-data` / `imagery` / other plugin types).
     pub layer_type: String,
-    /// 数据文件（相对或绝对路径；`None` 表示空图层）。
+    /// Data file (relative or absolute path; `None` means an empty layer).
     pub file: Option<PathBuf>,
 }
 
-/// 视口（JOSM 用 lat/lon 中心 + 缩放级别近似）。
+/// Viewport (JOSM approximates it with a lat/lon center plus zoom level).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SessionViewport {
-    /// 中心纬度（度）。
+    /// Center latitude (degrees).
     pub center_lat: f64,
-    /// 中心经度（度）。
+    /// Center longitude (degrees).
     pub center_lon: f64,
-    /// 缩放级别。
+    /// Zoom level.
     pub zoom: f64,
 }
 
-/// 选中项。
+/// Selection item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionSelection {
-    /// 类型（`node` / `way` / `relation`）。
+    /// Type (`node` / `way` / `relation`).
     pub kind: &'static str,
-    /// ID。
+    /// ID.
     pub id: i64,
 }
 
-/// JOSM 会话。
+/// JOSM session.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Session {
-    /// 图层列表。
+    /// Layer list.
     pub layers: Vec<SessionLayer>,
-    /// 视口。
+    /// Viewport.
     pub viewport: Option<SessionViewport>,
-    /// 当前活动图层下标。
+    /// Index of the active layer.
     pub active_layer: Option<usize>,
-    /// 选择集。
+    /// Selection set.
     pub selection: Vec<SessionSelection>,
 }
 
 impl Session {
-    /// 空会话。
+    /// Empty session.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 第一个可用的数据图层。
+    /// First usable data layer.
     pub fn first_data_layer(&self) -> Option<&SessionLayer> {
         self.layers
             .iter()
@@ -119,7 +119,7 @@ impl Session {
 // .jos（XML）
 // ---------------------------------------------------------------------------
 
-/// 写 `.jos`。
+/// Write `.jos`.
 pub fn write_jos<W: Write>(session: &Session, out: W) -> Result<(), SessionError> {
     let mut writer = Writer::new_with_indent(out, b' ', 2);
     writer.write_event(Event::Start(
@@ -167,7 +167,7 @@ pub fn write_jos<W: Write>(session: &Session, out: W) -> Result<(), SessionError
     Ok(())
 }
 
-/// 读 `.jos`。
+/// Read `.jos`.
 pub fn read_jos<R: BufRead>(reader: R) -> Result<Session, SessionError> {
     let mut xml = EventReader::from_reader(reader);
     xml.config_mut().trim_text(true);
@@ -226,7 +226,7 @@ pub fn read_jos<R: BufRead>(reader: R) -> Result<Session, SessionError> {
                             session.selection.push(SessionSelection { kind, id });
                         }
                     }
-                    // 未知元素（插件图层段等）：忽略
+                    // Unknown elements (plugin layer sections, etc.): ignore
                     _ => {}
                 }
             }
@@ -243,13 +243,13 @@ pub fn read_jos<R: BufRead>(reader: R) -> Result<Session, SessionError> {
     Ok(session)
 }
 
-/// 从文件读 `.jos`。
+/// Read `.jos` from a file.
 pub fn read_jos_file(path: impl AsRef<Path>) -> Result<Session, SessionError> {
     let file = std::fs::File::open(path)?;
     read_jos(BufReader::new(file))
 }
 
-/// 写文件 `.jos`。
+/// Write `.jos` to a file.
 pub fn write_jos_file(session: &Session, path: impl AsRef<Path>) -> Result<(), SessionError> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
@@ -297,13 +297,13 @@ fn finish_atomic_rename(tmp: &Path, path: &Path) -> Result<(), SessionError> {
 // .joz（ZIP）
 // ---------------------------------------------------------------------------
 
-/// `.joz` 解压限制：条目数、单文件、总解压量（防止 zip bomb）。
+/// `.joz` extraction limits: entry count, single file size, total extracted size (prevents zip bombs).
 const MAX_JOZ_ENTRIES: usize = 4096;
 const MAX_JOZ_SESSION_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_JOZ_LAYER_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_JOZ_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 
-/// 写 `.joz`：把会话 XML 与图层文件一起打包。
+/// Write `.joz`: package the session XML together with the layer files.
 pub fn write_joz(session: &Session, path: impl AsRef<Path>) -> Result<(), SessionError> {
     if let Some(parent) = path.as_ref().parent() {
         std::fs::create_dir_all(parent)?;
@@ -322,7 +322,7 @@ fn write_joz_inner(session: &Session, path: &Path) -> Result<(), SessionError> {
     let mut zip = ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-    // session.jos 里只写 zip 内的相对条目名，避免泄露本机绝对路径/用户名。
+    // session.jos stores only relative entry names inside the zip, to avoid leaking local absolute paths/usernames.
     let mut portable = session.clone();
     let mut payloads: Vec<(String, PathBuf)> = Vec::new();
     for (index, layer) in portable.layers.iter_mut().enumerate() {
@@ -359,11 +359,11 @@ fn write_joz_inner(session: &Session, path: &Path) -> Result<(), SessionError> {
     Ok(())
 }
 
-/// 读 `.joz`：把图层文件安全解压到 `extract_dir`，返回改写路径后的会话。
+/// Read `.joz`: safely extract layer files into `extract_dir` and return the session with rewritten paths.
 ///
-/// 安全边界：拒绝绝对路径/盘符/`..`（zip slip）、限制条目数与解压总量
-/// （zip bomb）；未在包内出现的图层把 `file` 置空，绝不回退到会话里记录的
-/// 任意本机路径。
+/// Security boundary: reject absolute paths/drive letters/`..` (zip slip), limit entry count and total
+/// extracted size (zip bomb); layers missing from the archive get `file = None` and never fall back to
+/// arbitrary local paths recorded in the session.
 pub fn read_joz(path: impl AsRef<Path>, extract_dir: impl AsRef<Path>) -> Result<Session, SessionError> {
     let file = std::fs::File::open(path)?;
     let mut archive = ZipArchive::new(file).map_err(|e| SessionError::Zip(e.to_string()))?;
@@ -397,7 +397,7 @@ pub fn read_joz(path: impl AsRef<Path>, extract_dir: impl AsRef<Path>) -> Result
         let Some(rest) = name.strip_prefix("layers/") else {
             continue;
         };
-        // 只取文件名部分：`layers/0_../../x` 会被拒绝，而不是写到目录外。
+        // Take only the file-name part: `layers/0_../../x` is rejected rather than written outside the directory.
         let Some(file_name) = Path::new(rest)
             .file_name()
             .and_then(|name| name.to_str())
@@ -418,7 +418,7 @@ pub fn read_joz(path: impl AsRef<Path>, extract_dir: impl AsRef<Path>) -> Result
         }
         let target = root.join(file_name);
         let mut out = std::fs::File::create(&target)?;
-        // 双重上限：不信任 zip 头里的 size 字段。
+        // Double limit: do not trust the size field in the zip header.
         let copied = std::io::copy(&mut entry.by_ref().take(MAX_JOZ_LAYER_BYTES + 1), &mut out)?;
         if copied > MAX_JOZ_LAYER_BYTES {
             let _ = std::fs::remove_file(&target);
@@ -432,7 +432,7 @@ pub fn read_joz(path: impl AsRef<Path>, extract_dir: impl AsRef<Path>) -> Result
     for (index, layer) in session.layers.iter_mut().enumerate() {
         layer.file = extracted.get(&index).cloned();
         if layer.file.is_none() {
-            // 包内缺失的图层不能回退到会话 XML 里的任意本机路径。
+            // A layer missing from the archive must not fall back to an arbitrary local path from the session XML.
             layer.file = None;
         }
     }
@@ -448,7 +448,7 @@ fn attr(e: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> {
         .map(|value| value.into_owned())
 }
 
-/// 把经纬度/缩放转换为会话视口（便于应用层调用）。
+/// Convert latitude/longitude/zoom into a session viewport (convenience for the app layer).
 pub fn viewport_from_camera(center_lat: f64, center_lon: f64, zoom: f64) -> SessionViewport {
     SessionViewport {
         center_lat,
@@ -457,7 +457,7 @@ pub fn viewport_from_camera(center_lat: f64, center_lon: f64, zoom: f64) -> Sess
     }
 }
 
-/// XML 文本（测试/调试用）。
+/// XML text (for tests/debugging).
 pub fn to_xml_string(session: &Session) -> Result<String, SessionError> {
     let mut out = Vec::new();
     write_jos(session, &mut out)?;

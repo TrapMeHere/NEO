@@ -1,18 +1,22 @@
-//! 批量建对象的顺序工具。
+//! Ordering helper for batch object creation.
 //!
-//! `AddRelation` 的 `precheck` 要求成员对象已经存在，所以同一批新建的 relation 必须按
-//! "成员 relation 先于引用者"排序；否则父 relation 引用同批新建的子 relation 时，
-//! `execute_batch` 会因找不到成员而整体回滚（粘贴/导入直接失效）。
+//! `AddRelation`'s `precheck` requires member objects to already exist, so relations
+//! created in the same batch must be sorted so that "member relations come before
+//! referrers"; otherwise, when a parent relation references a child relation created in
+//! the same batch, `execute_batch` rolls the whole thing back because the member is
+//! missing (paste/import silently breaks).
 
 use neo_core::ObjectId;
 
-/// 把 relation 排成"成员 relation 先于引用者"的顺序。
+/// Order relations so that "member relations come before referrers".
 ///
-/// `deps` 返回每个 relation 的 relation 型成员；不在 `ids` 里的成员会被忽略
-/// （它们本来就不在这一批里，依赖由调用方另行保证）。
+/// `deps` returns the relation-typed members of each relation; members not in `ids` are
+/// ignored (they are not part of this batch anyway, so the caller guarantees their
+/// dependencies separately).
 ///
-/// 存在循环引用时（数据损坏，或用户刻意构造）按输入顺序追加剩余项，交给批处理的
-/// `precheck` 报错并整体回滚 —— 不在这里静默丢弃对象。
+/// On cyclic references (corrupt data, or user-constructed), the remaining items are
+/// appended in input order and left to the batch's `precheck` to report an error and roll
+/// back the whole batch — objects are never silently dropped here.
 pub fn order_relations_by_dependency(
     ids: &[ObjectId],
     mut deps: impl FnMut(ObjectId) -> Vec<ObjectId>,
@@ -61,7 +65,7 @@ mod tests {
 
     #[test]
     fn members_come_before_referrers() {
-        // 30 的成员是 20；输入顺序父在前，输出必须先把子建出来。
+        // 30's member is 20; the input order puts the parent first, but the output must create the child first.
         let ordered = order_relations_by_dependency(&[ObjectId(30), ObjectId(20)], |id| {
             if id == ObjectId(30) {
                 vec![ObjectId(20)]
@@ -74,7 +78,7 @@ mod tests {
 
     #[test]
     fn chain_is_ordered_transitively() {
-        // 3 → 2 → 1。
+        // 3 → 2 → 1.
         let ids = [ObjectId(3), ObjectId(1), ObjectId(2)];
         let ordered = order_relations_by_dependency(&ids, |id| {
             let next = id.0 - 1;

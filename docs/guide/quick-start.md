@@ -1,75 +1,75 @@
-# 快速上手
+# Quick Start
 
-## 1. 启动并打开数据
+## 1. Launch and open data
 
-启动后地图为空，需要自行载入数据：
+The map is empty after startup, so you need to load data yourself:
 
-- **文件 → 打开 PBF…** 选择 `.osm.pbf`
-- **文件 → 打开 OSM XML…** 选择 `.osm` / `.xml`
-- 或用工具栏 **下载 OSM 数据** 框选区域从 API 拉取
+- **File → Open PBF…** to choose a `.osm.pbf`
+- **File → Open OSM XML…** to choose a `.osm` / `.xml`
+- Or use the toolbar's **Download OSM Data** to fetch an area from the API
 
-导入大文件时状态栏会显示进度；`Esc`/取消按钮可中止并行导入。
+The status bar shows progress when importing large files; `Esc`/the cancel button aborts a parallel import.
 
-## 2. 下载 OSM 数据（可选）
+## 2. Download OSM Data (Optional)
 
-工具栏第一个图标（云下载）打开 **下载 OSM 数据** 窗口：
+The first toolbar icon (cloud download) opens the **Download OSM Data** window:
 
-1. 点「在地图上框选范围」
-2. 在地图上左键拖出矩形（绿色框）
-3. 点「下载该区域」即可从 OSM API 下载并替换当前图层
+1. Click "Select area on map"
+2. Drag a rectangle on the map with the left button (green box)
+3. Click "Download this area" to download from the OSM API and replace the current layer
 
-![框选下载](../assets/ui-bbox.png)
+![Bounding-box download](../assets/ui-bbox.png)
 
-也可以 **文件 → 打开 PBF… / 打开 OSM XML…** 导入本地文件。
+You can also import local files via **File → Open PBF… / Open OSM XML…**.
 
-## 3. 导航
+## 3. Navigation
 
-| 操作 | 效果 |
+| Action | Effect |
 |---|---|
-| 右键拖动 | 平移地图 |
-| 滚轮 | 以鼠标位置为中心缩放 |
-| 工具栏放大/缩小/缩放至数据 | 视图操作 |
-| 状态栏左下 | 鼠标经纬度 + 比例尺 |
+| Right drag | Pan the map |
+| Wheel | Zoom centered on the mouse position |
+| Toolbar zoom in/out/zoom to data | View operations |
+| Bottom-left status bar | Mouse latitude/longitude + scale |
 
-节点按缩放级别显示（LOD）：
+Nodes are shown according to the zoom level (LOD):
 
-- `z ≤ 16`：不显示节点
-- `z 17–18`：只显示被 ≥2 条 way 共享的节点（小点）
-- `z ≥ 19`：显示全部节点（共享节点方块、普通节点圆点）
+- `z ≤ 16`: nodes are not shown
+- `z 17–18`: only nodes shared by ≥2 ways are shown (small dots)
+- `z ≥ 19`: all nodes are shown (shared nodes as squares, normal nodes as circles)
 
-## 4. 选择与查看
+## 4. Selecting and inspecting
 
-- **选择工具（S）**：左键点击要素，红色高亮；Ctrl+点击追加选择
-- 右侧 **标签 / 成员** 面板显示全部标签；way/relation 底部显示成员
-- **关系** 面板列出全部 relation；**选择** 面板列出当前选择
-- 右键图层 → **信息…** 查看计数、版本、脏对象、视口中心
+- **Select tool (S)**: left-click a feature to highlight it in red; Ctrl+click appends to the selection
+- The **Tags / Members** panel on the right shows all tags; ways/relations show their members at the bottom
+- The **Relations** panel lists all relations; the **Selection** panel lists the current selection
+- Right-click a layer → **Info…** to see counts, version, dirty objects, and viewport center
 
-![选中要素](../assets/ui-selected.png)
+![Selected feature](../assets/ui-selected.png)
 
-## 5. 编辑
+## 5. Editing
 
-- **左键拖拽**：拖动节点或整条 way（先自动选中，松开才写数据）
-- **绘制（A）**：依次点击画线，`Enter` 完成
-- **删除（X）**：点击要素删除
-- **Ctrl+Z / Ctrl+Y**：撤销/重做
-- **Delete**：删除当前选择
-- 分割 / 反转 / 合并按钮在左侧工具箱与工具栏
+- **Left drag**: drag a node or an entire way (it is auto-selected first; data is written only on release)
+- **Draw (A)**: click in sequence to draw a line, `Enter` to finish
+- **Delete (X)**: click a feature to delete it
+- **Ctrl+Z / Ctrl+Y**: undo/redo
+- **Delete**: delete the current selection
+- Split / Reverse / Merge buttons are in the left toolbox and the toolbar
 
-## 6. 保存
+## 6. Saving
 
-- **文件 → 导出…** 打开统一导出窗口，选择 OSM XML / osmChange / PBF / JOSM 会话
-- **Ctrl+S** 快捷保存 XML
-- 导出会话（`.jos`/`.joz`）会保留视图与选择
+- **File → Export…** opens the unified export window; choose OSM XML / osmChange / PBF / JOSM session
+- **Ctrl+S** quickly saves XML
+- Exporting a session (`.jos`/`.joz`) preserves the view and selection
 
-## 7. 测距
+## 7. Measuring
 
-按 `M` 或点击左侧标尺图标：第一次点击起点，第二次点击终点，
-地图显示黄色连线与距离，状态栏同步显示 m/km。
+Press `M` or click the ruler icon on the left: the first click sets the start point, the second sets the end point,
+the map shows a yellow line and the distance, and the status bar synchronously shows m/km.
 
-![测距](../assets/ui-measure.png)
+![Measuring](../assets/ui-measure.png)
 
-## 8. 下一步
+## 8. Next steps
 
-- [界面说明](interface.md) — 每个面板的用途
-- [编辑操作](editing.md) — 细节与快捷键
-- [文件、会话与恢复](files-and-sessions.md) — 数据安全
+- [Interface](interface.md) — what each panel is for
+- [Editing Operations](editing.md) — details and shortcuts
+- [Files, Sessions and Recovery](files-and-sessions.md) — data safety

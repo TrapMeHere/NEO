@@ -1,26 +1,26 @@
-# OSM 上传
+# OSM Upload
 
-> 下载与上传是两个独立功能。下载见 [快速上手](quick-start.md#2-下载-osm-数据可选) 或工具栏云下载图标（框选 bbox / Overpass 下载窗口）。
+> Downloading and uploading are two independent features. For downloading see [Quick Start](quick-start.md#2-download-osm-data-optional) or the toolbar's cloud download icon (bbox selection / Overpass download window).
 
-## 前置：登录
+## Prerequisite: logging in
 
-在 **帮助 → 设置… → OSM 账户** 完成 OAuth 登录（见 [设置与多语言](settings-and-i18n.md)）。
+Complete OAuth login in **Help → Settings… → OSM Account** (see [Settings and Languages](settings-and-i18n.md)).
 
-## 上传本地修改
+## Uploading local changes
 
-1. **文件 → 上传…**
-2. 填写 changeset 注释
-3. 点「上传本地修改」，或「只上传选中」（自动带上新建依赖）
+1. **File → Upload…**
+2. Fill in a changeset comment
+3. Click "Upload local changes", or "Upload selection only" (new-object dependencies are included automatically)
 
-流程：`create changeset` → `POST /changeset/{id}/upload`（osmChange）→ `close changeset`。
-成功后面板显示服务端确认的对象数。
+Flow: `create changeset` → `POST /changeset/{id}/upload` (osmChange) → `close changeset`.
+On success the panel shows the number of objects confirmed by the server.
 
-## 409 冲突
+## 409 conflicts
 
-上传返回 409 时，上传窗口列出冲突对象（类型/id/版本），可逐个处理：
+When upload returns 409, the upload window lists the conflicting objects (type/id/version) and you can handle them one by one:
 
-- **保留本地并重试（KeepLocal）**：把本地对象版本对齐到服务端版本后重新上传（覆盖远端修改）
-- **采用远端（TakeRemote）**：拉取该对象的服务端版本，替换本地修改
-- **合并标签 / 合并几何**：按标签或按几何合并远端与本地修改
+- **Keep local and retry (KeepLocal)**: align the local object version with the server version and re-upload (overwriting remote changes)
+- **Take remote (TakeRemote)**: fetch the server version of that object and replace the local changes
+- **Merge tags / Merge geometry**: merge remote and local changes by tags or by geometry
 
-手合并（按字段/几何选择）仍待后续；`neo-editor::MergeCase` 与三方标签合并已就绪。
+Manual merging (selection by field/geometry) is still to come; `neo-editor::MergeCase` and three-way tag merging are already in place.

@@ -1,6 +1,6 @@
-//! NEO 影像旁路：瓦片下载与缩放上限。
+//! NEO imagery sidecar: tile downloads and zoom caps.
 //!
-//! 从 stdin 读带 `id` 的 JSON 行，向 stdout 写对应应答。下载在后台线程并发执行。
+//! Reads JSON lines carrying an `id` from stdin and writes the matching reply to stdout. Downloads run concurrently on background threads.
 
 #![forbid(unsafe_code)]
 
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use neo_ipc::{ImageryEnvelope, ImageryRequest, ImageryResponse, PROTOCOL_VERSION};
 
-/// 天地图密钥限定浏览器访问。这套标头与浏览器打开瓦片时一致，不带会过期的 Cookie。
+/// Tianditu keys are restricted to browser access. This header set matches a browser opening tiles, without expiring cookies.
 const TIANDITU_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36";
 
 fn main() {

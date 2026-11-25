@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""把 iD 的 data/imagery.json 收成按国家过滤的影像目录。
+"""Condense iD's data/imagery.json into a country-filtered imagery catalog.
 
-iD 用多边形决定一张影像在哪些地方出现。这里把覆盖范围收成两种：
-全球，或若干 ISO 3166-1 alpha-2 国家代码。国家边界用 Natural Earth 1:50m。
+iD uses polygons to decide where an imagery layer appears. This script reduces coverage to two forms:
+worldwide, or a set of ISO 3166-1 alpha-2 country codes. Country borders come from Natural Earth 1:50m.
 
-输出：
+Output:
   assets/imagery/catalog.json
   assets/imagery/countries.json
 """
@@ -28,7 +28,7 @@ COUNTRIES_URL = (
     "ne_50m_admin_0_countries.geojson"
 )
 
-# 这些已经由程序内置（含本机约定的 Mapbox / 天地图地址），避免和 iD 目录重复。
+# These are already built into the program (including the locally agreed Mapbox / Tianditu URLs), so skip them to avoid duplicating iD's catalog.
 SKIP_IDS = {
     "bing",
     "esriworldimagery",
@@ -176,7 +176,7 @@ def country_at(countries: list[dict], lon: float, lat: float) -> str | None:
 
 
 def imagery_polygons(source: dict) -> list[list[list[list[float]]]]:
-    """iD 的 polygon 是外环列表，没有洞。"""
+    """iD's polygon is a list of outer rings, with no holes."""
     raw = source.get("polygon") or []
     polygons = []
     for ring in raw:
@@ -330,7 +330,7 @@ def main() -> None:
             continue
         kind = source["type"]
         url = source.get("template") or ""
-        # 不把 Mapbox 明文 token 写进仓库；运行时由程序填入混淆令牌。
+        # Never commit a plaintext Mapbox token; the program fills in an obfuscated token at runtime.
         if "access_token=pk." in url:
             url = re.sub(r"access_token=pk\.[^&\"'\\]+", "access_token={apikey}", url)
         if kind == "bing":

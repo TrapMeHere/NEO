@@ -1,4 +1,4 @@
-//! NeoApp::edit 方法。行为与拆分前的 app.rs 相同。
+//! NeoApp::edit methods. Same behavior as before the app.rs split.
 
 use neo_core::{LatLon, ObjectId, ObjectKind};
 use neo_editor::{AddNode, AddRelation, AddWay, RelationMemberSpec};
@@ -9,8 +9,8 @@ use neo_tools::{ToolEffect, ToolNote};
 use super::{Clipboard, ClipboardNode, ClipboardRelation, ClipboardWay, NeoApp};
 
 impl NeoApp {
-    /// 当前选中集合涉及的节点（选中节点 + 选中 way 的全部节点，去重）
-    /// 把当前选择复制到内部剪贴板
+    /// Nodes involved in the current selection (selected nodes + all nodes of selected ways, deduplicated)
+    /// Copies the current selection to the internal clipboard
     pub(super) fn copy_selection(&mut self) {
         let data = self.editor.data();
         let mut clip = Clipboard::default();
@@ -34,8 +34,8 @@ impl NeoApp {
                 && let Some(view) = data.way_view(handle)
             {
                 let nodes = data.way_node_ids(handle);
-                // JOSM 复制 way 时连同节点一起复制；否则粘贴到另一个文档会
-                // 引用到同 ID 但语义不同的节点
+                // JOSM copies a way together with its nodes; otherwise pasting into another document would
+                // reference nodes with the same id but different meaning
                 for node in &nodes {
                     if clip.nodes.iter().any(|existing| existing.id == *node) {
                         continue;
@@ -106,8 +106,8 @@ impl NeoApp {
         self.status = tf("status.copied", &[("n", &count.to_string())]);
     }
 
-    /// 粘贴剪贴板：分配新的
-    /// ID、重映射内部引用，并作为一个原子批提交
+    /// Pastes the clipboard: allocates new
+    /// IDs, remaps internal references, and commits as one atomic batch
     pub(super) fn paste_clipboard(&mut self, offset_m: f64) {
         if self.clipboard.len() == 0 {
             self.status = t("app.status.clipboard_empty").to_owned();
@@ -157,8 +157,8 @@ impl NeoApp {
             cmd.id = Some(new_id);
             commands.push(Box::new(cmd));
         }
-        // relation 之间可以有成员依赖：父 relation 引用同批新建的子 relation 时，
-        // 子必须先建，否则 AddRelation::precheck 找不到成员、整批回滚（粘贴直接失效）。
+        // Relations can have member dependencies: when a parent relation references a newly created child relation in the same batch,
+        // the child must be created first, otherwise AddRelation::precheck can't find the member and the whole batch rolls back (paste silently fails).
         let relation_ids: Vec<ObjectId> = clip.relations.iter().map(|relation| relation.id).collect();
         let relation_order = neo_editor::order_relations_by_dependency(&relation_ids, |id| {
             clip.relations

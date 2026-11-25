@@ -1,4 +1,4 @@
-//! plugins 面板。
+//! plugins panel.
 
 use egui::{Color32, RichText};
 use egui_phosphor::regular as ph;
@@ -6,41 +6,41 @@ use neo_i18n::t;
 
 use super::UiActions;
 
-/// 已安装插件视图。
+/// View of an installed plugin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginView {
-    /// 稳定 id。
+    /// Stable id.
     pub id: String,
-    /// 名称。
+    /// Name.
     pub name: String,
-    /// 版本。
+    /// Version.
     pub version: String,
     /// ABI。
     pub api: String,
-    /// 能力摘要。
+    /// Capability summary.
     pub capabilities: String,
-    /// 是否已签名。
+    /// Whether the plugin is signed.
     pub signed: bool,
-    /// 是否启用。
+    /// Whether the plugin is enabled.
     pub enabled: bool,
-    /// 包路径（只读展示）。
+    /// Package path (read-only display).
     pub path: String,
 }
 
-/// 插件管理窗口状态。
+/// Plugin management window state.
 #[derive(Clone, Debug, Default)]
 pub struct PluginUiState {
-    /// 已安装插件。
+    /// Installed plugins.
     pub plugins: Vec<PluginView>,
-    /// 选中的插件 id。
+    /// Selected plugin id.
     pub selected: Option<String>,
-    /// 状态文本。
+    /// Status text.
     pub status: String,
-    /// 允许加载未签名包（开发者模式）。
+    /// Allow loading unsigned packages (developer mode).
     pub developer_mode: bool,
 }
 
-/// 插件管理窗口。
+/// Plugin management window.
 pub fn plugins_window(
     ctx: &egui::Context,
     actions: &mut UiActions,

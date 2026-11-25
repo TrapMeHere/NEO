@@ -1,30 +1,30 @@
-//! 预设覆盖率：把 NEO 载入的 id-tagging-schema 预设按 JOSM 默认分组前缀计数。
+//! Preset coverage: count the id-tagging-schema presets loaded by NEO by JOSM's default group prefixes.
 //!
-//! 不读取 JOSM 的 `defaultpresets.xml`（GPL）。分组名是公开的编辑概念，
-//! 用 schema id 前缀对照。计数为 0 的分组记入缺失列表，而不是当成已覆盖。
+//! Does not read JOSM's `defaultpresets.xml` (GPL). Group names are public editing concepts,
+//! compared against schema id prefixes. Groups with a count of 0 go into the missing list rather than being treated as covered.
 
 use crate::schema::schema_presets;
 
-/// 一行覆盖率。
+/// One coverage row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverageRow {
-    /// JOSM 里用户认识的分组名。
+    /// A group name users know from JOSM.
     pub josm_group: &'static str,
-    /// schema id 前缀，例如 `amenity/`。
+    /// schema id prefix, e.g. `amenity/`.
     pub prefix: &'static str,
-    /// 命中的预设数。
+    /// Number of matched presets.
     pub count: usize,
 }
 
-/// 覆盖率报告。
+/// Coverage report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverageReport {
-    /// 每个分组一行，包括计数为 0 的。
+    /// One row per group, including those with a count of 0.
     pub rows: Vec<CoverageRow>,
 }
 
 impl CoverageReport {
-    /// 计数为 0 的分组。这些是相对 JOSM 默认分组的缺口。
+    /// Groups with a count of 0. These are the gaps relative to JOSM's default groups.
     pub fn missing(&self) -> Vec<&'static str> {
         self.rows
             .iter()
@@ -33,13 +33,13 @@ impl CoverageReport {
             .collect()
     }
 
-    /// 至少有一条预设的分组数。
+    /// Number of groups with at least one preset.
     pub fn covered_groups(&self) -> usize {
         self.rows.iter().filter(|row| row.count > 0).count()
     }
 }
 
-/// JOSM 默认预设里用户会找的分组，以及 schema id 前缀。
+/// Groups users look for in JOSM's default presets, and their schema id prefixes.
 pub const JOSM_GROUPS: &[(&str, &str)] = &[
     ("Highways", "highway/"),
     ("Waterways", "waterway/"),
@@ -65,7 +65,7 @@ pub const JOSM_GROUPS: &[(&str, &str)] = &[
     ("Pipelines", "pipeline/"),
 ];
 
-/// 对照当前嵌入的 schema 预设。
+/// Compare against the currently embedded schema presets.
 pub fn preset_coverage() -> CoverageReport {
     let presets = schema_presets();
     let rows = JOSM_GROUPS
@@ -82,20 +82,20 @@ pub fn preset_coverage() -> CoverageReport {
     CoverageReport { rows }
 }
 
-/// Markdown 表，给 `docs/prototypes/presets-coverage.md` 和 CLI 用。
+/// Markdown table, used by `docs/prototypes/presets-coverage.md` and the CLI.
 pub fn coverage_markdown() -> String {
     let report = preset_coverage();
-    let mut out = String::from("| JOSM 分组 | schema 前缀 | 条数 |\n|---|---|---:|\n");
+    let mut out = String::from("| JOSM group | schema prefix | count |\n|---|---|---:|\n");
     for row in &report.rows {
         out.push_str(&format!(
             "| {} | `{}` | {} |\n",
             row.josm_group, row.prefix, row.count
         ));
     }
-    out.push_str("\n缺失分组：");
+    out.push_str("\nMissing groups: ");
     let missing = report.missing();
     if missing.is_empty() {
-        out.push_str("（无）\n");
+        out.push_str("(none)\n");
     } else {
         out.push('\n');
         for name in missing {

@@ -1,10 +1,10 @@
-//! NEO 桌面应用入口。
+//! NEO desktop application entry point.
 //!
-//! 这里只做三件事：初始化日志、构造 eframe 窗口选项、创建 [`NeoApp`]。
-//! 业务逻辑全部在 `crates/*`，本文件保持"薄"（ADR-0001 的验证点之一）。
+//! This file only does three things: initialize logging, build the eframe window options, and create [`NeoApp`].
+//! All business logic lives in `crates/*`; this file stays "thin" (one of ADR-0001's verification points).
 
-// Windows release 版使用 GUI 子系统：双击 exe 不再弹出黑色控制台窗口。
-// debug 构建保留控制台子系统，方便直接看 tracing 日志。
+// Windows release builds use the GUI subsystem: double-clicking the exe no longer pops up a black console window.
+// Debug builds keep the console subsystem so tracing logs can be read directly.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
@@ -13,12 +13,12 @@ mod sidecar;
 
 use app::NeoApp;
 
-/// 文件日志 writer（NEO_PERF_LOG 用于性能分析；避免依赖 shell 重定向）。
+/// File log writer (NEO_PERF_LOG is used for performance profiling; avoids relying on shell redirection).
 struct FileWriter(std::sync::Arc<std::sync::Mutex<std::fs::File>>);
 
 impl std::io::Write for FileWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // 锁中毒时依然写日志，而不是让任何一条日志 panic 掉整个进程。
+        // Keep writing logs even if the lock is poisoned, instead of letting a single log call panic the whole process.
         let mut guard = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.write_all(buf)?;
         guard.flush()?;
@@ -31,7 +31,7 @@ impl std::io::Write for FileWriter {
 }
 
 fn main() -> eframe::Result {
-    // 任何 panic 都写一份可诊断文件（release 无控制台）。
+    // Write a diagnosable file on any panic (release has no console).
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let path = std::env::temp_dir().join("NEO").join("neo-panic.txt");
@@ -65,7 +65,10 @@ fn main() -> eframe::Result {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
-    // 窗口/任务栏图标（exe 文件图标由 build.rs 嵌入 assets/neo.ico）。
+    // English is the default UI language; pick a shipped translation when the OS locale matches.
+    neo_i18n::set_language(app::locale::startup_language());
+
+    // Window/taskbar icon (the exe file icon is embedded by build.rs from assets/neo.ico).
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1600.0, 1000.0])
         .with_min_inner_size([960.0, 600.0])
@@ -75,7 +78,7 @@ fn main() -> eframe::Result {
     }
     let options = eframe::NativeOptions {
         viewport,
-        // wgpu 侧 MSAA：0 = off。必须与 `MapGpu` 的 sample_count 一致（见 map_callback）。
+        // MSAA on the wgpu side: 0 = off. Must match `MapGpu`'s sample_count (see map_callback).
         multisampling: 0,
         ..Default::default()
     };
@@ -89,7 +92,7 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     );
-    // release 是 GUI 子系统（没有控制台），启动失败时用对话框 + 错误文件兜底，避免"双击没反应"。
+    // Release uses the GUI subsystem (no console); on startup failure fall back to a dialog + error file so a double-click doesn't silently do nothing.
     if let Err(err) = &result {
         let message = neo_i18n::tf("app.start_failed", &[("err", &err.to_string())]);
         let path = std::env::temp_dir().join("NEO").join("neo-startup-error.txt");
@@ -106,7 +109,7 @@ fn main() -> eframe::Result {
     result
 }
 
-/// 从内置 PNG 解码窗口图标。
+/// Decode the window icon from the built-in PNG.
 fn load_window_icon() -> Option<egui::IconData> {
     let image = image::load_from_memory(include_bytes!("../../../assets/neo-icon.png"))
         .ok()?

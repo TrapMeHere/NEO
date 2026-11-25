@@ -1,4 +1,4 @@
-//! NeoApp::actions 方法。行为与拆分前的 app.rs 相同。
+//! NeoApp::actions methods. Same behavior as before the app.rs split.
 
 use anyhow::{Context, Result};
 use neo_core::{LatLon, ObjectId, ObjectKind};
@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use super::{NeoApp, NotesRequest, autosave_dir, data_dir, kind_from_name, load_dataset_file};
 
-/// 把 ID 列表压成一行提示文本（最多列 5 个，其余省略）。
+/// Flattens an ID list into one hint line (at most 5 listed; the rest omitted).
 fn id_list(ids: &[ObjectId]) -> String {
     const MAX: usize = 5;
     let mut shown: Vec<String> = ids.iter().take(MAX).map(|id| id.0.to_string()).collect();
@@ -35,14 +35,14 @@ impl NeoApp {
         if self.imagery.enabled {
             self.imagery_listed = true;
         }
-        // 打开/下载均合并进图层，不覆盖当前编辑，故不进 destructive。
+        // Open/download both merge into layers and don't overwrite current edits, so they are not destructive.
         let destructive = actions.open_session || actions.recover_journal;
         if destructive && !self.confirm_discard() {
             return Ok(());
         }
-        // 非活动图层是只读的：画布已拦截，但菜
-        // 快捷
-        // 标签面板也必须拦截。没有数据图层时同样不能改数据。
+        // Inactive layers are read-only: the canvas already blocks it, but the menu
+        // shortcuts
+        // and the tag panel must block it too. With no data layer, data cannot be modified either.
         if !self.data_listed || !self.layer_active {
             actions.undo = false;
             actions.redo = false;
@@ -509,7 +509,7 @@ impl NeoApp {
             && let Some(position) = self.parked_slot(index)
             && position < self.parked_layers.len()
         {
-            // 临时取出停靠层，避免与活动 editor 同时借用。
+            // Temporarily take the parked layer so it is not borrowed at the same time as the active editor.
             let layer = self.parked_layers.remove(position);
             let result = self.editor.merge_from_dataset(layer.editor.data());
             let imported_bboxes = layer.downloaded_bboxes.clone();
@@ -630,7 +630,7 @@ impl NeoApp {
             write_osm_xml_file(self.editor.data(), &path, XmlWriteMode::Josm)
                 .with_context(|| tf("app.error.save", &[("path", &path.display().to_string())]))?;
             self.editor.history_mut().clear_dirty();
-            // 保存后的文件成为新的恢复基线，journal 从零开始
+            // The saved file becomes the new recovery baseline, and the journal starts from zero
             self.data_path = Some(path.clone());
             self.editor.reset_journal();
             self.persist_state();
@@ -679,7 +679,7 @@ impl NeoApp {
                 .add_filter("JOSM session", &["jos", "joz"])
                 .save_file()
             {
-                // 会话必须包含当前内存中的编辑（不能只引用磁盘上的旧文件）
+                // The session must include the edits currently in memory (not just an old file on disk)
                 let data_file = path.with_file_name(format!(
                     "{}.data.osm",
                     path.file_stem()
@@ -810,7 +810,7 @@ impl NeoApp {
                 UiMode::DrawArea => ToolKind::DrawArea,
             });
             if mode == UiMode::Measure {
-                // 进入测距时重置起点
+                // Reset the origin when entering measure mode
                 self.measure_start = None;
                 self.measure_end = None;
             }
@@ -984,9 +984,9 @@ impl NeoApp {
                         wanted.push((kind, id));
                     }
                 }
-                // 级联删除（JOSM 语义）：节点被 way 引用时不再直接拒绝，而是把引用它的
-                // way 一并修正；若 way 会因此不足 2 个节点，则整条删除 —— 这种破坏性
-                // 结果需要用户再按一次删除确认，避免误删一条道路。
+                // Cascading delete (JOSM semantics): when a node is referenced by a way, don't reject it outright;
+                // instead fix the referencing ways; if a way would be left with fewer than 2 nodes, delete the whole
+                // way — that destructive result needs a second delete confirmation from the user to avoid losing a road by mistake.
                 match neo_editor::plan_delete(&mut self.editor, &wanted) {
                     Ok(plan) => {
                         let needs_confirm = !plan.reaped_ways.is_empty()
@@ -1035,7 +1035,7 @@ impl NeoApp {
             && let Some((ObjectKind::Way, way)) = self.selection_target()
             && let Some(handle) = self.editor.data().way_handle(way)
         {
-            // 反查表必须是新的：下面要判断哪些节点被 relation / 其它 way 引用。
+            // The reverse lookup table must be fresh: the next step decides which nodes are referenced by relations / other ways.
             self.editor.refresh_referrers();
             let nodes = self.editor.data().way_node_ids(handle);
             let mut points: Vec<WorldPoint> = Vec::with_capacity(nodes.len());
@@ -1048,12 +1048,12 @@ impl NeoApp {
                 };
                 points.push(WorldPoint::from_latlon(pos));
             }
-            // 位置缺失时 points 会比 nodes 短，RDP 下标就会与 nodes 错位 —— 宁可不简化。
+            // When a position is missing, points becomes shorter than nodes and the RDP indices get out of sync with nodes — better not to simplify at all.
             if points.len() == nodes.len() && points.len() > 2 {
                 let tolerance = self.camera.meters_per_px() * self.settings.simplify_px.max(0.5);
                 let keep = neo_geo::geometry::simplify_rdp_indices(&points, tolerance);
-                // 简化不得删掉"有语义"的节点：带 tag 的、被 relation 引用的、与其它
-                // way 共享的 —— 否则交叉口/公交站/门会静默消失，几何也会被扯断。
+                // Simplification must not drop "meaningful" nodes: those with tags, referenced by a relation, or
+                // shared with other ways — otherwise junctions/bus stops/gates silently disappear and geometry gets torn.
                 let mut keep_set: std::collections::BTreeSet<usize> = keep.iter().copied().collect();
                 for (index, id) in nodes.iter().enumerate() {
                     if keep_set.contains(&index) {

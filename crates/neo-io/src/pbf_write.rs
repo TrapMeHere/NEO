@@ -1,6 +1,6 @@
-//! PBF **写出**编码器（`osmpbf` 只读，写侧自研）。
+//! PBF **writing** encoder (`osmpbf` is read-only, so the write side is self-built).
 //!
-//! 直接实现 OSM PBF 文件格式的 protobuf wire 编码（docs/08 §2.7）：
+//! Implements protobuf wire encoding of the OSM PBF file format directly (docs/08 §2.7):
 //!
 //! ```text
 //! [u32 BE header_len][BlobHeader{type, datasize}][Blob{raw|zlib_data, raw_size}]
@@ -8,10 +8,10 @@
 //! OSMData  : PrimitiveBlock{ StringTable, PrimitiveGroup{nodes|ways|relations} }
 //! ```
 //!
-//! 坐标：NEO 的 `Coord` 是 1e-7 度（decimicro），PBF 的 `Node.lat/lon` 是
-//! `granularity=100` 纳米度单位 → 数值上**恰好等于 decimicro**，无需换算。
+//! Coordinates: NEO's `Coord` is 1e-7 degrees (decimicro), and PBF's `Node.lat/lon` use
+//! `granularity=100` nanodegree units → numerically **exactly equal to decimicro**, so no conversion is needed.
 //!
-//! 分块：节点 8k/块、way 2k/块、relation 512/块；每块独立 string table（简单且流式）。
+//! Blocking: nodes 8k/block, ways 2k/block, relations 512/block; each block has its own string table (simple and streaming).
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -22,10 +22,10 @@ use neo_store::{DataSet, NodeSlot, WaySlot};
 
 use crate::xml::XmlWriteMode;
 
-/// 写出选项。
+/// Write options.
 #[derive(Clone, Copy, Debug)]
 pub struct PbfWriteOptions {
-    /// 是否 zlib 压缩（默认 true；关闭后文件更大但可调试）。
+    /// Whether to zlib-compress (default true; disabling makes files larger but debuggable).
     pub compress: bool,
 }
 
@@ -35,18 +35,18 @@ impl Default for PbfWriteOptions {
     }
 }
 
-/// 写出统计。
+/// Write statistics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PbfWriteReport {
-    /// 节点数。
+    /// Node count.
     pub nodes: u64,
-    /// Way 数。
+    /// Way count.
     pub ways: u64,
-    /// Relation 数。
+    /// Relation count.
     pub relations: u64,
-    /// 输出字节数。
+    /// Output size in bytes.
     pub bytes: u64,
-    /// blob 数（header + data）。
+    /// Number of blobs (header + data).
     pub blobs: u64,
 }
 
@@ -60,12 +60,12 @@ impl core::fmt::Display for PbfWriteReport {
     }
 }
 
-/// 控制块大小（不可调，内部常量）。
+/// Controls block sizes (not configurable; internal constants).
 const NODE_CHUNK: usize = 8192;
 const WAY_CHUNK: usize = 2048;
 const RELATION_CHUNK: usize = 512;
 
-/// 写 PBF 到 writer。
+/// Writes PBF to a writer.
 pub fn write_pbf<W: Write>(
     data: &DataSet,
     out: &mut W,
@@ -76,8 +76,8 @@ pub fn write_pbf<W: Write>(
     // --- OSMHeader ---
     let mut header = Vec::new();
     put_bytes_field(&mut header, 4, b"OsmSchema-V0.6");
-    // 写了 Info.visible=false 就必须声明 HistoricalInformation（osmformat.proto 的 MUST），
-    // 否则读者会把已删除对象当存活对象读回。
+    // Writing Info.visible=false requires declaring HistoricalInformation (a MUST in osmformat.proto);
+    // otherwise readers treat deleted objects as alive.
     let has_history = data.iter_nodes().any(|node| !node.meta.visible)
         || data.iter_ways().any(|way| !way.meta.visible)
         || data.iter_relations().any(|rel| !rel.meta.visible);
@@ -87,7 +87,7 @@ pub fn write_pbf<W: Write>(
     write_blob(out, "OSMHeader", &header, opts.compress)?;
     report.blobs += 1;
 
-    // --- 节点 ---
+    // --- Nodes ---
     let node_refs: Vec<_> = data.iter_nodes().collect();
     for chunk in node_refs.chunks(NODE_CHUNK) {
         let mut block = BlockWriter::new();
@@ -126,7 +126,7 @@ pub fn write_pbf<W: Write>(
     Ok(report)
 }
 
-/// 写文件。
+/// Writes a file.
 pub fn write_pbf_file(
     data: &DataSet,
     path: impl AsRef<Path>,
@@ -177,7 +177,7 @@ impl<W: Write> Write for CountingWriter<W> {
     }
 }
 
-/// 单块构建器：一个 `PrimitiveBlock` = string table + 一个 group。
+/// Single-block builder: one `PrimitiveBlock` = string table + one group.
 struct BlockWriter {
     strings: Vec<String>,
     index: HashMap<String, u32>,
@@ -188,7 +188,7 @@ struct BlockWriter {
 impl BlockWriter {
     fn new() -> Self {
         let mut index = HashMap::new();
-        // string table 的索引 0 必须是空字符串
+        // Index 0 of the string table must be the empty string
         index.insert(String::new(), 0);
         Self {
             strings: vec![String::new()],
@@ -249,8 +249,8 @@ impl BlockWriter {
         let (keys, vals) = self.intern_pairs(data, node.tags);
         let info = self.info_bytes(data, &node.meta);
         let mut msg = Vec::new();
-        // 注意：osmformat.Node.id 是 **sint64**（zigzag），Way/Relation.id 是 int64；
-        // 写错会让 osmpbf 读回负 ID，导致 way 引用全部悬空。
+        // Note: osmformat.Node.id is **sint64** (zigzag), while Way/Relation.id is int64;
+        // a mistake here makes osmpbf read back negative ids, leaving every way reference dangling.
         put_varint_field(&mut msg, 1, zigzag(node.id.0));
         put_packed_varint(&mut msg, 2, keys.iter().map(|v| u64::from(*v)));
         put_packed_varint(&mut msg, 3, vals.iter().map(|v| u64::from(*v)));
@@ -259,7 +259,7 @@ impl BlockWriter {
         }
         put_varint_field(&mut msg, 8, zigzag(i64::from(node.pos.lat.units())));
         put_varint_field(&mut msg, 9, zigzag(i64::from(node.pos.lon.units())));
-        // PrimitiveGroup.nodes = field 1（message）
+        // PrimitiveGroup.nodes = field 1 (message)
         put_bytes_field(&mut self.group, 1, &msg);
         self.count += 1;
     }
@@ -414,12 +414,12 @@ fn put_packed_varint(buf: &mut Vec<u8>, field: u64, values: impl Iterator<Item =
     put_bytes_field(buf, field, &packed);
 }
 
-/// sint64 delta 编码（way refs / relation memids）。
+/// sint64 delta encoding (way refs / relation memids).
 fn put_packed_sint_delta(buf: &mut Vec<u8>, field: u64, values: &[i64]) -> std::io::Result<()> {
     let mut prev = 0i64;
     let mut packed = Vec::with_capacity(values.len());
     for &v in values {
-        // i64::MIN 附近的 ID 做减法会溢出；宁可报错也不能写出错误的引用。
+        // Subtracting near i64::MIN overflows; an error is preferable to writing a wrong reference.
         let delta = v.checked_sub(prev).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -438,7 +438,7 @@ fn zigzag(value: i64) -> u64 {
 }
 
 fn write_blob<W: Write>(out: &mut W, blob_type: &str, raw: &[u8], compress: bool) -> std::io::Result<()> {
-    // PBF 规范上限：Blob 的未压缩数据 ≤ 32 MiB，BlobHeader ≤ 64 KiB。
+    // PBF spec limits: uncompressed Blob data ≤ 32 MiB, BlobHeader ≤ 64 KiB.
     const MAX_BLOB: usize = 32 * 1024 * 1024;
     const MAX_HEADER: usize = 64 * 1024;
     if raw.len() > MAX_BLOB {

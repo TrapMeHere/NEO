@@ -11,7 +11,7 @@ license.workspace = true
 
 [features]
 default = []
-# 默认关闭：wasmtime 体积大，且不进入最小可玩集（docs/02 §2.7）。
+# Off by default: wasmtime is large and is not part of the minimal playable set (docs/02 §2.7).
 wasm-plugins = ["dep:wasmtime"]
 
 [dependencies]

@@ -1,11 +1,11 @@
-//! OSM XML 的 RFC 3339 / ISO-8601 UTC 时间戳。
+//! RFC 3339 / ISO-8601 UTC timestamps for OSM XML.
 //!
-//! OSM 数据模型内部用 Unix 秒（[`neo_core::Meta::timestamp`]），而 OSM XML 0.6
-//! 的属性是 `YYYY-MM-DDTHH:MM:SSZ`。把整数直接写进 XML 会产出**非法 OSM XML**，
-//! 读取真实文件时又会被解析成 0（元数据静默丢失）。这里提供无第三方依赖的
-//! 双向转换（UTC、秒精度，允许读取小数秒）。
+//! Internally the OSM data model uses Unix seconds ([`neo_core::Meta::timestamp`]), while OSM XML 0.6
+//! attributes are `YYYY-MM-DDTHH:MM:SSZ`. Writing integers straight into XML produces **invalid OSM XML**,
+//! and reading real files parses them to 0 (metadata silently lost). This module provides a dependency-free
+//! two-way conversion (UTC, second precision, fractional seconds accepted on read).
 
-/// Unix 秒 → `YYYY-MM-DDTHH:MM:SSZ`。
+/// Unix seconds → `YYYY-MM-DDTHH:MM:SSZ`.
 pub fn format_timestamp(unix_secs: i64) -> String {
     let days = unix_secs.div_euclid(86_400);
     let seconds_of_day = unix_secs.rem_euclid(86_400);
@@ -16,13 +16,13 @@ pub fn format_timestamp(unix_secs: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
-/// `YYYY-MM-DDTHH:MM:SSZ`（可带小数秒）→ Unix 秒。
+/// `YYYY-MM-DDTHH:MM:SSZ` (with optional fractional seconds) → Unix seconds.
 ///
-/// 严格校验范围与分隔符；任何不合法输入返回 `None`（调用方应报解析错误而不是
-/// 静默当成 0）。
+/// Strictly validates the range and separators; any invalid input returns `None` (callers should report a parse
+/// error rather than silently treating it as 0).
 pub fn parse_timestamp(text: &str) -> Option<i64> {
     let bytes = text.as_bytes();
-    // 最短 `1970-01-01T00:00:00Z` = 20 字节。
+    // Shortest `1970-01-01T00:00:00Z` = 20 bytes.
     if bytes.len() < 20 {
         return None;
     }
@@ -55,7 +55,7 @@ pub fn parse_timestamp(text: &str) -> Option<i64> {
     if day > max_day {
         return None;
     }
-    // 跳过小数秒。
+    // Skip fractional seconds.
     let mut index = 19;
     if bytes.get(index) == Some(&b'.') {
         index += 1;
@@ -69,7 +69,7 @@ pub fn parse_timestamp(text: &str) -> Option<i64> {
     }
     match bytes.get(index) {
         Some(b'Z' | b'z') => {}
-        // 只接受 `+00:00` / `-00:00` 形式的 UTC（OSM 一律 Z）。
+        // Only accept UTC in the form `+00:00` / `-00:00` (OSM always uses Z).
         Some(b'+') | Some(b'-') => {
             let offset = text.get(index + 1..index + 6)?;
             if offset != "00:00" {
@@ -90,7 +90,7 @@ pub fn parse_timestamp(text: &str) -> Option<i64> {
     )
 }
 
-/// 公历日期 → 1970-01-01 起的天数（Howard Hinnant 算法）。
+/// Gregorian date → days since 1970-01-01 (Howard Hinnant's algorithm).
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
@@ -101,7 +101,7 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// 1970-01-01 起的天数 → 公历日期。
+/// Days since 1970-01-01 → Gregorian date.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);

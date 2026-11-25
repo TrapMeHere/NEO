@@ -1,79 +1,79 @@
-# ADR-0004 · 数据 / 渲染 / 编辑三模型相互独立
+# ADR-0004 · Data / render / edit models are mutually independent
 
-## 状态
+## Status
 
-- 已接受：2026-11-15。
-- 可逆性：**中**。它决定了 `neo-store` / `neo-scene` / `neo-render` / `neo-editor` 四个 crate 的划分与公开签名。
-- 影响面：`SceneFrame` 的 POD 约束、类型防火墙、增量更新策略（[ADR-0009](./0009-incremental-update.md)）。
-- 相关文档：[01](../01-system-architecture.md) §2.3、[02](../02-workspace-and-dependency-rules.md) §2.4、[05](../05-renderer-wgpu.md)。
+- Accepted: 2026-11-15.
+- Reversibility: **Medium**. It determines the split and public signatures of the four crates `neo-store` / `neo-scene` / `neo-render` / `neo-editor`.
+- Scope: the POD constraint on `SceneFrame`, type firewalls, incremental update strategy ([ADR-0009](./0009-incremental-update.md)).
+- Related docs: [01](../01-system-architecture.md) §2.3, [02](../02-workspace-and-dependency-rules.md) §2.4, [05](../05-renderer-wgpu.md).
 
-## 背景
+## Background
 
-OSM 编辑器最容易腐化的地方是"让渲染直接读数据结构、让编辑直接改渲染对象"。JOSM 的 `OsmDataLayer` 把数据、绘制数据与命令混在一起，结果是：加一种渲染特性要改数据层；渲染缓存与编辑一致性靠约定；单测必须拉起 UI。
+The place where an OSM editor rots most easily is "letting rendering read the data structures directly, letting editing modify render objects directly". JOSM's `OsmDataLayer` mixes data, drawing data, and commands, with the result that adding a rendering feature requires changing the data layer; render-cache and edit consistency rely on convention; and unit tests must spin up the UI.
 
-NEO 要在 10M 对象上做增量更新、并行场景构建与 GPU 拾取，必须先把"三种模型"的边界钉死，否则每一层都会向上伸手。
+NEO needs incremental updates, parallel scene building, and GPU picking on 10M objects, so it must first nail down the boundaries of the "three models"; otherwise every layer will reach upward.
 
-## 决策
+## Decision
 
-系统内存在三种**互不共享可变状态**的模型，只允许单向投影：
+The system contains three models that **share no mutable state**, with only one-way projections allowed:
 
 ```
- 编辑模型                     数据模型                        渲染模型
- EditCommand/EditTx  ──提交──► DataSet ──publish──► Snapshot ──build_scene──► SceneFrame
- (write-set, 影子层)          (SoA, 唯一可变)      (不可变, Arc)        (POD 顶点/批次)
+ Edit model                   Data model                     Render model
+ EditCommand/EditTx ──commit──► DataSet ──publish──► Snapshot ──build_scene──► SceneFrame
+ (write-set, shadow layer)     (SoA, sole mutable)   (immutable, Arc)      (POD vertices/batches)
       ▲                                                                        │
-      └────── 工具意图（EditCommand） ◄── ObjectId ◄── GPU id pass ◄────────────┘
+      └────── tool intent (EditCommand) ◄── ObjectId ◄── GPU id pass ◄─────────┘
 ```
 
-| 模型 | 归属 crate | 内容 | 谁可读 | 谁可写 |
+| Model | Owning crate | Contents | Who may read | Who may write |
 |---|---|---|---|---|
-| 数据模型 | `neo-store`（实体来自 `neo-osm`） | `DataSet`（SoA 列、索引、引用集、dirty）、`Snapshot`（冻结视图） | 所有上层只读 | 仅 `EditTx`（经 `Editor`） |
-| 编辑模型 | `neo-editor` / `neo-tools` | `EditCommand`、`EditTx`、`History`、`ChangeSet`、`Conflict` | `neo-ui`、`neo-plugin` | 仅编辑器自身 |
-| 渲染模型 | `neo-scene` / `neo-render` | `SceneFrame`（批次、`MapVertex`、pick id 表）、GPU buffer | `neo-render` 独占 | 仅 `neo-scene` 构建、`neo-render` 上传 |
+| Data model | `neo-store` (entities from `neo-osm`) | `DataSet` (SoA columns, indexes, reference sets, dirty), `Snapshot` (frozen view) | All upper layers, read-only | Only `EditTx` (via `Editor`) |
+| Edit model | `neo-editor` / `neo-tools` | `EditCommand`, `EditTx`, `History`, `ChangeSet`, `Conflict` | `neo-ui`, `neo-plugin` | Only the editor itself |
+| Render model | `neo-scene` / `neo-render` | `SceneFrame` (batches, `MapVertex`, pick id table), GPU buffers | `neo-render` exclusively | Only `neo-scene` builds, `neo-render` uploads |
 
-**四条硬约束**：
+**Four hard constraints**:
 
-1. `SceneFrame` 是 POD：不含 `Arc`、不含 `Snapshot` 引用、不含 `ObjectRef` 借用；拾取 id 是 `u32`，映射表由 `SceneFrame` 自持。
-2. `neo-render` 的公开签名里不出现 `neo_store`/`neo_editor` 类型（类型防火墙）。
-3. `Snapshot` 没有 `&mut self` 方法；渲染持有的永远是某一版本的不可变视图。
-4. 编辑模型不生产渲染数据；渲染模型不懂 OSM 语义（不知道什么是 way、标签、relation）。
+1. `SceneFrame` is POD: no `Arc`, no `Snapshot` reference, no `ObjectRef` borrow; pick ids are `u32`, and the mapping table is owned by `SceneFrame`.
+2. `neo-render`'s public signatures contain no `neo_store`/`neo_editor` types (type firewall).
+3. `Snapshot` has no `&mut self` methods; rendering always holds an immutable view of some version.
+4. The edit model does not produce render data; the render model does not understand OSM semantics (it does not know what a way, a tag, or a relation is).
 
-## 替代方案
+## Alternatives
 
-| 方案 | 优点 | 否决理由 |
+| Option | Pros | Why rejected |
 |---|---|---|
-| ECS 共享 world（实体/组件/系统） | 并行系统、数据导向 | 编辑需要"全局顺序 + 逆操作"，ECS 并行系统天然打散顺序；way→node 引用集不是组件关系 |
-| 渲染直接从 `Snapshot` 逐帧绘制（无中间模型） | 无派生内存、无一致性问题 | 10M 对象下逐图元绘制不可行；无法按 layer 合批；GPU 拾取无处挂 id |
-| 保留式场景图（retained scene graph） | 天然增量、结构稳定 | 场景图与数据生命周期纠缠，删除/撤销易出悬垂节点；样式切换要遍历图 |
-| 编辑直接改渲染对象，反向同步回数据 | 少一次拷贝 | 数据不再单一真相；撤销/上传/校验全部失去依据 |
-| 单一"上帝模型"（数据里带渲染缓存字段） | 访问最快、无需转换 | 缓存失效逻辑散落各处；序列化/持久化被缓存污染；测试无法分离 |
+| ECS shared world (entities/components/systems) | Parallel systems, data-oriented | Editing needs "global order + inverse operations", and ECS parallel systems naturally break the order; way→node reference sets are not component relationships |
+| Render directly from `Snapshot` every frame (no intermediate model) | No derived memory, no consistency problems | Per-primitive drawing at 10M objects is infeasible; cannot batch by layer; GPU picking has nowhere to attach ids |
+| Retained scene graph | Naturally incremental, stable structure | The scene graph becomes entangled with data lifetimes; delete/undo easily leaves dangling nodes; style switches require traversing the graph |
+| Editing directly modifies render objects and syncs back to data | One less copy | Data is no longer the single source of truth; undo/upload/validation all lose their basis |
+| Single "god model" (render cache fields inside data) | Fastest access, no conversion | Cache invalidation logic is scattered; serialization/persistence gets polluted by caches; tests cannot be separated |
 
-## 后果
+## Consequences
 
-**正面**
+**Positive**
 
-- 三模型可独立测试：headless 编辑测试、`SceneFrame` 快照测试、GPU 冒烟测试互不依赖。
-- 场景构建可在 Rayon 上并行（只读 `Snapshot`），编辑与渲染互不阻塞。
-- `SceneFrame` 是纯数据，可用 `bytemuck` 直传 GPU；Pick id 表使拾取不依赖几何反查。
+- The three models can be tested independently: headless edit tests, `SceneFrame` snapshot tests, and GPU smoke tests do not depend on each other.
+- Scene building can be parallelized on Rayon (read-only `Snapshot`), and editing and rendering do not block each other.
+- `SceneFrame` is pure data and can be passed directly to the GPU with `bytemuck`; the pick id table means picking does not rely on reverse geometry lookups.
 
-**负面**
+**Negative**
 
-- **派生内存**：`DataSet` 与 `SceneFrame` 同时存在；10M 对象下必须靠 LOD 与可见集裁剪，否则内存翻倍（R6）。
-- **转换成本**：每次提交要重建受影响批次；失效范围算错会出现"画面滞后于数据"（用 version 键与 dirty 区间压制）。
-- **映射维护**：pick id 表随批次重建，拾取结果必须校验 `Handle.gen`，否则撤销后可能命中已删对象。
+- **Derived memory**: `DataSet` and `SceneFrame` coexist; at 10M objects this must rely on LOD and visible-set culling, otherwise memory doubles (R6).
+- **Conversion cost**: every commit must rebuild the affected batches; miscalculating the invalidation scope causes "the picture lags behind the data" (suppressed with version keys and dirty ranges).
+- **Mapping maintenance**: the pick id table is rebuilt with batches; pick results must validate `Handle.gen`, otherwise after an undo a pick may hit a deleted object.
 
-## 验证
+## Verification
 
-1. 类型防火墙：`neo-render` 的 API 快照中不出现 `neo_store`/`neo_editor` 路径。
-2. POD 性：对 `SceneFrame`/`MapVertex` 做 `bytemuck::Pod` 编译断言，且结构体不含 `Arc`/`&`/`String`。
-3. 指针同一性：提交后渲染线程拿到的 `Snapshot` 与写者发布的 `Arc` 满足 `Arc::ptr_eq`。
-4. 一致性：随机 10k 次编辑 + 场景重建后，`pick_ids` 中每个 id 都能在对应 `Snapshot` 版本解析到对象（property test）。
-5. 独立性：移除 `neo-render` 依赖后，`neo-editor` 全部测试仍通过。
-6. 拾取正确性：`Handle.gen` 失配时必须返回 `None`（不返回旧对象），构造删除-重建序列测试。
+1. Type firewall: `neo-render`'s API snapshot contains no `neo_store`/`neo_editor` paths.
+2. PODness: compile-time `bytemuck::Pod` assertions on `SceneFrame`/`MapVertex`, and the structs contain no `Arc`/`&`/`String`.
+3. Pointer identity: after a commit, the `Snapshot` obtained by the render thread and the `Arc` published by the writer satisfy `Arc::ptr_eq`.
+4. Consistency: after 10k random edits + scene rebuilds, every id in `pick_ids` resolves to an object in the corresponding `Snapshot` version (property test).
+5. Independence: after removing the `neo-render` dependency, all `neo-editor` tests still pass.
+6. Picking correctness: on a `Handle.gen` mismatch, must return `None` (not the old object); construct a delete-recreate sequence test.
 
-## 参考
+## References
 
-- OSM 数据模型（Node/Way/Relation 语义）：https://wiki.openstreetmap.org/wiki/Elements
-- JOSM 图层与绘制模型（反面教材与行为基准）：https://josm.openstreetmap.de/wiki/Help/Concepts/Object
-- `bytemuck`（POD 与零拷贝上传）：https://docs.rs/bytemuck/latest/bytemuck/
-- wgpu 顶点缓冲布局：https://docs.rs/wgpu/30.0.2/wgpu/struct.VertexBufferLayout.html
+- OSM data model (Node/Way/Relation semantics): https://wiki.openstreetmap.org/wiki/Elements
+- JOSM layers and drawing model (counterexample and behavioral baseline): https://josm.openstreetmap.de/wiki/Help/Concepts/Object
+- `bytemuck` (POD and zero-copy upload): https://docs.rs/bytemuck/latest/bytemuck/
+- wgpu vertex buffer layout: https://docs.rs/wgpu/30.0.2/wgpu/struct.VertexBufferLayout.html

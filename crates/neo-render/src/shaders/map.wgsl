@@ -48,7 +48,7 @@ fn vs_main(in: VertexIn) -> VertexOut {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    // 非活动图层：去色 + 50% 不透明度（不是盖一层灰色遮罩）。
+    // Inactive layer: desaturated + 50% opacity (not a gray overlay mask).
     let luma = dot(in.color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     let rgb = mix(in.color.rgb, vec3<f32>(luma), camera.grey);
     let alpha = in.color.a * mix(1.0, 0.5, camera.grey);

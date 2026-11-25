@@ -1,47 +1,47 @@
-//! 外部 OSM 标识与对象种类。
+//! External OSM identifiers and object kinds.
 //!
-//! 约定（与 JOSM 一致）：`ObjectId > 0` 表示服务端已有 ID；`ObjectId < 0` 表示本地新建、
-//! 尚未上传的对象；`ObjectId == 0` 保留给"无 ID"。内部存储从不用 OSM ID 直接寻址，
-//! 而是先经 `IdIndex` 映射为 [`crate::Handle`]，见 `neo-store`。
+//! Convention (matching JOSM): `ObjectId > 0` is an ID that already exists on the server; `ObjectId < 0` is an
+//! object created locally and not yet uploaded; `ObjectId == 0` is reserved for "no ID". Internal storage never
+//! addresses objects by OSM ID directly; IDs are first mapped to [`crate::Handle`] via `IdIndex`, see `neo-store`.
 
 use core::fmt;
 
-/// 外部 OSM 对象标识（Node / Way / Relation / Changeset 共用）。
+/// External OSM object identifier (shared by Node / Way / Relation / Changeset).
 ///
-/// 使用 `i64` 而不是 `i32`：OSM 的 node ID 已超过 12 位，changeset ID 仍在增长，
-/// 未来任何 32 位假设都会成为数据损坏风险。
+/// Uses `i64` instead of `i32`: OSM node IDs already exceed 12 digits and changeset IDs keep growing,
+/// so any future 32-bit assumption would be a data-corruption risk.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct ObjectId(pub i64);
 
 impl ObjectId {
-    /// 无 ID 的占位值。
+    /// Placeholder value for "no ID".
     pub const NONE: Self = Self(0);
 
-    /// 构造。
+    /// Construct.
     #[inline]
     pub const fn new(raw: i64) -> Self {
         Self(raw)
     }
 
-    /// 原始值。
+    /// Raw value.
     #[inline]
     pub const fn raw(self) -> i64 {
         self.0
     }
 
-    /// 是否为本地新建（尚未上传）对象。
+    /// Whether this is a locally created (not yet uploaded) object.
     #[inline]
     pub const fn is_local(self) -> bool {
         self.0 < 0
     }
 
-    /// 是否已有服务端 ID。
+    /// Whether a server ID already exists.
     #[inline]
     pub const fn is_server(self) -> bool {
         self.0 > 0
     }
 
-    /// 是否为空 ID。
+    /// Whether this is the empty ID.
     #[inline]
     pub const fn is_none(self) -> bool {
         self.0 == 0
@@ -74,25 +74,25 @@ impl<'de> serde::Deserialize<'de> for ObjectId {
     }
 }
 
-/// OSM 对象种类。
+/// OSM object kind.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 #[repr(u8)]
 pub enum ObjectKind {
-    /// 点。
+    /// Point.
     Node = 0,
-    /// 线 / 闭合面。
+    /// Line / closed area.
     Way = 1,
-    /// 关系。
+    /// Relation.
     Relation = 2,
-    /// 变更集（只用于 API / 元数据，不在空间索引里）。
+    /// Changeset (API / metadata only, not in the spatial index).
     Changeset = 3,
 }
 
 impl ObjectKind {
-    /// 可编辑的图元种类（不含 changeset）。
+    /// Editable primitive kinds (excluding changeset).
     pub const EDITABLE: [Self; 3] = [Self::Node, Self::Way, Self::Relation];
 
-    /// 稳定的小写名字，用于日志、XML/OSC 输出与持久化。
+    /// Stable lowercase name used in logs, XML/OSC output, and persistence.
     #[inline]
     pub const fn type_name(self) -> &'static str {
         match self {
@@ -103,7 +103,7 @@ impl ObjectKind {
         }
     }
 
-    /// 从 `node`/`way`/`relation` 解析。
+    /// Parse from `node`/`way`/`relation`.
     pub fn from_type_name(name: &str) -> Option<Self> {
         match name {
             "node" => Some(Self::Node),

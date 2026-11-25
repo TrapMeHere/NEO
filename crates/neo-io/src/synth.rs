@@ -1,32 +1,32 @@
-//! 确定性合成数据集生成器。
+//! Deterministic synthetic dataset generator.
 //!
-//! 用途：
+//! Purpose:
 //!
-//! * 基准测试不依赖外部下载（Monaco 太小，不能代表百万/千万级）；
-//! * 回归测试可复现（固定 seed → 固定输出）；
-//! * 覆盖编辑器真实的数据形状：节点、道路（多为短 way）、闭合建筑面、
-//!   少量 relation（multipolygon）。
+//! * Benchmarks don't depend on external downloads (Monaco is too small to represent millions/tens of millions);
+//! * Regression tests are reproducible (fixed seed → fixed output);
+//! * Covers the real data shapes an editor sees: nodes, roads (mostly short ways), closed building outlines,
+//!   and a small number of relations (multipolygons).
 //!
-//! 生成的是"城市网格"：`nodes` 个节点铺成 `cols × rows` 网格并加抖动；
-//! 每个网格点向右/向下各连一条 way（模拟道路）；每隔 `SUBDIV` 个格子生成一个
-//! 闭合建筑轮廓（5 个节点）；每 64 条建筑生成一个 multipolygon relation。
+//! It generates a "city grid": `nodes` nodes are laid out as a `cols × rows` grid with jitter;
+//! each grid point connects one way to the right and one downward (simulating roads); every `SUBDIV`
+//! cells a closed building outline is generated (5 nodes); every 64 buildings produce one multipolygon relation.
 
 use neo_core::{LatLon, Meta, NeoError, ObjectId, ObjectKind, Sym};
 use neo_osm::{Node, Relation, RelationMember, Tags, Way};
 use neo_store::DataSet;
 
-/// 合成数据集规格。
+/// Synthetic dataset spec.
 #[derive(Clone, Copy, Debug)]
 pub struct SynthSpec {
-    /// 节点数（会被按网格向上取整到 cols*rows）。
+    /// Node count (rounded up to cols*rows by the grid).
     pub nodes: usize,
-    /// 随机种子。
+    /// Random seed.
     pub seed: u64,
-    /// 网格间距（米）。
+    /// Grid spacing (meters).
     pub spacing_m: f64,
-    /// 基准纬度。
+    /// Base latitude.
     pub origin_lat: f64,
-    /// 基准经度。
+    /// Base longitude.
     pub origin_lon: f64,
 }
 
@@ -43,7 +43,7 @@ impl Default for SynthSpec {
 }
 
 impl SynthSpec {
-    /// 指定节点数的规格。
+    /// Spec with the given node count.
     pub fn with_nodes(nodes: usize) -> Self {
         Self {
             nodes,
@@ -52,12 +52,12 @@ impl SynthSpec {
     }
 }
 
-/// 生成合成数据集。
+/// Generates a synthetic dataset.
 ///
-/// 返回 `(dataset, way_count, relation_count)`。
+/// Returns `(dataset, way_count, relation_count)`.
 pub fn generate(spec: &SynthSpec) -> Result<(DataSet, usize, usize), NeoError> {
     let target = spec.nodes.max(4);
-    // 尽量接近正方形网格。
+    // As close to a square grid as possible.
     let cols = (target as f64).sqrt().ceil() as usize;
     let cols = cols.max(2);
     let rows = target.div_ceil(cols);
@@ -67,7 +67,7 @@ pub fn generate(spec: &SynthSpec) -> Result<(DataSet, usize, usize), NeoError> {
     let degrees_per_m_lat = 1.0 / 111_320.0;
     let degrees_per_m_lon = 1.0 / (111_320.0 * spec.origin_lat.to_radians().cos());
 
-    // 节点：网格 + 小幅抖动，保证几何不退化。
+    // Nodes: grid + small jitter so geometry doesn't degenerate.
     let mut ids: Vec<Vec<ObjectId>> = Vec::with_capacity(rows);
     for row in 0..rows {
         let mut row_ids = Vec::with_capacity(cols);
@@ -88,9 +88,9 @@ pub fn generate(spec: &SynthSpec) -> Result<(DataSet, usize, usize), NeoError> {
         ids.push(row_ids);
     }
 
-    // 道路：横向 + 纵向相邻节点。
-    // 每 8 行/列采样一次，使 node:way 比例接近真实 OSM（约 4–5:1）；
-    // 若每个网格边都生成 way，1M 节点会产生 2M way，只能作为"病态图形"压测。
+    // Roads: horizontally + vertically adjacent nodes.
+    // Sample every 8th row/column so the node:way ratio is close to real OSM (about 4–5:1);
+    // generating a way on every grid edge would turn 1M nodes into 2M ways, usable only as a pathological stress case.
     let highway = ds.intern("highway");
     let residential = ds.intern("residential");
     let stride = 8usize;
@@ -126,7 +126,7 @@ pub fn generate(spec: &SynthSpec) -> Result<(DataSet, usize, usize), NeoError> {
         }
     }
 
-    // 建筑：每隔 4 个格子，用 4 个节点组成闭合轮廓。
+    // Buildings: every 4 cells, a closed outline made of 4 nodes.
     let building = ds.intern("building");
     let yes = ds.intern("yes");
     let mut building_ids: Vec<ObjectId> = Vec::new();
@@ -157,7 +157,7 @@ pub fn generate(spec: &SynthSpec) -> Result<(DataSet, usize, usize), NeoError> {
         }
     }
 
-    // Relation：每 8 个建筑组成员一个 multipolygon（为控制规模，仅引用 way 成员）。
+    // Relations: one multipolygon per 8 building members (way members only, to keep the scale in check).
     let multipolygon = ds.intern("multipolygon");
     let outer_role = ds.intern("outer");
     let empty = Sym::EMPTY;
@@ -190,7 +190,7 @@ pub fn generate(spec: &SynthSpec) -> Result<(DataSet, usize, usize), NeoError> {
     Ok((ds, way_count, relation_count))
 }
 
-/// 极简 xorshift RNG（确定性、无依赖）。
+/// Minimal xorshift RNG (deterministic, no dependencies).
 struct Rng {
     state: u64,
 }

@@ -1,12 +1,12 @@
-//! GPU culling：用 compute shader 把 indirect 参数里的 `instance_count` 写成 0。
+//! GPU culling: use a compute shader to write 0 into `instance_count` of the indirect parameters.
 //!
-//! 几何仍在原 buffer 里；真正少画是靠 `draw_indexed_indirect` 读到 0 个实例。
-//! 这是阶段 6 的剔除路径，不替换默认的 `draw_indexed`。
+//! The geometry is still in the original buffer; actually drawing less relies on `draw_indexed_indirect` reading 0 instances.
+//! This is the Phase 6 culling path; it does not replace the default `draw_indexed`.
 
 use crate::gpu::RenderError;
 use crate::scene_gpu::GpuBatch;
 
-/// 把一个批次的 indirect 参数实例数清零。调用方随后用 `GpuScene::indirect = true` 绘制。
+/// Zero the indirect parameter instance count of one batch. The caller then draws with `GpuScene::indirect = true`.
 pub fn zero_instance_count(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

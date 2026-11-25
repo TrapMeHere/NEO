@@ -1,15 +1,15 @@
-//! PBF 导入。
+//! PBF import.
 //!
-//! OSM PBF 的关键事实（docs/08 有完整说明）：
+//! Key facts about OSM PBF (docs/08 has the full description):
 //!
-//! * 坐标以 **nanodegree** 存（1e-9 度），`osmpbf` 直接提供 `decimicro_lat/lon`
-//!   （1e-7 度），与 NEO 的 [`neo_core::Coord`] 完全对齐，导入不经过 f64；
-//! * 文件内元素顺序保证 Node 在 Way/Relation 之前，因此可以单遍导入；
-//! * `DenseNodes` 用增量编码 + string table，`osmpbf` 已封装；
-//! * PBF 是**只读**格式（osmpbf 无写侧），写出见 docs/08 §2.7 的自研 encoder 方案。
+//! * Coordinates are stored as **nanodegrees** (1e-9 degrees); `osmpbf` directly provides `decimicro_lat/lon`
+//!   (1e-7 degrees), which lines up exactly with NEO's [`neo_core::Coord`], so import never goes through f64;
+//! * The element order in a file guarantees Nodes come before Ways/Relations, so a single pass suffices;
+//! * `DenseNodes` uses delta encoding + string table, already wrapped by `osmpbf`;
+//! * PBF is a **read-only** format (osmpbf has no write side); see the self-built encoder plan in docs/08 §2.7.
 //!
-//! 当前实现是**单线程顺序导入**（正确性优先）；并行流水线（blob 级并行解码 + 分区
-//! 合并）在阶段 2 落地，设计见 docs/08 §2.4。基准会分别报告顺序导入吞吐。
+//! The current implementation is a **single-threaded sequential import** (correctness first); the parallel
+//! pipeline (blob-level parallel decoding + partitioned merge) landed in stage 2, see docs/08 §2.4. Benchmarks report sequential import throughput separately.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -20,29 +20,29 @@ use neo_store::{DataSet, MissingPolicy};
 use osmpbf::{Element, ElementReader};
 use tracing::{debug, warn};
 
-/// 导入统计。
+/// Import statistics.
 #[derive(Clone, Debug, Default)]
 pub struct ImportReport {
-    /// 节点数。
+    /// Node count.
     pub nodes: u64,
-    /// Way 数。
+    /// Way count.
     pub ways: u64,
-    /// Relation 数。
+    /// Relation count.
     pub relations: u64,
-    /// 因缺少节点引用被跳过的 Way 数。
+    /// Ways skipped due to missing node references.
     pub skipped_ways: u64,
-    /// 因缺少成员被跳过的 Relation 数。
+    /// Relations skipped due to missing members.
     pub skipped_relations: u64,
-    /// 因坐标非法/重复 ID 被拒绝的对象数。
+    /// Objects rejected due to invalid coordinates or duplicate ids.
     pub invalid: u64,
-    /// 输入文件字节数。
+    /// Input file size in bytes.
     pub input_bytes: u64,
-    /// 导入耗时。
+    /// Import duration.
     pub elapsed: Duration,
 }
 
 impl ImportReport {
-    /// 每秒导入元素数。
+    /// Elements imported per second.
     pub fn elements_per_second(&self) -> f64 {
         let secs = self.elapsed.as_secs_f64();
         if secs <= 0.0 {
@@ -51,7 +51,7 @@ impl ImportReport {
         (self.nodes + self.ways + self.relations) as f64 / secs
     }
 
-    /// 输入吞吐（MiB/s）。
+    /// Input throughput (MiB/s).
     pub fn mib_per_second(&self) -> f64 {
         let secs = self.elapsed.as_secs_f64();
         if secs <= 0.0 {
@@ -79,17 +79,17 @@ impl core::fmt::Display for ImportReport {
     }
 }
 
-/// 导入 PBF 为一个新的 [`DataSet`]。
+/// Imports PBF into a new [`DataSet`].
 pub fn import_pbf(path: impl AsRef<Path>) -> Result<DataSet, neo_core::NeoError> {
     Ok(import_pbf_with_report(path)?.0)
 }
 
-/// PBF 导入选项。
+/// PBF import options.
 pub struct ImportOptions {
-    /// 引用缺失时的策略（bbox 提取建议 `Skip`，完整性校验建议 `Error`）。
+    /// Policy for missing references (bbox extraction suggests `Skip`, integrity checks suggest `Error`).
     pub policy: MissingPolicy,
-    /// 取消回调：每处理 4096 个元素调用一次；返回 `true` 则中止并返回
-    /// [`neo_core::NeoError::Cancelled`]，**不会返回半成品数据集**。
+    /// Cancellation callback: called once every 4096 elements; returning `true` aborts and returns
+    /// [`neo_core::NeoError::Cancelled`], **without returning a half-built dataset**.
     pub cancel: Option<Box<dyn Fn(u64) -> bool + Send + Sync>>,
 }
 
@@ -102,12 +102,12 @@ impl Default for ImportOptions {
     }
 }
 
-/// 导入 PBF，同时返回统计（默认选项）。
+/// Imports PBF and returns statistics (default options).
 pub fn import_pbf_with_report(path: impl AsRef<Path>) -> Result<(DataSet, ImportReport), neo_core::NeoError> {
     import_pbf_with_options(path, ImportOptions::default())
 }
 
-/// 带选项导入 PBF（支持取消、引用策略）。
+/// Imports PBF with options (supports cancellation and reference policy).
 pub fn import_pbf_with_options(
     path: impl AsRef<Path>,
     options: ImportOptions,
@@ -194,8 +194,8 @@ pub fn import_pbf_with_options(
                         return;
                     };
                     let tags = intern_tags(&mut dataset, node.tags());
-                    // osmpbf 0.3.8: DenseNode 的可选 info 在 `dense.rs`，字段访问器返回
-                    // 直接值（i32/i64/Result<&str>），与 Node/Way/Relation 的 Info 不同。
+                    // osmpbf 0.3.8: DenseNode's optional info lives in `dense.rs`, and its field accessors return
+                    // values directly (i32/i64/Result<&str>), unlike the Info of Node/Way/Relation.
                     let meta = match node.info() {
                         Some(info) => Meta {
                             version: info.version().max(0) as u32,
@@ -238,9 +238,9 @@ pub fn import_pbf_with_options(
                         way.info().visible(),
                         &mut dataset,
                     );
-                    // 重要：PBF 的 way 引用是 **delta 编码**；`raw_refs()` 返回原始 delta 切片，
-                    // 必须用 `refs()`（迭代器内部累加）才能得到绝对 node id。
-                    // 这是 osmpbf 0.3.x 最容易踩的坑（与文档/旧示例相反）。
+                    // Important: PBF way references are **delta encoded**; `raw_refs()` returns raw delta slices,
+                    // so `refs()` (which accumulates inside the iterator) must be used to get absolute node ids.
+                    // This is the easiest trap in osmpbf 0.3.x (contrary to the docs/old examples).
                     let nodes = way.refs().map(ObjectId::new).collect();
                     let dto = Way {
                         id,

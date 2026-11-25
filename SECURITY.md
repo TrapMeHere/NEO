@@ -1,38 +1,38 @@
-# 安全策略（Security Policy）
+# Security Policy
 
-## 支持版本
+## Supported versions
 
-| 版本 | 支持 |
+| Version | Supported |
 |---|---|
-| 最新 release（0.1.x） | ✅ |
-| 更早版本 | ❌（请升级） |
+| Latest release (0.1.x) | ✅ |
+| Older versions | ❌ (please upgrade) |
 
-## 报告漏洞
+## Reporting a vulnerability
 
-请**不要**在公开 Issue 中披露安全问题。优先使用 GitHub 的私密漏洞报告：
+Please **do not** disclose security issues in public issues. Prefer GitHub's private vulnerability reporting:
 
-1. 打开仓库 **Security → Advisories → Report a vulnerability**
-   （`https://github.com/TrapMeHere/NEO/security/advisories/new`）；
-2. 或发邮件给维护者（在 GitHub 个人资料中可查），主题前缀 `[NEO Security]`。
+1. Open the repository's **Security → Advisories → Report a vulnerability**
+   (`https://github.com/TrapMeHere/NEO/security/advisories/new`);
+2. Or email the maintainers (see their GitHub profiles), with the subject prefix `[NEO Security]`.
 
-报告请包含：影响版本、复现步骤、影响面（数据丢失/任意代码执行/崩溃等）、
-PoC（如可提供）与你的联系方式。
+Please include: affected version, reproduction steps, impact (data loss/arbitrary code execution/crash, etc.),
+a PoC if available, and your contact details.
 
-## 响应流程
+## Response process
 
-- 48 小时内确认收到；
-- 7 天内给出初步评估与修复计划；
-- 修复后发布 patch release，并在 GitHub Security Advisory 中公开致谢（如你同意）。
+- Acknowledge receipt within 48 hours;
+- Provide an initial assessment and fix plan within 7 days;
+- After the fix, publish a patch release and publicly credit you in the GitHub Security Advisory (if you agree).
 
-## 范围
+## Scope
 
-- `neo-io` 的 PBF/XML/osmChange 解析（恶意文件导致崩溃/OOM/越界）
-- `neo-editor` 的 journal 恢复、会话文件（.jos/.joz）解析
-- `neo-render`/wgpu 集成、字体/图标资源加载
-- 依赖供应链（`cargo deny`/Dependabot）
+- PBF/XML/osmChange parsing in `neo-io` (malicious files causing crashes/OOM/out-of-bounds)
+- Journal recovery and session file (.jos/.joz) parsing in `neo-editor`
+- `neo-render`/wgpu integration, font/icon resource loading
+- Dependency supply chain (`cargo deny`/Dependabot)
 
-## 不在范围
+## Out of scope
 
-- 上游 OSM API/数据服务的问题
-- NVIDIA Overlay/驱动弹窗（见 FAQ）
-- 用户本机的第三方软件冲突
+- Issues with the upstream OSM API/data services
+- NVIDIA Overlay/driver pop-ups (see FAQ)
+- Conflicts with third-party software on the user's machine

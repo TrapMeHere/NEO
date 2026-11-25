@@ -2,17 +2,17 @@ NEO — Next Editor for OSM
 
 Copyright (c) 2026 NEO contributors
 
-NEO 源代码采用 **Apache License 2.0 或 MIT License** 双许可（`Apache-2.0 OR MIT`），
-你可以任选其一遵守：
+The NEO source code is dual-licensed under the **Apache License 2.0 or the MIT License**
+(`Apache-2.0 OR MIT`). You may choose either one:
 
 - [LICENSE-APACHE](LICENSE-APACHE) — Apache License, Version 2.0
 - [LICENSE-MIT](LICENSE-MIT) — MIT License
 
-文档（`docs/`、`i18n/README.md`、`README.md` 等）采用
-**Creative Commons Attribution-ShareAlike 4.0 International（CC-BY-SA-4.0）** 许可，
-详见 <https://creativecommons.org/licenses/by-sa/4.0/>。
+Documentation (`docs/`, `i18n/README.md`, `README.md`, etc.) is licensed under
+**Creative Commons Attribution-ShareAlike 4.0 International (CC-BY-SA-4.0)**;
+see <https://creativecommons.org/licenses/by-sa/4.0/>.
 
-第三方组件与资源（字体、图标、OSM 数据）的许可与署名见 [NOTICE](NOTICE) 以及
-`assets/fonts/NOTICE.md`。
+Licenses and attribution for third-party components and assets (fonts, icons, OSM data) are in
+[NOTICE](NOTICE) and `assets/fonts/NOTICE.md`.
 
 SPDX-License-Identifier: Apache-2.0 OR MIT

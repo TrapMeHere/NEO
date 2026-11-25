@@ -1,39 +1,39 @@
-# 贡献流程
+# Contribution Process
 
-完整规则见仓库根目录 [CONTRIBUTING.md](https://github.com/TrapMeHere/NEO/blob/master/CONTRIBUTING.md)。
+For the complete rules see [CONTRIBUTING.md](https://github.com/TrapMeHere/NEO/blob/master/CONTRIBUTING.md) at the repository root.
 
-## 快速流程
+## Quick process
 
-1. 阅读 [架构](architecture.md) 与 [许可/清洁室](../17-licensing-and-governance.md)
-2. Issue 讨论 → 较大改动先写 ADR（`docs/adr/`）
-3. Fork / 分支 `feat|fix|docs/...`
-4. 提交（Conventional Commits + DCO：`git commit -s`）
-5. 本地检查：
+1. Read [Architecture](architecture.md) and [Licensing/Clean Room](../17-licensing-and-governance.md)
+2. Discuss in an issue → write an ADR first for larger changes (`docs/adr/`)
+3. Fork / branch `feat|fix|docs/...`
+4. Commit (Conventional Commits + DCO: `git commit -s`)
+5. Local checks:
 
    ```bash
    cargo fmt --all --check
    cargo clippy --workspace --all-targets
    cargo check --workspace
    python scripts/check-i18n.py
-   # 测试在 test 分支：git merge master 之后 cargo test --workspace
+   # tests run on master: cargo test --workspace
    ```
 
-6. 开 PR，按模板勾选检查项；CI 必须全绿
+6. Open a PR and tick the checklist in the template; CI must be all green
 
-## 代码要求
+## Code requirements
 
-- 只经 `neo-editor` 命令修改数据；UI 只发 `UiActions`
-- 用户文本进 `i18n/`
-- 性能结论必须有实测（docs/14 的格式）
-- 渲染/拾取/LOD/只读规则的改动必须带测试与文档更新
-- 不提交 JOSM 源码/资源；遵守 clean-room 规则（docs/17）
+- Modify data only through `neo-editor` commands; the UI emits only `UiActions`
+- User-facing text goes into `i18n/`
+- Performance conclusions must be backed by measurements (format in docs/14)
+- Changes to rendering/picking/LOD/read-only rules must come with tests and documentation updates
+- Do not commit JOSM source code/assets; follow the clean-room rules (docs/17)
 
-## Review 关注点
+## Review focus
 
-| 维度 | 检查 |
+| Dimension | Check |
 |---|---|
-| 正确性 | 边界（空数据、删除引用、取消导入、恢复失败） |
-| 性能 | 是否引入每帧重建/全量遍历/O(n²) |
-| 可测试性 | 命令可单测、拾取可用合成相机测试 |
-| 兼容性 | 文件格式、会话、journal 向后兼容 |
-| 文档 | 接口/行为变更是否同步 docs |
+| Correctness | Edge cases (empty data, deleting references, cancelling an import, recovery failure) |
+| Performance | Does it introduce per-frame rebuilds/full traversals/O(n²)? |
+| Testability | Commands unit-testable, picking testable with a synthetic camera |
+| Compatibility | File formats, sessions, journal backward compatibility |
+| Documentation | Are interface/behavior changes reflected in docs? |

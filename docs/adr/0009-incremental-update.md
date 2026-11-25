@@ -1,32 +1,32 @@
-# ADR-0009 · 增量更新（Incremental Update）
+# ADR-0009 · Incremental Update
 
-## 状态
+## Status
 
-- 已接受：2026-11-15。
-- 可逆性：**中**。撤回意味着回到"每版本全量重建"，10M 规模下不可交互。
-- 影响面：`neo-scene` 批次模型、`neo-geo` 缓存键、`neo-render` 上传路径、`neo-store` dirty 标记。
-- 相关文档：[07](../07-concurrency-and-tasks.md) §2.4、[04](../04-spatial-index-and-geometry.md)、[06](../06-editing-core-and-undo.md) §2.3。
+- Accepted: 2026-11-15.
+- Reversibility: **Medium**. Reverting means going back to "full rebuild per version", which is non-interactive at the 10M scale.
+- Scope: `neo-scene` batch model, `neo-geo` cache keys, `neo-render` upload path, `neo-store` dirty marks.
+- Related docs: [07](../07-concurrency-and-tasks.md) §2.4, [04](../04-spatial-index-and-geometry.md), [06](../06-editing-core-and-undo.md) §2.3.
 
-## 背景
+## Background
 
-10M 对象下，一次拖动只改变 1 个坐标和它所属的若干 way。但"每次提交重建全部场景"意味着 O(N) 几何构建 + O(N) GPU 上传：任何交互都会掉到个位数帧率，上传带宽与驱动同步还会制造尖峰。
+At 10M objects, one drag changes only 1 coordinate and the few ways it belongs to. But "rebuild the entire scene on every commit" means O(N) geometry building + O(N) GPU upload: any interaction drops to single-digit frame rates, and upload bandwidth plus driver synchronization create spikes.
 
-因此增量更新不是优化项，而是**可交互性的前提**；它同时决定了缓存键的设计（否则"版本一变全部失效"等于全量重建）。
+So incremental update is not an optimization but a **prerequisite for interactivity**; it also determines the cache-key design (otherwise "version changes invalidate everything" equals a full rebuild).
 
-## 决策
+## Decision
 
-1. **dirty 以对象为单位传播**：提交管线第 6 步 `dirty.mark(touched)` 记录对象与依赖闭包（node → 所属 way → 所在 relation 的 bbox），只标记必要批次。
-2. **缓存键含版本区间**：几何缓存键为 `(ObjectId, Handle.gen, version_range)`；对象在 `[v0, v1)` 未变更即命中。
-3. **场景批次带脏区间**：`SceneFrame { batches, dirty: Vec<DirtyRange> }`，`DirtyRange { buffer_id, byte_offset, len }` 直接映射 GPU 字节区间。
-4. **buffer 池按容量分级复用**：不足则换更大 buffer（copy 旧数据），足够则原地 `write_buffer`。
-   - 小写入直传；大写入走 staging ring + `copy_buffer_to_buffer`。
-5. **回收条件**：`frame_no + in_flight < current_frame` 才允许回收槽位（`in_flight` 默认 2，可配 3）。
-6. **空间索引增量维护**：dirty 对象做 rstar remove+insert；整库导入仍用 `bulk_load`（见 [08](../08-io-pbf-xml-osc.md)）。
-7. **LOD 先行**：低缩放用简化几何与标签聚合，只对越阈值且入视野的批次做精细构建。
-8. **每帧上传预算**：`upload_cap` 超出即把剩余 dirty 推到下一帧（逐帧追上，不制造卡顿尖峰）。
+1. **Dirty propagates per object**: commit pipeline step 6, `dirty.mark(touched)`, records objects and the dependency closure (node → owning ways → bbox of containing relations), marking only the necessary batches.
+2. **Cache keys include version ranges**: the geometry cache key is `(ObjectId, Handle.gen, version_range)`; an object hits if it is unchanged over `[v0, v1)`.
+3. **Scene batches carry dirty ranges**: `SceneFrame { batches, dirty: Vec<DirtyRange> }`, where `DirtyRange { buffer_id, byte_offset, len }` maps directly to GPU byte ranges.
+4. **The buffer pool is reused by capacity tier**: if too small, swap in a larger buffer (copying old data); if large enough, `write_buffer` in place.
+   - Small writes go direct; large writes use a staging ring + `copy_buffer_to_buffer`.
+5. **Reclaim condition**: a slot may be reclaimed only when `frame_no + in_flight < current_frame` (`in_flight` defaults to 2, configurable to 3).
+6. **Incremental spatial index maintenance**: dirty objects are removed and re-inserted via rstar; full imports still use `bulk_load` (see [08](../08-io-pbf-xml-osc.md)).
+7. **LOD first**: low zoom uses simplified geometry and label aggregation, and only batches that cross a threshold and enter the view are built in detail.
+8. **Per-frame upload budget**: once `upload_cap` is exceeded, the remaining dirty work is pushed to the next frame (catching up frame by frame without creating stutter spikes).
 
 ```
-提交(touched) ──► dirty 闭包 ──► 失效几何缓存条目
+commit(touched) ──► dirty closure ──► invalidate geometry cache entries
                                    │
                                    ▼
                      SceneFrame.dirty: [(buffer, offset, len)]
@@ -35,47 +35,47 @@
               BufferPool::ensure ──► write_buffer / staging+copy
                                    │
                                    ▼
-                    frame_no + in_flight < current ⇒ 可回收
+                    frame_no + in_flight < current ⇒ reclaimable
 ```
 
-## 替代方案
+## Alternatives
 
-| 方案 | 优点 | 否决理由 |
+| Option | Pros | Why rejected |
 |---|---|---|
-| 每版本全量重建 `SceneFrame` | 实现最简单、绝无漏算 | 10M 下 O(N) 不可行；上传带宽与驱动同步造成尖峰 |
-| 双缓冲整场景（A/B 交替） | 无部分更新风险 | 显存翻倍（RTX 3070 8GB 直接排除大场景） |
-| CPU 端光栅缓存（tile 位图）+ 合成 | 平移廉价、无几何重建 | 缩放/样式切换需重光栅；拾取需另建映射；与 GPU-first 冲突 |
-| GPU compute 剔除 + 间接绘制 | 可处理超大规模可见集 | 首版复杂度过高；保留为阶段 6 的演进方向，不作基线 |
-| 只做到 layer 粒度的"整批重建" | 比全量简单 | 单节点移动仍重建整层，10M 下不可接受 |
-| 每帧只重建视野内对象（无脏区间） | 无需缓存键 | 视野内仍有百万对象；平移即全量，抖动明显 |
+| Full `SceneFrame` rebuild per version | Simplest implementation, never misses anything | O(N) at 10M is infeasible; upload bandwidth and driver synchronization create spikes |
+| Double-buffer the whole scene (A/B alternation) | No partial-update risk | VRAM doubles (RTX 3070 8GB rules out large scenes outright) |
+| CPU-side raster cache (tile bitmaps) + compositing | Cheap panning, no geometry rebuild | Zoom/style switches require re-rasterizing; picking needs a separate mapping; conflicts with GPU-first |
+| GPU compute culling + indirect draw | Handles very large visible sets | Too complex for the first version; reserved as the phase 6 evolution direction, not a baseline |
+| Only "whole-layer rebuild" at layer granularity | Simpler than full rebuild | Moving a single node still rebuilds the whole layer; unacceptable at 10M |
+| Rebuild only objects in view each frame (no dirty ranges) | No cache keys needed | There are still millions of objects in view; panning means full rebuild, with obvious jitter |
 
-## 后果
+## Consequences
 
-**正面**
+**Positive**
 
-- 一次编辑的代价正比于"受影响对象数"，而非数据集规模；帧时间可预测。
-- 显存按需增长（池化）；拾取 id 表只需重建脏批次。
-- 与 LOD 正交：低缩放时连精细几何都不构建。
+- The cost of one edit is proportional to "the number of affected objects", not the data set size; frame times are predictable.
+- VRAM grows on demand (pooling); the pick id table only needs to rebuild dirty batches.
+- Orthogonal to LOD: at low zoom, not even detailed geometry is built.
 
-**负面**
+**Negative**
 
-- **失效范围算错 = 画面与数据不一致**，且往往只在特定操作序列下复现；需要 property test 与 dirty 高亮调试。
-- **缓存键复杂化**：`version_range` × `Handle.gen` 组合容易出现"永不失效"的泄漏条目，需定期压缩。
-- **顶点布局必须稳定**：批次内对象顶点顺序不可随意重排，否则退化为整批上传。
-- **显存碎片**：容量分级 + 池化带来内部碎片，需要上限与整理策略。
+- **Miscalculating the invalidation scope = the picture is inconsistent with the data**, and it often reproduces only under specific operation sequences; needs property tests and dirty-highlight debugging.
+- **Cache keys get complex**: the `version_range` × `Handle.gen` combination easily produces leak entries that "never expire", requiring periodic compaction.
+- **Vertex layout must be stable**: object vertex order within a batch cannot be rearranged arbitrarily, otherwise it degrades to a full-batch upload.
+- **VRAM fragmentation**: capacity tiers + pooling bring internal fragmentation, requiring caps and compaction strategy.
 
-## 验证
+## Verification
 
-1. 10M 数据集移动 1 个节点：重建批次数 ≤ 受影响 way 数 + 1，上传字节 ≤ `upload_cap`（`PrepareStats` 计数）。
-2. 缓存键正确性：两版本间未变更对象的几何构建调用次数为 0（打点计数）。
-3. 回收安全：`in_flight = 2` 下连续三帧写入，断言不覆盖未完成帧（`frame_no` 断言 + 校验和比对）。
-4. 视觉一致性：随机 10k 次编辑后与"每次全量重建"参考实现逐像素比对（离屏渲染，容差 0）。
-5. 泄漏：连续 1 小时编辑后几何缓存条目数与显存回到基线附近【阈值待实测，见 docs/14-performance-and-verification.md】。
-6. LOD 稳定：阈值附近来回缩放 100 次，同批次重建次数有上限（无抖动）。
+1. Move 1 node in a 10M data set: the number of rebuilt batches ≤ number of affected ways + 1, and uploaded bytes ≤ `upload_cap` (`PrepareStats` counters).
+2. Cache-key correctness: the geometry-building call count is 0 for objects unchanged between two versions (instrumented counter).
+3. Reclaim safety: with `in_flight = 2`, write on three consecutive frames and assert that unfinished frames are not overwritten (`frame_no` assertion + checksum comparison).
+4. Visual consistency: after 10k random edits, compare pixel by pixel against a "full rebuild every time" reference implementation (offscreen rendering, tolerance 0).
+5. Leaks: after 1 hour of continuous editing, geometry cache entry count and VRAM return near the baseline [threshold to be measured, see docs/14-performance-and-verification.md].
+6. LOD stability: zoom back and forth across the threshold 100 times; the rebuild count for the same batch has an upper bound (no jitter).
 
-## 参考
+## References
 
-- `egui_wgpu` 的 `CallbackTrait`（每帧提交点）：https://docs.rs/egui-wgpu/0.36.2/egui_wgpu/
-- wgpu `Queue::write_buffer` 与 staging 上传：https://docs.rs/wgpu/30.0.2/wgpu/struct.Queue.html
-- rstar 的 `bulk_load` 与增量 `insert`/`remove`：https://docs.rs/rstar/0.14.0/rstar/
-- earcutr（三角化）：https://docs.rs/earcutr/0.5.0/earcutr/
+- `egui_wgpu`'s `CallbackTrait` (per-frame submission point): https://docs.rs/egui-wgpu/0.36.2/egui_wgpu/
+- wgpu `Queue::write_buffer` and staging uploads: https://docs.rs/wgpu/30.0.2/wgpu/struct.Queue.html
+- rstar's `bulk_load` and incremental `insert`/`remove`: https://docs.rs/rstar/0.14.0/rstar/
+- earcutr (triangulation): https://docs.rs/earcutr/0.5.0/earcutr/

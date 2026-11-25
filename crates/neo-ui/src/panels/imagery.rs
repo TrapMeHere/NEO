@@ -1,4 +1,4 @@
-//! imagery 面板。
+//! imagery panel.
 
 use egui::{Color32, RichText};
 use egui_phosphor::regular as ph;
@@ -6,40 +6,40 @@ use neo_i18n::{t, tf};
 
 use super::UiActions;
 
-/// 影像图层 UI 状态。
+/// Imagery layer UI state.
 #[derive(Clone, Debug)]
 pub struct ImageryUiState {
-    /// 是否显示。
+    /// Whether displayed.
     pub enabled: bool,
-    /// TMS 模板（`{z}/{x}/{y}` 或 `{-y}`）。
+    /// TMS template (`{z}/{x}/{y}` or `{-y}`).
     pub url: String,
-    /// 不透明度 0..1。
+    /// Opacity 0..1.
     pub opacity: f32,
-    /// 状态/错误。
+    /// Status/error.
     pub status: String,
-    /// 已缓存瓦片数。
+    /// Number of cached tiles.
     pub cached: usize,
-    /// 影像向东偏移（屏幕像素）。
+    /// Imagery offset to the east (screen pixels).
     pub offset_x: f32,
-    /// 影像向南偏移（屏幕像素）。
+    /// Imagery offset to the south (screen pixels).
     pub offset_y: f32,
-    /// WMS 模式（单张 GetMap）而不是 TMS 瓦片。
+    /// WMS mode (single GetMap) instead of TMS tiles.
     pub wms: bool,
-    /// WMS layers 参数。
+    /// WMS layers parameter.
     pub wms_layers: String,
-    /// 当前预设 id。空表示自定义 URL。
+    /// Current preset id. Empty means a custom URL.
     pub preset_id: String,
-    /// `{apikey}` 的替换值，只留在本机。
+    /// Replacement value for `{apikey}`, kept on this machine only.
     pub api_key: String,
-    /// 影像署名。
+    /// Imagery attribution.
     pub attribution: String,
-    /// 只列出全球影像和当前国家的影像。
+    /// List only worldwide imagery and imagery for the current country.
     pub region_only: bool,
-    /// 预设搜索。
+    /// Preset search.
     pub query: String,
-    /// WMS 投影，例如 `EPSG:3857`。
+    /// WMS projection, e.g. `EPSG:3857`.
     pub wms_crs: String,
-    /// WMS 1.3 地理坐标时 bbox 纬度在前。
+    /// For WMS 1.3 geographic CRS, bbox has latitude first.
     pub wms_lat_first: bool,
 }
 
@@ -66,7 +66,7 @@ impl Default for ImageryUiState {
     }
 }
 
-/// 影像图层窗口。
+/// Imagery layer window.
 pub fn imagery_window(
     ctx: &egui::Context,
     actions: &mut UiActions,
@@ -179,7 +179,7 @@ pub fn imagery_window(
         });
 }
 
-/// 顶栏快选：当前地区能用的内置影像，再加上最多 6 条该地区优先源。
+/// Top-bar quick picks: built-in imagery usable in the current region, plus up to 6 sources preferred for that region.
 pub(super) fn quick_imagery_choices(lat: f64, lon: f64) -> Vec<(String, String)> {
     let country = neo_style::imagery::country_at(lat, lon);
     const QUICK: &[&str] = &[

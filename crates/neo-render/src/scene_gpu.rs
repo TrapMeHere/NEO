@@ -1,10 +1,10 @@
-//! GPU 侧的批次缓存：把 [`neo_scene::SceneFrame`] 上传为顶点/索引 buffer。
+//! GPU-side batch cache: uploads [`neo_scene::SceneFrame`] into vertex/index buffers.
 //!
-//! 增量上传策略：
+//! Incremental upload strategy:
 //!
-//! * 比较 `SceneFrame::version` 与 `origin`：数据没变且原点没变就**完全跳过上传**；
-//! * 一个批次一个 buffer（Fill/Stroke/Point 最多 3 个 draw call），不做 per-object buffer；
-//! * 后续可换成"持久 buffer 池 + 脏区间 `write_buffer`"，接口已按此设计（`UploadStats`）。
+//! * Compare `SceneFrame::version` with `origin`: if the data and origin are unchanged, **skip the upload entirely**;
+//! * One buffer per batch (Fill/Stroke/Point at most 3 draw calls), no per-object buffers;
+//! * Later this can be replaced by a "persistent buffer pool + dirty-range `write_buffer`"; the interface is already designed for it (`UploadStats`).
 
 use std::time::Instant;
 
@@ -13,7 +13,7 @@ use neo_geo::WorldPoint;
 use neo_scene::SceneFrame;
 use wgpu::util::DeviceExt as _;
 
-/// `draw_indexed_indirect` 的参数布局（与 wgpu 一致），尾部填充到 32 字节以便 storage 绑定。
+/// Parameter layout of `draw_indexed_indirect` (matches wgpu), padded at the end to 32 bytes for storage binding.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct IndirectArgs {
@@ -29,63 +29,63 @@ const _: () = assert!(core::mem::size_of::<IndirectArgs>() == 32);
 
 use crate::gpu::RenderError;
 
-/// 一个批次的 GPU 资源。
+/// GPU resources of one batch.
 pub struct GpuBatch {
-    /// 顶点 buffer。
+    /// Vertex buffer.
     pub vertex_buffer: wgpu::Buffer,
-    /// 索引 buffer。
+    /// Index buffer.
     pub index_buffer: wgpu::Buffer,
-    /// 索引数量。
+    /// Index count.
     pub index_count: u32,
-    /// 批次类型。
+    /// Batch type.
     pub kind: neo_scene::BatchKind,
-    /// `draw_indexed_indirect` 参数（20 字节参数 + 填充）。上传时 `instance_count = 1`。
+    /// `draw_indexed_indirect` parameters (20-byte params + padding). `instance_count = 1` on upload.
     pub indirect: wgpu::Buffer,
 }
 
-/// 上传统计。
+/// Upload stats.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UploadStats {
-    /// 本次上传字节数。
+    /// Bytes uploaded this time.
     pub bytes: u64,
-    /// 上传耗时（微秒）。
+    /// Upload duration (microseconds).
     pub micros: u64,
-    /// 是否真的上传（false 表示复用缓存）。
+    /// Whether an upload actually happened (false means the cache was reused).
     pub uploaded: bool,
-    /// draw call 数。
+    /// Number of draw calls.
     pub draw_calls: u32,
 }
 
-/// GPU 侧场景缓存。
+/// GPU-side scene cache.
 #[derive(Default)]
 pub struct GpuScene {
-    /// 已上传的数据版本。
+    /// Uploaded data version.
     pub version: u64,
-    /// 已上传批次的坐标系原点。
+    /// Coordinate-system origin of the uploaded batches.
     pub origin: Option<WorldPoint>,
-    /// 已上传批次的相机 zoom（LOD 相关，缩放重建后必须重传）。
+    /// Camera zoom of the uploaded batches (LOD-related; must re-upload after a zoom-triggered rebuild).
     pub zoom: Option<f64>,
-    /// 批次。
+    /// Batches.
     pub batches: Vec<GpuBatch>,
-    /// 累计/最近一次上传统计。
+    /// Cumulative/most recent upload stats.
     pub stats: UploadStats,
-    /// 为 true 时 `draw` 走 indirect draw，而不是 `draw_indexed`。
+    /// When true, `draw` uses indirect draw instead of `draw_indexed`.
     pub indirect: bool,
 }
 
 impl GpuScene {
-    /// 空缓存。
+    /// Empty cache.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 是否需要重新上传。
+    /// Whether a re-upload is needed.
     pub fn needs_upload(&self, scene: &SceneFrame) -> bool {
         let Some(origin) = self.origin else {
             return true;
         };
         let Some(zoom) = self.zoom else {
-            // 原点存在但 zoom 缺失：无法证明画面仍然有效，必须上传。
+            // Origin present but zoom missing: the frame cannot be proven valid, so it must be uploaded.
             return true;
         };
         self.version != scene.version
@@ -94,7 +94,7 @@ impl GpuScene {
             || (zoom - scene.camera.zoom).abs() > 1e-6
     }
 
-    /// 上传场景（需要时）。
+    /// Upload the scene (when needed).
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -173,11 +173,11 @@ impl GpuScene {
         self.stats
     }
 
-    /// 在 render pass 中发出所有 draw call。
+    /// Issue all draw calls inside the render pass.
     ///
-    /// `indirect == false` 时直接 `draw_indexed`（阶段 1–4 的路径）。
-    /// `indirect == true` 时走 `draw_indexed_indirect`，实例数由 indirect buffer 决定，
-    /// GPU culling 可以把 `instance_count` 写成 0 来丢掉整批。
+    /// With `indirect == false`, call `draw_indexed` directly (the Phase 1–4 path).
+    /// With `indirect == true`, go through `draw_indexed_indirect`; the instance count comes from the indirect buffer,
+    /// and GPU culling can write `instance_count` to 0 to drop the whole batch.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         for batch in &self.batches {
             pass.set_vertex_buffer(0, batch.vertex_buffer.slice(..));
@@ -190,12 +190,12 @@ impl GpuScene {
         }
     }
 
-    /// 统计数据。
+    /// Statistics.
     pub fn upload_stats(&self) -> UploadStats {
         self.stats
     }
 
-    /// 供测试/基准的校验：确保 buffer 大小与内容一致。
+    /// Check for tests/benchmarks: ensure buffer sizes and contents are consistent.
     pub fn validate(&self) -> Result<(), RenderError> {
         for batch in &self.batches {
             let vertex_size = batch.vertex_buffer.size();

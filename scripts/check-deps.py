@@ -134,7 +134,7 @@ def main() -> int:
         if name not in RULES:
             unknown.append(name)
             continue
-        # R6: 内部 crate 必须显式 `publish = false`（cargo metadata 里为空数组）。
+        # R6: internal crates must be explicitly `publish = false` (empty array in cargo metadata).
         if pkg.get("publish") != []:
             violations.append({"rule": "R6", "package": name, "detail": "is publishable"})
         allowed = RULES[name]
@@ -150,7 +150,7 @@ def main() -> int:
                     {"rule": "R1", "package": name, "forbidden_dependency": dep_name}
                 )
 
-    # R2: 白名单/实际依赖图不得成环。
+    # R2: the whitelist/actual dependency graph must be acyclic.
     color: dict[str, int] = {name: 0 for name in internal}
     stack: list[str] = []
 

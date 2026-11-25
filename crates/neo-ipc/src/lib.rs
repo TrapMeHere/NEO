@@ -1,7 +1,7 @@
-//! # neo-ipc — 编辑器与旁路进程的行协议
+//! # neo-ipc — line protocol between the editor and the sidecar processes
 //!
-//! 每行一条 JSON。`v` 是协议版本；不一致时编辑器停用对应旁路。
-//! 影像旁路用 `id` 做并发应答；同步旁路一次一事。
+//! One JSON object per line. `v` is the protocol version; on mismatch the editor disables the corresponding sidecar.
+//! The imagery sidecar uses `id` for concurrent replies; the sync sidecar handles one request at a time.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -19,5 +19,5 @@ pub use sync::{
     PROTOCOL_VERSION as SYNC_VERSION, SyncEnvelope, SyncRequest, SyncResponse, SyncSession,
 };
 
-/// 同步与影像共用的协议主版本。
+/// Major protocol version shared by sync and imagery.
 pub const PROTOCOL_VERSION: u32 = 1;

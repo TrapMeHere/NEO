@@ -29,7 +29,7 @@ def main() -> int:
             target = target.split("#", 1)[0]
             if not target:
                 continue
-            # `.research/` 在 .gitignore 中（本地取证笔记），不作为仓库门禁目标。
+            # `.research/` is in .gitignore (local evidence notes), so it is not a repo gate target.
             if target.replace("\\", "/").startswith("../.research/") or "/.research/" in target.replace(
                 "\\", "/"
             ):

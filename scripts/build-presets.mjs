@@ -182,11 +182,11 @@ mkdirSync(outDir, { recursive: true });
 
 const GEOM_BIT = { point: 1, vertex: 2, line: 4, area: 8, relation: 16 };
 
-// 与 crates/neo-style/src/schema.rs 的读取器同一布局，小端。
+// Same layout as the reader in crates/neo-style/src/schema.rs, little-endian.
 // NEOP u16 version=1 u16 kind | u32 schema_idx u32 nsi_idx u32 string_count u32 blob_len u32 preset_count
 // u32 offsets[string_count+1] | utf-8 blob
-// 每条：id en zh(u32::MAX=与 en 相同) score_milli geom pad n_tags n_match n_remove pad
-// 然后 (key,value) 对、match 对、remove 键，全是字符串表下标。
+// Each entry: id en zh(u32::MAX=same as en) score_milli geom pad n_tags n_match n_remove pad
+// followed by (key,value) pairs, match pairs, remove keys, all as string-table indices.
 function encodePresets(kind, presetRows, schemaVersion, nsiVersion) {
   const strings = [];
   const index = new Map();
@@ -305,7 +305,7 @@ writeFileSync(suggestionPath, suggestionBytes);
 try {
   unlinkSync(join(outDir, "presets.gen.json"));
 } catch {
-  // 旧 JSON 可能已经不在。
+  // The old JSON may already be gone.
 }
 console.log(
   `presets schema=${schemaPkg.version} nsi=${nsiPkg.version} rows=${schemaRows.length} suggestions=${suggestionRows.length} categories=${categories.length} schema_bytes=${schemaBytes.length} suggestion_bytes=${suggestionBytes.length}`,

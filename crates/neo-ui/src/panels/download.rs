@@ -1,4 +1,4 @@
-//! download 面板。
+//! download panel.
 
 use egui::{Color32, RichText};
 use egui_phosphor::regular as ph;
@@ -6,21 +6,21 @@ use neo_i18n::t;
 
 use super::UiActions;
 
-/// 下载范围（经纬度）。
+/// Download range (latitude/longitude).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BboxView {
-    /// 最小经度。
+    /// Minimum longitude.
     pub min_lon: f64,
-    /// 最小纬度。
+    /// Minimum latitude.
     pub min_lat: f64,
-    /// 最大经度。
+    /// Maximum longitude.
     pub max_lon: f64,
-    /// 最大纬度。
+    /// Maximum latitude.
     pub max_lat: f64,
 }
 
 impl BboxView {
-    /// 人类可读的 bbox 文本。
+    /// Human-readable bbox text.
     pub fn text(&self) -> String {
         format!(
             "{:.5}, {:.5} — {:.5}, {:.5}",
@@ -28,7 +28,7 @@ impl BboxView {
         )
     }
 
-    /// Overpass QL 中的 `(south,west,north,east)`。
+    /// `(south,west,north,east)` in Overpass QL.
     pub fn overpass_bbox(&self) -> String {
         format!(
             "({:.7},{:.7},{:.7},{:.7})",
@@ -37,38 +37,38 @@ impl BboxView {
     }
 }
 
-/// 下载窗口当前标签页。
+/// Current tab of the download window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum DownloadTab {
-    /// 框选后走 OSM `/map`。
+    /// Bbox selection, then OSM `/map`.
     #[default]
     Bbox,
-    /// Overpass QL 查询。
+    /// Overpass QL query.
     Overpass,
 }
 
-/// 下载窗口状态。
+/// Download window state.
 #[derive(Clone, Debug)]
 pub struct DownloadUiState {
-    /// 当前标签页。
+    /// Current tab.
     pub tab: DownloadTab,
-    /// 已框选的范围。
+    /// Selected range.
     pub bbox: Option<BboxView>,
-    /// 是否正在地图上框选。
+    /// Whether a selection is being made on the map.
     pub selecting: bool,
-    /// Overpass 服务端点。
+    /// Overpass service endpoint.
     pub overpass_endpoint: String,
-    /// Overpass QL 正文。
+    /// Overpass QL body.
     pub overpass_query: String,
-    /// 辅助构建：标签键。
+    /// Helper builder: tag key.
     pub overpass_key: String,
-    /// 辅助构建：标签值（空表示仅按 key 过滤）。
+    /// Helper builder: tag value (empty means filter by key only).
     pub overpass_value: String,
-    /// 辅助构建：包含 node。
+    /// Helper builder: include nodes.
     pub overpass_nodes: bool,
-    /// 辅助构建：包含 way。
+    /// Helper builder: include ways.
     pub overpass_ways: bool,
-    /// 辅助构建：包含 relation。
+    /// Helper builder: include relations.
     pub overpass_relations: bool,
 }
 
@@ -90,7 +90,7 @@ impl Default for DownloadUiState {
 }
 
 impl DownloadUiState {
-    /// 按当前辅助字段与框选范围生成 Overpass QL。
+    /// Build an Overpass QL from the current helper fields and the bbox.
     pub fn build_overpass_query(&self) -> String {
         build_overpass_query(
             self.bbox,
@@ -103,7 +103,7 @@ impl DownloadUiState {
     }
 }
 
-/// 由标签过滤与 bbox 拼出基础 Overpass QL。
+/// Compose a basic Overpass QL from the tag filter and the bbox.
 pub fn build_overpass_query(
     bbox: Option<BboxView>,
     key: &str,
@@ -150,7 +150,7 @@ fn escape_ql(raw: &str) -> String {
     raw.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// 下载窗口：框选 OSM `/map`，或 Overpass QL 查询。
+/// Download window: bbox-selected OSM `/map`, or an Overpass QL query.
 pub fn download_window(
     ctx: &egui::Context,
     actions: &mut UiActions,

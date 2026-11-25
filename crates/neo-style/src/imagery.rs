@@ -1,52 +1,52 @@
-//! 影像层：WMS / TMS URL 与偏移数据库。
+//! Imagery layer: WMS / TMS URLs and the offset database.
 //!
-//! 不打包第三方影像目录。调用方传入模板，本模块只负责拼 URL 和查偏移。
+//! No third-party imagery catalog is bundled. The caller supplies templates; this module only assembles URLs and looks up offsets.
 
-/// 影像种类。
+/// Imagery kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageryKind {
-    /// `{z}/{x}/{y}` 瓦片。
+    /// `{z}/{x}/{y}` tiles.
     Tms,
-    /// GetMap。
+    /// GetMap.
     Wms,
 }
 
-/// 一条影像源。
+/// One imagery source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImagerySource {
-    /// 稳定 id。
+    /// Stable id.
     pub id: String,
-    /// 显示名。
+    /// Display name.
     pub name: String,
-    /// 种类。
+    /// Kind.
     pub kind: ImageryKind,
-    /// TMS 模板或 WMS 端点。
+    /// TMS template or WMS endpoint.
     pub url: String,
-    /// 署名，必须展示给用户。
+    /// Attribution, which must be shown to the user.
     pub attribution: String,
-    /// 最小缩放。
+    /// Minimum zoom.
     pub min_zoom: u8,
-    /// 最大缩放。
+    /// Maximum zoom.
     pub max_zoom: u8,
 }
 
-/// 把 TMS 模板里的 `{z}` `{x}` `{y}` `{-y}` 换成具体瓦片。
+/// Substitute the concrete tile into `{z}` `{x}` `{y}` `{-y}` in a TMS template.
 pub fn tms_url(template: &str, z: u32, x: u32, y: u32) -> String {
     tile_url(template, z, x, y, "")
 }
 
-/// 展开一张瓦片的 URL。
+/// Expand the URL of one tile.
 ///
-/// 除 `{z}`/`{zoom}`、`{x}`、`{y}`、`{-y}` 外，还支持 iD / JOSM 用的：
-/// `{quadkey}`（Bing）、`{switch:a,b}`（此处按瓦片散列选一个）、`{apikey}`。
-/// 需要按速度和可达性挑选子域时，用 [`tile_url_candidates`] 再交给 [`HostTable`]。
+/// Besides `{z}`/`{zoom}`, `{x}`, `{y}`, `{-y}`, also supports those used by iD / JOSM:
+/// `{quadkey}` (Bing), `{switch:a,b}` (here one is chosen by hashing the tile), `{apikey}`.
+/// When subdomains must be picked by speed and reachability, use [`tile_url_candidates`] and then hand them to [`HostTable`].
 pub fn tile_url(template: &str, z: u32, x: u32, y: u32, api_key: &str) -> String {
     expand_tile(&expand_switch(template, x, y), z, x, y, api_key)
 }
 
-/// `{switch:a,b,c}` 的每个子域各一条 URL，顺序与模板里一致。
+/// One URL per subdomain of `{switch:a,b,c}`, in the order they appear in the template.
 ///
-/// 没有 `{switch:…}` 时只返回一条。调用方再用 [`HostTable`] 把快的、连通的排到前面。
+/// Returns only one URL when there is no `{switch:…}`. The caller then uses [`HostTable`] to put fast, reachable ones first.
 pub fn tile_url_candidates(template: &str, z: u32, x: u32, y: u32, api_key: &str) -> Vec<String> {
     let options = switch_options(template);
     if options.is_empty() {
@@ -75,7 +75,7 @@ fn expand_tile(template: &str, z: u32, x: u32, y: u32, api_key: &str) -> String 
         .replace("{apikey}", api_key)
 }
 
-/// Bing 瓦片系统的 quadkey。`z=3,x=3,y=5` 得到 `213`。
+/// Bing tile-system quadkey. `z=3,x=3,y=5` yields `213`.
 pub fn bing_quadkey(z: u32, x: u32, y: u32) -> String {
     let mut key = String::with_capacity(z as usize);
     for level in (0..z).rev() {
@@ -163,16 +163,16 @@ struct HostStat {
     cooldown_until_ms: u64,
 }
 
-/// 按实测耗时和失败冷却给子域排序。
+/// Order subdomains by measured latency and failure cooldown.
 ///
-/// 成功过的主机按滑动平均耗时从快到慢；还没测过的排在它们后面；连续失败的进入冷却，冷却期内排到最后。
+/// Hosts that have succeeded are ordered from fastest to slowest by moving average; untested ones come after them; hosts with consecutive failures enter cooldown and are placed last during it.
 #[derive(Clone, Debug, Default)]
 pub struct HostTable {
     hosts: std::collections::HashMap<String, HostStat>,
 }
 
 impl HostTable {
-    /// 记下一次访问。`now_ms` 与 [`Self::order_urls`] 使用同一时钟。
+    /// Record one access. `now_ms` uses the same clock as [`Self::order_urls`].
     pub fn record_url(&mut self, url: &str, ok: bool, elapsed_ms: u64, now_ms: u64) {
         let host = url_host(url).to_string();
         let stat = self.hosts.entry(host).or_insert(HostStat {
@@ -198,7 +198,7 @@ impl HostTable {
         }
     }
 
-    /// 快且可达的地址在前。`rotate` 只改变还没分出快慢的主机的相对顺序。
+    /// Fast and reachable addresses come first. `rotate` only changes the relative order of hosts that have not yet been ranked.
     pub fn order_urls(&self, mut urls: Vec<String>, now_ms: u64, rotate: usize) -> Vec<String> {
         if urls.is_empty() {
             return urls;
@@ -221,53 +221,53 @@ impl HostTable {
     }
 }
 
-/// 一条影像预设。`countries` 为空表示全球，否则是 ISO 3166-1 alpha-2。
+/// One imagery preset. An empty `countries` means global; otherwise it is an ISO 3166-1 alpha-2 list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageryPreset {
-    /// 稳定 id。
+    /// Stable id.
     pub id: String,
-    /// 显示名。界面会对少数内置 id 另做翻译。
+    /// Display name. The UI applies extra translations to a few built-in ids.
     pub name: String,
-    /// 种类。
+    /// Kind.
     pub kind: ImageryKind,
-    /// TMS 模板，或 WMS 端点 / 完整 GetMap 模板。
+    /// TMS template, or WMS endpoint / full GetMap template.
     pub url: String,
-    /// WMS `LAYERS`。模板本身已含图层时为空。
+    /// WMS `LAYERS`. Empty when the template itself already contains the layers.
     pub layers: String,
-    /// 必须展示的署名。
+    /// Attribution that must be shown.
     pub attribution: String,
-    /// 模板含 `{apikey}`，要由用户填入自己的令牌。
+    /// The template contains `{apikey}`, so the user must supply their own token.
     pub needs_key: bool,
-    /// 最大缩放。
+    /// Maximum zoom.
     pub max_zoom: u8,
-    /// 作用范围。空表示全球。
+    /// Scope. Empty means global.
     pub countries: Vec<String>,
-    /// WMS 投影。TMS 为空。
+    /// WMS projection. Empty for TMS.
     pub crs: String,
-    /// WMS 1.3 地理坐标时，bbox 纬度在前。
+    /// For WMS 1.3 geographic coordinates, latitude comes first in the bbox.
     pub bbox_lat_first: bool,
-    /// iD 标记的该地区优先影像。
+    /// iD-marked preferred imagery for the region.
     pub best: bool,
 }
 
 impl ImageryPreset {
-    /// 全球影像，或当前国家落在作用范围内。
+    /// Global imagery, or the current country falls within the scope.
     pub fn covers(&self, country: Option<&str>) -> bool {
         self.countries.is_empty()
             || country.is_some_and(|code| self.countries.iter().any(|item| item.eq_ignore_ascii_case(code)))
     }
 }
 
-/// 内置全球影像，加上 iD 影像目录。
+/// Built-in global imagery plus the iD imagery catalog.
 ///
-/// Mapbox 的 `a`/`b`/`c` 与天地图的 `t0`–`t7` 在请求时按速度和可达性挑选。
-/// 目录里每条影像的作用范围是全球，或若干国家代码。
+/// Mapbox's `a`/`b`/`c` and Tianditu's `t0`–`t7` are chosen at request time by speed and reachability.
+/// Each imagery entry in the catalog is scoped globally or to a few country codes.
 pub fn imagery_presets() -> &'static [ImageryPreset] {
     static CACHE: std::sync::OnceLock<Vec<ImageryPreset>> = std::sync::OnceLock::new();
     CACHE.get_or_init(load_presets)
 }
 
-/// 按当前国家过滤。`region_only` 为假时返回全部。
+/// Filter by the current country. Returns everything when `region_only` is false.
 pub fn imagery_for_view(country: Option<&str>, region_only: bool) -> Vec<&'static ImageryPreset> {
     imagery_presets()
         .iter()
@@ -275,12 +275,12 @@ pub fn imagery_for_view(country: Option<&str>, region_only: bool) -> Vec<&'stati
         .collect()
 }
 
-/// 经纬度所在国家。海域为 `None`。
+/// Country at a lon/lat. `None` over the ocean.
 pub fn country_at(lat: f64, lon: f64) -> Option<&'static str> {
     crate::imagery_catalog::country_at(lat, lon)
 }
 
-/// 国家英文名和中文名。
+/// English and Chinese names of a country.
 pub fn country_names(code: &str) -> Option<(&'static str, &'static str)> {
     crate::imagery_catalog::country_names(code)
 }
@@ -318,7 +318,7 @@ fn load_presets() -> Vec<ImageryPreset> {
     presets
 }
 
-/// 目录里的 Mapbox URL 用 `{apikey}` 占位；加载时填入混淆还原的令牌。
+/// Mapbox URLs in the catalog use the `{apikey}` placeholder; on load it is filled with the de-obfuscated token.
 fn resolve_catalog_url(url: &str) -> String {
     if url.contains("{apikey}") && url.contains("mapbox.com") {
         url.replace("{apikey}", &crate::imagery_secrets::mapbox_token())
@@ -327,10 +327,10 @@ fn resolve_catalog_url(url: &str) -> String {
     }
 }
 
-/// 标准 OSM 栅格瓦片。
+/// Standard OSM raster tiles.
 pub const OSM_IMAGERY_URL: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
-/// OSM 瓦片必须展示的署名。
+/// Attribution that OSM tiles must display.
 pub const OSM_IMAGERY_ATTRIBUTION: &str = "© OpenStreetMap contributors";
 
 fn builtin_presets() -> Vec<ImageryPreset> {
@@ -446,7 +446,7 @@ fn builtin(
     }
 }
 
-/// 展开 iD 风格的 WMS 模板。`bbox` 已经是目标投影下的 min、max 顺序。
+/// Expand an iD-style WMS template. `bbox` is already in the target projection's min, max order.
 pub fn expand_wms_template(
     template: &str,
     bbox: [f64; 4],
@@ -469,7 +469,7 @@ pub fn expand_wms_template(
         .replace("{height}", &height.to_string())
 }
 
-/// WMS GetMap URL（EPSG:3857，bbox 为 WebMercator 米，minx,miny,maxx,maxy）。
+/// WMS GetMap URL (EPSG:3857, bbox in WebMercator meters, minx,miny,maxx,maxy).
 pub fn wms_url_3857(base: &str, layers: &str, bbox: [f64; 4], width: u32, height: u32) -> String {
     let sep = if base.contains('?') { '&' } else { '?' };
     format!(
@@ -478,7 +478,7 @@ pub fn wms_url_3857(base: &str, layers: &str, bbox: [f64; 4], width: u32, height
     )
 }
 
-/// WMS GetMap URL。`bbox` 是 min-lon, min-lat, max-lon, max-lat。
+/// WMS GetMap URL. `bbox` is min-lon, min-lat, max-lon, max-lat.
 pub fn wms_url(base: &str, layers: &str, bbox: [f64; 4], width: u32, height: u32) -> String {
     let sep = if base.contains('?') { '&' } else { '?' };
     format!(
@@ -487,30 +487,30 @@ pub fn wms_url(base: &str, layers: &str, bbox: [f64; 4], width: u32, height: u32
     )
 }
 
-/// 影像偏移（像素）。同一数据源在不同地点可以有不同偏移。
+/// Imagery offset (pixels). The same data source can have different offsets in different places.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageryOffset {
-    /// 影像源 id。
+    /// Imagery source id.
     pub source_id: String,
-    /// 纬度。
+    /// Latitude.
     pub lat: f64,
-    /// 经度。
+    /// Longitude.
     pub lon: f64,
-    /// 向东的像素偏移。
+    /// Eastward pixel offset.
     pub dx_px: f64,
-    /// 向南的像素偏移。
+    /// Southward pixel offset.
     pub dy_px: f64,
 }
 
-/// 内存里的偏移库。
+/// In-memory offset database.
 #[derive(Clone, Debug, Default)]
 pub struct OffsetDb {
-    /// 全部记录。
+    /// All records.
     pub entries: Vec<ImageryOffset>,
 }
 
 impl OffsetDb {
-    /// 从 JSON 数组加载。缺字段的条目被跳过并计入返回的错误数。
+    /// Load from a JSON array. Entries with missing fields are skipped and counted into the returned error count.
     pub fn from_json(text: &str) -> Result<(Self, usize), String> {
         let value: serde_json::Value = serde_json::from_str(text).map_err(|err| err.to_string())?;
         let Some(items) = value.as_array() else {
@@ -542,7 +542,7 @@ impl OffsetDb {
         Ok((Self { entries }, skipped))
     }
 
-    /// 同一数据源里离查询点最近的偏移。
+    /// Offset nearest to the query point within the same data source.
     pub fn nearest(&self, source_id: &str, lat: f64, lon: f64) -> Option<&ImageryOffset> {
         self.entries
             .iter()
@@ -554,16 +554,16 @@ impl OffsetDb {
             })
     }
 
-    /// `nearest` 的别名，强调按数据源查询。
+    /// Alias of `nearest`, emphasizing lookup by data source.
     pub fn nearest_for_source(&self, source_id: &str, lat: f64, lon: f64) -> Option<&ImageryOffset> {
         self.nearest(source_id, lat, lon)
     }
 
-    /// 序列化为 JSON 数组，便于持久化与分享。
+    /// Serialize to a JSON array for persistence and sharing.
     ///
-    /// 输出顺序与 [`entries`](Self::entries) 一致，因此同样的内存数据总是得到同样的
-    /// 字符串。非有限浮点数（NaN / 无穷）会被序列化成 JSON `null`，加载时这些条目
-    /// 会被跳过或按 0 处理。
+    /// Output order matches [`entries`](Self::entries), so the same in-memory data always yields the same
+    /// string. Non-finite floats (NaN / infinity) are serialized as JSON `null`; on load those entries
+    /// are skipped or treated as 0.
     pub fn to_json(&self) -> String {
         let items: Vec<serde_json::Value> = self
             .entries
@@ -581,9 +581,9 @@ impl OffsetDb {
         serde_json::to_string(&serde_json::Value::Array(items)).unwrap_or_else(|_| "[]".to_owned())
     }
 
-    /// 从 `path` 读取 JSON 并调用 [`from_json`](Self::from_json)。
+    /// Read JSON from `path` and call [`from_json`](Self::from_json).
     ///
-    /// 返回 `(数据库, 被跳过条目数)`。
+    /// Returns `(database, skipped entry count)`.
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<(Self, usize), String> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)
@@ -591,10 +591,10 @@ impl OffsetDb {
         Self::from_json(&text)
     }
 
-    /// 原子写入 `path`：先写同目录临时文件，再重命名覆盖目标。
+    /// Atomically write `path`: first write a temporary file in the same directory, then rename over the target.
     ///
-    /// Windows 上重命名不能覆盖已存在的文件，因此先尝试 rename；失败时删除目标后
-    /// 重试。删除与重命名之间不是严格原子的，但不会留下半截 JSON。
+    /// On Windows a rename cannot overwrite an existing file, so try rename first; on failure delete the target and
+    /// retry. Deletion and rename are not strictly atomic, but no half-written JSON is left behind.
     pub fn save(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
         use std::io::Write;
 
@@ -612,7 +612,7 @@ impl OffsetDb {
             unique_suffix()
         ));
 
-        // 先把内容完整落盘并 fsync，避免 rename 后出现空文件。
+        // Flush the content fully and fsync before rename, avoiding an empty file after the rename.
         let write_result = (|| -> std::io::Result<()> {
             let mut file = std::fs::File::create(&tmp)?;
             file.write_all(self.to_json().as_bytes())?;
@@ -631,7 +631,7 @@ impl OffsetDb {
                     tmp.display()
                 ));
             }
-            // Windows: rename 不覆盖现有文件，先删除再重试。
+            // Windows: rename does not overwrite existing files, so delete first and retry.
             if let Err(err) = std::fs::remove_file(path) {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(format!("failed to replace offset db {}: {err}", path.display()));
@@ -647,7 +647,7 @@ impl OffsetDb {
         Ok(())
     }
 
-    /// 插入或替换一条偏移。同一 `source_id` 且坐标相差不超过 1e-6 度视为同一条记录。
+    /// Insert or replace an offset. Same `source_id` with coordinates within 1e-6 degrees is treated as the same record.
     pub fn insert_or_replace(&mut self, entry: ImageryOffset) {
         const EPSILON: f64 = 1e-6;
         let existing = self.entries.iter_mut().find(|existing| {
@@ -662,7 +662,7 @@ impl OffsetDb {
     }
 }
 
-/// 生成同目录临时文件名后缀，避免并发写入互相覆盖。
+/// Generate a temporary filename suffix in the same directory to avoid concurrent writes clobbering each other.
 fn unique_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -706,7 +706,7 @@ mod tests {
         }
     }
 
-    /// 测试用临时文件，Drop 时清理，断言失败也不会在 temp 目录留垃圾。
+    /// Temporary file for tests, cleaned up on Drop, so failed assertions leave no garbage in the temp directory.
     struct TempFile(std::path::PathBuf);
 
     impl TempFile {
@@ -862,18 +862,24 @@ mod tests {
         let db = sample_db();
         let first = db.to_json();
         let second = db.to_json();
-        assert_eq!(first, second, "to_json 必须是确定性的");
+        assert_eq!(first, second, "to_json must be deterministic");
 
-        // 输出本身就是合法 JSON 数组，并且包含全部约定字段。
-        let parsed: serde_json::Value = serde_json::from_str(&first).expect("to_json 输出合法 JSON");
+        // The output itself is a valid JSON array and contains all agreed fields.
+        let parsed: serde_json::Value = serde_json::from_str(&first).expect("to_json must output valid JSON");
         assert!(parsed.is_array());
         for key in ["source_id", "lat", "lon", "dx_px", "dy_px"] {
-            assert!(first.contains(&format!("\"{key}\"")), "缺少字段 {key}: {first}");
+            assert!(
+                first.contains(&format!("\"{key}\"")),
+                "missing field {key}: {first}"
+            );
         }
 
-        let (loaded, skipped) = OffsetDb::from_json(&first).expect("from_json 应接受 to_json 输出");
-        assert_eq!(skipped, 0, "自己写出的条目不应被跳过");
-        assert_eq!(loaded.entries, db.entries, "往返后条目完全一致");
+        let (loaded, skipped) = OffsetDb::from_json(&first).expect("from_json must accept to_json output");
+        assert_eq!(skipped, 0, "entries we wrote ourselves must not be skipped");
+        assert_eq!(
+            loaded.entries, db.entries,
+            "entries must be identical after the round trip"
+        );
     }
 
     #[test]
@@ -887,7 +893,7 @@ mod tests {
             dx_px: 1.0,
             dy_px: 2.0,
         });
-        // 同一数据源、坐标在 1e-6 度以内：替换而不是追加。
+        // Same data source, coordinates within 1e-6 degrees: replace rather than append.
         db.insert_or_replace(ImageryOffset {
             source_id: "bing".into(),
             lat: 39.9 + 5e-7,
@@ -899,7 +905,7 @@ mod tests {
         assert_eq!(db.entries[0].dx_px, 9.0);
         assert_eq!(db.entries[0].dy_px, 8.0);
 
-        // 不同数据源即使坐标相同也各自保留。
+        // Different data sources are kept separately even at identical coordinates.
         db.insert_or_replace(ImageryOffset {
             source_id: "esri".into(),
             lat: 39.9,
@@ -909,7 +915,7 @@ mod tests {
         });
         assert_eq!(db.entries.len(), 2);
 
-        // 同一数据源但坐标超出容差：新增一条。
+        // Same data source but coordinates beyond the tolerance: add a new entry.
         db.insert_or_replace(ImageryOffset {
             source_id: "bing".into(),
             lat: 40.9,
@@ -919,7 +925,9 @@ mod tests {
         });
         assert_eq!(db.entries.len(), 3);
 
-        let nearest = db.nearest_for_source("bing", 39.9, 116.4).expect("有记录");
+        let nearest = db
+            .nearest_for_source("bing", 39.9, 116.4)
+            .expect("existing entry");
         assert_eq!(nearest.dx_px, 9.0);
         assert!(db.nearest_for_source("missing", 0.0, 0.0).is_none());
     }
@@ -929,13 +937,13 @@ mod tests {
         let file = TempFile::new("save-load");
         let db = sample_db();
 
-        db.save(&file.0).expect("首次保存");
-        assert!(file.0.exists(), "保存后目标文件应存在");
-        let (loaded, skipped) = OffsetDb::load(&file.0).expect("加载");
+        db.save(&file.0).expect("first save");
+        assert!(file.0.exists(), "target file must exist after saving");
+        let (loaded, skipped) = OffsetDb::load(&file.0).expect("load");
         assert_eq!(skipped, 0);
         assert_eq!(loaded.entries, db.entries);
 
-        // 覆盖已有文件：Windows 上 rename 不能直接覆盖，代码会先删除目标。
+        // Overwrite an existing file: on Windows rename cannot overwrite directly, so the code deletes the target first.
         let mut updated = db.clone();
         updated.insert_or_replace(ImageryOffset {
             source_id: "bing".into(),
@@ -944,21 +952,21 @@ mod tests {
             dx_px: 42.0,
             dy_px: 0.5,
         });
-        updated.save(&file.0).expect("覆盖保存");
-        let (reloaded, skipped) = OffsetDb::load(&file.0).expect("重新加载");
+        updated.save(&file.0).expect("overwrite save");
+        let (reloaded, skipped) = OffsetDb::load(&file.0).expect("reload");
         assert_eq!(skipped, 0);
         assert_eq!(reloaded.entries, updated.entries);
         assert_eq!(reloaded.entries.len(), 2);
 
-        // 保存后同目录不应残留临时文件。
-        let dir = file.0.parent().expect("temp 目录");
-        let prefix = format!(".{}.", file.0.file_name().expect("文件名").to_string_lossy());
+        // After saving, no temporary files should remain in the same directory.
+        let dir = file.0.parent().expect("temp directory");
+        let prefix = format!(".{}.", file.0.file_name().expect("file name").to_string_lossy());
         let leftovers: Vec<_> = std::fs::read_dir(dir)
-            .expect("读取 temp 目录")
+            .expect("read temp directory")
             .filter_map(|item| item.ok())
             .map(|item| item.file_name().to_string_lossy().into_owned())
             .filter(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
     }
 }

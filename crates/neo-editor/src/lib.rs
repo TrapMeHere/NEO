@@ -1,14 +1,18 @@
-//! # neo-editor — 编辑核心（阶段 3）
+//! # neo-editor — editing core (stage 3)
 //!
-//! 所有数据修改的唯一入口：`Command` → [`EditContext`]（数据 + 空间索引 + 反查）→ `DataSet`。
+//! The single entry point for all data modification:
+//! `Command` → [`EditContext`] (data + spatial index + referrers) → `DataSet`.
 //!
-//! 设计要点（docs/06、ADR-0008、ADR-0009）：
-//! * **单写者**：`Editor` 持有数据与索引，命令顺序执行；
-//! * **原子事务**：先 precheck 全部命令，再依次 apply；任一失败逆序 undo 已应用部分；
-//! * **History**：支持命令批与拖动合并（连续 MoveNode 合并为一条）；
-//! * **Journal**：JSONL 帧，replay 只应用到最后一个 `TxCommit`，杀进程不产生半事务。
+//! Design points (docs/06, ADR-0008, ADR-0009):
+//! * **Single writer**: `Editor` owns data and indexes; commands execute in order;
+//! * **Atomic transaction**: precheck all commands first, then apply them in sequence; on
+//!   any failure undo the already-applied part in reverse order;
+//! * **History**: supports command batches and drag merging (consecutive MoveNode commands
+//!   merge into one entry);
+//! * **Journal**: JSONL frames; replay applies only up to the last `TxCommit`, so killing
+//!   the process never leaves a half transaction.
 //!
-//! 本 crate 不依赖 GUI/GPU/网络。
+//! This crate does not depend on GUI/GPU/network.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

@@ -1,4 +1,4 @@
-name: Feature request / 功能建议
+name: Feature request
 description: Suggest a feature or improvement
 title: "[Feature] "
 labels: ["enhancement"]
@@ -6,36 +6,36 @@ body:
   - type: markdown
     attributes:
       value: |
-        较大的功能建议请先说明使用场景；涉及架构变更的提案可能需要 ADR。
+        For larger feature proposals, describe the use case first; proposals involving architectural changes may need an ADR.
   - type: textarea
     id: problem
     attributes:
-      label: Problem / 使用场景
-      description: 现在遇到了什么问题？为什么现有功能不够？
+      label: Problem
+      description: What problem do you hit today? Why is the current functionality not enough?
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Proposal / 建议方案
+      label: Proposal
     validations:
       required: true
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives / 备选方案
+      label: Alternatives
   - type: dropdown
     id: area
     attributes:
-      label: Area / 模块
+      label: Area
       options:
-        - UI / 界面
-        - Editing / 编辑
-        - Rendering / 渲染
-        - IO / 文件格式
-        - Performance / 性能
-        - i18n / 本地化
-        - Docs / 文档
+        - UI
+        - Editing
+        - Rendering
+        - IO / file formats
+        - Performance
+        - i18n / localization
+        - Docs
         - Other
   - type: checkboxes
     id: contribute

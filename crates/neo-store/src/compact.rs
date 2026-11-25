@@ -1,11 +1,11 @@
-//! 阶段 6 的内存压缩原语：坐标差分、引用差分 varint、有序 ID 列压缩。
+//! Phase 6 in-memory compression primitives: coordinate deltas, reference-delta varints, sorted ID column compression.
 //!
-//! 字符串驻留已经在 [`crate::DataSet::intern`] 里。这里补的是可以落盘或换出的
-//! 紧凑编码，不替换在线 SoA（在线编辑仍用 `i32` 坐标和句柄）。
+//! String interning already lives in [`crate::DataSet::intern`]. What is added here is a compact encoding
+//! that can be persisted or paged out; it does not replace the online SoA (in-memory editing still uses `i32` coordinates and handles).
 
 use neo_core::NeoError;
 
-/// ZigZag + unsigned LEB128，适合小差分。
+/// ZigZag + unsigned LEB128, suitable for small deltas.
 pub fn encode_delta_varints(values: &[i64]) -> Vec<u8> {
     let mut out = Vec::with_capacity(values.len());
     let mut prev = 0i64;
@@ -17,7 +17,7 @@ pub fn encode_delta_varints(values: &[i64]) -> Vec<u8> {
     out
 }
 
-/// [`encode_delta_varints`] 的逆变换。
+/// Inverse of [`encode_delta_varints`].
 pub fn decode_delta_varints(bytes: &[u8]) -> Result<Vec<i64>, NeoError> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -33,7 +33,8 @@ pub fn decode_delta_varints(bytes: &[u8]) -> Result<Vec<i64>, NeoError> {
     Ok(out)
 }
 
-/// 经纬度（1e-7 度）按点差分压缩。纬度和经度各自相对上一点差分，避免交错后出现数亿的假差分。
+/// Delta-compress lat/lon (1e-7 degree) per point. Latitude and longitude are each differenced against the
+/// previous point, avoiding hundreds-of-millions false deltas from interleaving.
 pub fn encode_coords(coords: &[(i32, i32)]) -> Vec<u8> {
     let mut out = Vec::with_capacity(coords.len());
     let mut prev_lat = 0i64;
@@ -49,7 +50,7 @@ pub fn encode_coords(coords: &[(i32, i32)]) -> Vec<u8> {
     out
 }
 
-/// [`encode_coords`] 的逆变换。奇数个 varint 视为损坏。
+/// Inverse of [`encode_coords`]. An odd number of varints is treated as corruption.
 pub fn decode_coords(bytes: &[u8]) -> Result<Vec<(i32, i32)>, NeoError> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -72,13 +73,13 @@ pub fn decode_coords(bytes: &[u8]) -> Result<Vec<(i32, i32)>, NeoError> {
     Ok(out)
 }
 
-/// 升序 `u32` ID 列的差分 varint。
+/// Delta varints for an ascending `u32` ID column.
 pub fn encode_sorted_ids(ids: &[u32]) -> Vec<u8> {
     let values: Vec<i64> = ids.iter().map(|id| i64::from(*id)).collect();
     encode_delta_varints(&values)
 }
 
-/// [`encode_sorted_ids`] 的逆变换。
+/// Inverse of [`encode_sorted_ids`].
 pub fn decode_sorted_ids(bytes: &[u8]) -> Result<Vec<u32>, NeoError> {
     Ok(decode_delta_varints(bytes)?
         .into_iter()

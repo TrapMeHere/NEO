@@ -1,42 +1,43 @@
-//! SQLite 快照库：journal 快照的元数据 + 内容（阶段 4 自动保存/恢复）。
+//! SQLite snapshot store: metadata + content of journal snapshots (phase 4 autosave/recovery).
 //!
-//! 与 `journal` 的分工：journal 是逐命令 WAL；快照库保存**周期性完整 journal 字节**
-//! 与统计信息，便于误删/损坏后恢复，也便于展示“最近自动保存”列表。
+//! Division of labor with `journal`: the journal is a per-command WAL; the snapshot store keeps
+//! **periodic complete journal bytes** plus statistics, for recovery after accidental deletion/corruption
+//! and for showing the "recent autosaves" list.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// 快照元数据。
+/// Snapshot metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotMeta {
-    /// 自增 id。
+    /// Auto-increment id.
     pub id: i64,
-    /// unix 秒。
+    /// Unix seconds.
     pub created_at: i64,
-    /// 标签（例如帧数/版本）。
+    /// Label (e.g. frame count/version).
     pub label: String,
-    /// 节点数。
+    /// Node count.
     pub nodes: usize,
-    /// way 数。
+    /// Way count.
     pub ways: usize,
-    /// relation 数。
+    /// Relation count.
     pub relations: usize,
-    /// journal 字节数。
+    /// Journal size in bytes.
     pub bytes: usize,
 }
 
-/// 快照库。
+/// Snapshot store.
 pub struct SnapshotStore {
     conn: Connection,
 }
 
 impl SnapshotStore {
-    /// 打开/创建数据库（自动建表）。
+    /// Open/create the database (creates tables automatically).
     pub fn open(path: impl AsRef<std::path::Path>) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         Self::from_conn(conn)
     }
 
-    /// 内存库（测试）。
+    /// In-memory database (for tests).
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         Self::from_conn(Connection::open_in_memory()?)
     }
@@ -57,7 +58,7 @@ impl SnapshotStore {
         Ok(Self { conn })
     }
 
-    /// 记录一个快照。
+    /// Record a snapshot.
     pub fn record(
         &self,
         label: &str,
@@ -78,7 +79,7 @@ impl SnapshotStore {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// 最近 N 个快照（新→旧）。
+    /// The latest N snapshots (newest → oldest).
     pub fn list(&self, limit: usize) -> rusqlite::Result<Vec<SnapshotMeta>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, created_at, label, nodes, ways, relations, length(journal)
@@ -98,7 +99,7 @@ impl SnapshotStore {
         rows.collect()
     }
 
-    /// 最近一个快照及其 journal 字节。
+    /// The most recent snapshot and its journal bytes.
     pub fn latest(&self) -> rusqlite::Result<Option<(SnapshotMeta, Vec<u8>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, created_at, label, nodes, ways, relations, length(journal)
@@ -128,7 +129,7 @@ impl SnapshotStore {
         Ok(Some((meta, bytes)))
     }
 
-    /// 只保留最近 `keep` 个快照，返回删除数。
+    /// Keep only the latest `keep` snapshots; returns the number deleted.
     pub fn prune(&self, keep: usize) -> rusqlite::Result<usize> {
         self.conn.execute(
             "DELETE FROM snapshots WHERE id NOT IN

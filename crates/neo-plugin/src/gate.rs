@@ -1,4 +1,4 @@
-//! 宿主调用门。WASM 导入和直接调用走同一套权限检查。
+//! Host call gate. WASM imports and direct calls go through the same permission checks.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,75 +7,75 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::PluginError;
 use crate::capability::CapabilitySet;
 
-/// 插件交回来、尚未进入编辑器的命令。
+/// A command a plugin handed back that has not yet entered the editor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingCommand {
-    /// 来源插件 id。
+    /// Originating plugin id.
     pub plugin: String,
-    /// 命令名，例如 `add-node`。
+    /// Command name, e.g. `add-node`.
     pub name: String,
-    /// JSON 参数。
+    /// JSON arguments.
     pub args_json: String,
 }
 
-/// 面板描述。
+/// Panel description.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PanelDescriptor {
-    /// 插件分配到的面板号（从 1 开始）。
+    /// Panel number assigned to the plugin (starting at 1).
     pub id: u32,
-    /// 插件内的面板 id。
+    /// Panel id inside the plugin.
     pub panel_id: String,
-    /// 标题。
+    /// Title.
     pub title: String,
-    /// 最近一次状态文本。
+    /// Most recent status text.
     pub status: String,
 }
 
-/// 权限或参数错误。插件看到的是状态码，宿主保留这个枚举。
+/// Permission or argument error. Plugins see a status code; the host keeps this enum.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HostError {
-    /// 未授权。
+    /// Unauthorized.
     #[error("permission denied: {0}")]
     PermissionDenied(String),
-    /// 找不到对象或文件。
+    /// Object or file not found.
     #[error("not found: {0}")]
     NotFound(String),
-    /// 参数不合法。
+    /// Invalid argument.
     #[error("invalid argument: {0}")]
     Invalid(String),
-    /// 超出配额。
+    /// Quota exceeded.
     #[error("quota exceeded: {0}")]
     QuotaExceeded(String),
 }
 
-/// 一次宿主调用的记账。
+/// Accounting for one host call.
 #[derive(Debug)]
 pub struct HostGate {
-    /// 插件 id。
+    /// Plugin id.
     pub plugin_id: String,
-    /// 求交之后的能力。
+    /// Capabilities after intersection.
     pub caps: CapabilitySet,
-    /// 已入队的命令。
+    /// Queued commands.
     pub commands: Vec<PendingCommand>,
-    /// 面板。
+    /// Panels.
     pub panels: Vec<PanelDescriptor>,
-    /// 本事件剩余的命令配额。
+    /// Remaining command quota for this event.
     pub command_budget: u32,
-    /// 快照版本（只读）。
+    /// Snapshot version (read-only).
     pub snapshot_version: u64,
-    /// 允许读取的根目录。
+    /// Root directory allowed for reading.
     pub file_root: Option<PathBuf>,
-    /// 最近一次成功读到的字节。
+    /// Bytes from the most recent successful read.
     pub last_file: Vec<u8>,
-    /// 实际放行的 URL。被拒绝的不会记进来。
+    /// URLs actually allowed. Denied ones are not recorded.
     pub http_log: Vec<String>,
-    /// 放行的 HTTP 次数，方便跨插件断言。
+    /// Number of allowed HTTP requests, for cross-plugin assertions.
     pub http_hits: Arc<AtomicU32>,
 }
 
 impl HostGate {
-    /// 新建。`http_hits` 只在 URL 被放行时增加。
+    /// New. `http_hits` only increases when a URL is allowed.
     pub fn new(plugin_id: impl Into<String>, caps: CapabilitySet, http_hits: Arc<AtomicU32>) -> Self {
         Self {
             plugin_id: plugin_id.into(),
@@ -91,12 +91,12 @@ impl HostGate {
         }
     }
 
-    /// 只读快照版本。始终允许。
+    /// Read-only snapshot version. Always allowed.
     pub fn snapshot_version(&self) -> u64 {
         self.snapshot_version
     }
 
-    /// 入队一条命令。未授权或超额都不会写入 `commands`。
+    /// Queues a command. Unauthorized or over-quota commands never write to `commands`.
     pub fn submit_command(&mut self, name: &str, args_json: &str) -> Result<u64, HostError> {
         if !self.caps.command {
             return Err(HostError::PermissionDenied("command".into()));
@@ -116,7 +116,7 @@ impl HostGate {
         Ok(self.commands.len() as u64)
     }
 
-    /// 注册面板。
+    /// Registers a panel.
     pub fn register_panel(&mut self, id: &str, title: &str) -> Result<u32, HostError> {
         if !self.caps.ui {
             return Err(HostError::PermissionDenied("ui".into()));
@@ -134,7 +134,7 @@ impl HostGate {
         Ok(panel)
     }
 
-    /// 更新面板状态文本。
+    /// Updates a panel's status text.
     pub fn set_panel_status(&mut self, panel: u32, text: &str) -> Result<(), HostError> {
         if !self.caps.ui {
             return Err(HostError::PermissionDenied("ui".into()));
@@ -146,7 +146,7 @@ impl HostGate {
         Ok(())
     }
 
-    /// 读插件目录内的相对路径。`..`、绝对路径和无授权都拒绝，并且不访问目标。
+    /// Reads a relative path inside the plugin directory. `..`, absolute paths, and missing grants are rejected without touching the target.
     pub fn read_file(&mut self, rel: &str) -> Result<Vec<u8>, HostError> {
         if !self.caps.filesystem {
             return Err(HostError::PermissionDenied("filesystem".into()));
@@ -191,7 +191,7 @@ impl HostGate {
         Ok(bytes)
     }
 
-    /// 记录一次放行的 HTTPS 请求。拒绝的 URL 不会增加 `http_hits`。
+    /// Records one allowed HTTPS request. Denied URLs do not increase `http_hits`.
     pub fn http_request(&mut self, url: &str, method: &str) -> Result<Vec<u8>, HostError> {
         if !self.caps.allows_url(url) {
             return Err(HostError::PermissionDenied(format!("network {url}")));
@@ -199,8 +199,8 @@ impl HostGate {
         if !method.eq_ignore_ascii_case("GET") && !method.eq_ignore_ascii_case("POST") {
             return Err(HostError::Invalid(format!("method {method}")));
         }
-        // 宿主侧日志同样有配额：插件可以在 fuel 预算内发很多请求，
-        // 无上限的 Vec 会绕过 guest 的内存限制把宿主撑爆。
+        // Host-side logging has a quota too: a plugin can issue many requests within its fuel budget, and
+        // an unbounded Vec would bypass the guest memory limit and blow up the host.
         if self.http_log.len() >= MAX_HTTP_LOG {
             self.http_log.remove(0);
         }
@@ -223,7 +223,7 @@ fn is_safe_relative(rel: &str) -> bool {
         && !rel.starts_with('/')
 }
 
-/// 把 [`HostError`] 收成插件 ABI 的状态码。
+/// Collapses [`HostError`] into the plugin ABI status code.
 #[cfg(feature = "wasm-plugins")]
 pub fn host_code(err: HostError) -> i32 {
     match err {

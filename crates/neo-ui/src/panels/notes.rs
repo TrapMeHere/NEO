@@ -1,4 +1,4 @@
-//! notes 面板。
+//! notes panel.
 
 use egui::{Color32, RichText};
 use egui_phosphor::regular as ph;
@@ -6,48 +6,48 @@ use neo_i18n::t;
 
 use super::UiActions;
 
-/// 一条 note 评论（UI 视图）。
+/// One note comment (UI view).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteCommentView {
-    /// 时间。
+    /// Time.
     pub date: String,
-    /// 用户。
+    /// User.
     pub user: String,
-    /// 文本。
+    /// Text.
     pub text: String,
 }
 
-/// 一条 note（UI 视图）。
+/// One note (UI view).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteView {
-    /// id。
+    /// id.
     pub id: i64,
-    /// 纬度。
+    /// Latitude.
     pub lat: f64,
-    /// 经度。
+    /// Longitude.
     pub lon: f64,
-    /// `open`/`closed`。
+    /// `open`/`closed`.
     pub status: String,
-    /// 评论。
+    /// Comments.
     pub comments: Vec<NoteCommentView>,
 }
 
-/// Notes 窗口状态。
+/// Notes window state.
 #[derive(Clone, Debug, Default)]
 pub struct NotesUiState {
-    /// 当前 bbox 内的 notes。
+    /// Notes within the current bbox.
     pub notes: Vec<NoteView>,
-    /// 选中的 note id。
+    /// Selected note id.
     pub selected: Option<i64>,
-    /// 输入框（新建/评论/关闭共用）。
+    /// Input field (shared by create/comment/close).
     pub text: String,
-    /// 状态文本。
+    /// Status text.
     pub status: String,
-    /// 后台请求进行中。
+    /// A background request is in progress.
     pub busy: bool,
 }
 
-/// Notes 窗口。
+/// Notes window.
 pub fn notes_window(ctx: &egui::Context, actions: &mut UiActions, open: &mut bool, state: &mut NotesUiState) {
     if !*open {
         return;

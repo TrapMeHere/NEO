@@ -1,19 +1,23 @@
-//! # neo-i18n — NEO 界面文本
+//! # neo-i18n — NEO UI text
 //!
-//! 所有用户可见文本集中存放在仓库根目录的 `i18n/` 目录：
+//! All user-visible text lives in the repository `i18n/` directory:
 //!
-//! * `i18n/zh-CN.json` — 简体中文（默认，也是 `zh` 的回退表）
-//! * `i18n/zh-TW.json` — 繁體中文（臺灣）
-//! * `i18n/en-US.json` — English
+//! * `i18n/en-US.json` — English (default UI language, source/base language; every key must exist here)
+//! * `i18n/zh-CN.json` — Simplified Chinese (translation of en-US)
+//! * `i18n/zh-TW.json` — Traditional Chinese, Taiwan (translation of en-US)
 //!
-//! 语言解析：`zh`（不区分地区）按回退规则归到简体中文；`zh-TW`/`zh-Hant` 指向繁體。
-//! 某语言缺 key 时按 [`Lang::fallback`] 回退（zh-TW → zh，即简体表；英文缺 key 也回退
-//! 到简体），再缺则返回 key 本身（便于发现漏翻）。
+//! English is the baseline language. At startup the desktop app detects the operating
+//! system locale and picks the matching language, falling back to English. `NEO_LANG`
+//! always overrides the detection. Chinese files are translations of the English base.
+//! Resolution order: `zh-TW` falls back to `zh-CN`, which falls back to English; English
+//! is the root and returns the key itself when a key is missing.
 //!
-//! 启动时优先读取可执行文件旁的 `i18n/*.json`；缺失或损坏时回退到编译期嵌入的副本。
-//! 使用 [`t`] 取单条文本，[`tf`] 支持 `{name}` 占位符。
+//! At startup the loader prefers `i18n/*.json` next to the executable and falls back to the
+//! copies embedded at compile time when files are missing or broken. Use [`t`] for a single
+//! string and [`tf`] for `{name}` placeholder substitution.
 //!
-//! 语言可在运行时切换：`NEO_LANG=zh-TW` 环境变量，或界面「语言 / Language」菜单。
+//! The language can be switched at runtime with the `NEO_LANG` environment variable or the
+//! in-app "Language" menu.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -22,78 +26,91 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// 支持的语言。
+/// Supported UI languages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Lang {
-    /// 简体中文（默认；也是 `zh` 与其它语言的回退表）。
+    /// English (default UI language; source/base language).
     #[default]
-    ZhCn,
-    /// 繁體中文（臺灣）。
-    ZhTw,
-    /// English。
     EnUs,
+    /// Simplified Chinese (translation of en-US).
+    ZhCn,
+    /// Traditional Chinese, Taiwan (translation of en-US).
+    ZhTw,
 }
 
 impl Lang {
-    /// 从语言代码解析（`zh` / `zh-CN` / `zh-TW` / `zh-Hant` / `en-US` / `en`）
-    ///。
-    /// `zh` 不带地区时按回退规则归到简体中文；下划线写法同样接受。
+    /// Parses a language/locale code (`en`, `en-US`, `zh`, `zh-CN`, `zh_TW.UTF-8`,
+    /// `zh-Hant`, `zh-Hans`, `de-DE`, ...).
+    ///
+    /// Only languages NEO ships translations for are recognized; anything else returns
+    /// `None` so callers can fall back to the default (English). A bare `zh` is treated as
+    /// Simplified Chinese, and `zh-Hant`/`zh-TW`/`zh-HK` as Traditional Chinese.
     pub fn from_code(code: &str) -> Option<Self> {
-        match code.trim().to_ascii_lowercase().as_str() {
-            "zh" | "zh-cn" | "zh_cn" | "cn" | "chinese" | "zh-hans" | "zh_hans" => Some(Self::ZhCn),
-            "zh-tw" | "zh_tw" | "tw" | "zh-hk" | "zh_hk" | "zh-hant" | "zh_hant" | "traditional" => {
-                Some(Self::ZhTw)
+        let normalized = code.trim().to_ascii_lowercase().replace('_', "-");
+        // Drop POSIX suffixes such as "zh-cn.utf-8" or "sr-rs@latin".
+        let base = normalized.split(['.', '@']).next().unwrap_or(normalized.as_str());
+        if base == "zh" || base.starts_with("zh-") {
+            if base.contains("hant") || base.contains("-tw") || base.contains("-hk") || base.contains("-mo") {
+                return Some(Self::ZhTw);
             }
-            "en" | "en-us" | "en_us" | "english" => Some(Self::EnUs),
+            return Some(Self::ZhCn);
+        }
+        if base == "en" || base.starts_with("en-") || base == "english" {
+            return Some(Self::EnUs);
+        }
+        match base {
+            "cn" | "chinese" => Some(Self::ZhCn),
+            "traditional" => Some(Self::ZhTw),
             _ => None,
         }
     }
 
-    /// 语言代码（写回设置 / 展示用）。
+    /// Language code used when persisting/displaying the setting.
     pub fn code(self) -> &'static str {
         match self {
+            Self::EnUs => "en-US",
             Self::ZhCn => "zh-CN",
             Self::ZhTw => "zh-TW",
-            Self::EnUs => "en-US",
         }
     }
 
-    /// 缺 key 时的回退语言。
+    /// Fallback language used when the current table misses a key.
     ///
-    /// 繁體与英文都回退到简体（`zh`）；简体本身没有更底的回退。
+    /// `zh-TW` → `zh-CN` → English; English is the base and has no further fallback.
     pub fn fallback(self) -> Option<Self> {
         match self {
-            Self::ZhCn => None,
-            Self::ZhTw | Self::EnUs => Some(Self::ZhCn),
+            Self::EnUs => None,
+            Self::ZhCn => Some(Self::EnUs),
+            Self::ZhTw => Some(Self::ZhCn),
         }
     }
 
-    /// 是否为中文（简体或繁體）。
+    /// Whether this language is Chinese (Simplified or Traditional).
     pub fn is_chinese(self) -> bool {
         matches!(self, Self::ZhCn | Self::ZhTw)
     }
 
     fn file_name(self) -> &'static str {
         match self {
+            Self::EnUs => "en-US.json",
             Self::ZhCn => "zh-CN.json",
             Self::ZhTw => "zh-TW.json",
-            Self::EnUs => "en-US.json",
         }
     }
 
     fn index(self) -> u8 {
         match self {
-            Self::ZhCn => 0,
-            Self::ZhTw => 1,
-            Self::EnUs => 2,
+            Self::EnUs => 0,
+            Self::ZhCn => 1,
+            Self::ZhTw => 2,
         }
     }
 
     fn from_index(index: u8) -> Self {
         match index {
-            2 => Self::EnUs,
-            1 => Self::ZhTw,
-            _ => Self::ZhCn,
+            1 => Self::ZhCn,
+            2 => Self::ZhTw,
+            _ => Self::EnUs,
         }
     }
 }
@@ -109,9 +126,9 @@ static EN: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 fn embedded(lang: Lang) -> &'static str {
     match lang {
+        Lang::EnUs => EN_JSON,
         Lang::ZhCn => ZH_JSON,
         Lang::ZhTw => ZH_TW_JSON,
-        Lang::EnUs => EN_JSON,
     }
 }
 
@@ -136,7 +153,7 @@ fn i18n_search_dirs() -> Vec<PathBuf> {
         && let Some(parent) = exe.parent()
     {
         dirs.push(parent.join("i18n"));
-        // 开发时从 out/neo-desktop/... 或 out/cargo/... 回退到仓库根。
+        // During development, climb from out/neo-desktop/... or out/cargo/... to the repo root.
         if let Some(root) = parent.parent().and_then(|p| p.parent()) {
             dirs.push(root.join("i18n"));
         }
@@ -152,32 +169,54 @@ fn i18n_search_dirs() -> Vec<PathBuf> {
 
 fn catalog(lang: Lang) -> &'static HashMap<String, String> {
     match lang {
+        Lang::EnUs => EN.get_or_init(|| load_table(Lang::EnUs)),
         Lang::ZhCn => ZH.get_or_init(|| load_table(Lang::ZhCn)),
         Lang::ZhTw => ZH_TW.get_or_init(|| load_table(Lang::ZhTw)),
-        Lang::EnUs => EN.get_or_init(|| load_table(Lang::EnUs)),
     }
 }
 
-/// 当前语言。
+/// Current UI language (English by default until the app detects the system locale).
 pub fn current_language() -> Lang {
     Lang::from_index(CURRENT.load(Ordering::Relaxed))
 }
 
-/// 设置当前语言（立即生效；面板每帧重新取文本）。
+/// Switches the UI language (takes effect immediately; panels re-read text every frame).
 pub fn set_language(lang: Lang) {
     CURRENT.store(lang.index(), Ordering::Relaxed);
 }
 
-/// 按 `NEO_LANG` 环境变量初始化（无该变量时保持默认中文）。
+/// Language from environment variables, if any is set and recognized.
+///
+/// Checks POSIX locale variables in priority order. Windows/macOS GUI applications
+/// usually do not set them; the desktop app performs an OS-level detection and calls
+/// [`set_language`] directly.
+pub fn language_from_env() -> Option<Lang> {
+    for name in ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"] {
+        if let Ok(value) = std::env::var(name)
+            && let Some(lang) = Lang::from_code(&value)
+        {
+            return Some(lang);
+        }
+    }
+    None
+}
+
+/// Initializes the language from `NEO_LANG`, then from POSIX locale variables.
+///
+/// Keeps the default (English) when nothing matches.
 pub fn init_from_env() {
     if let Ok(code) = std::env::var("NEO_LANG")
         && let Some(lang) = Lang::from_code(&code)
     {
         set_language(lang);
+        return;
+    }
+    if let Some(lang) = language_from_env() {
+        set_language(lang);
     }
 }
 
-/// 取一条界面文本；缺失时按 [`Lang::fallback`] 回退，再缺则返回键名。
+/// Looks up one UI string; falls back through [`Lang::fallback`] and then returns the key.
 pub fn t(key: &'static str) -> &'static str {
     let lang = current_language();
     if let Some(value) = catalog(lang).get(key) {
@@ -191,7 +230,7 @@ pub fn t(key: &'static str) -> &'static str {
     key
 }
 
-/// 带 `{name}` 占位符的文本替换。
+/// Replaces `{name}` placeholders in a UI string.
 ///
 /// ```
 /// # use neo_i18n::tf;
@@ -206,12 +245,12 @@ pub fn tf(key: &'static str, args: &[(&str, &str)]) -> String {
     text
 }
 
-/// 诊断：返回将尝试的 i18n 目录（测试用）。
+/// Diagnostics: returns the i18n directories that would be tried (used by tests).
 pub fn search_dirs_for_test() -> Vec<PathBuf> {
     i18n_search_dirs()
 }
 
-/// 判断路径是否像语言表。
+/// Whether a path looks like a language table.
 pub fn looks_like_table(path: &Path) -> bool {
     path.extension().and_then(|ext| ext.to_str()) == Some("json")
 }
@@ -239,26 +278,35 @@ mod tests {
     }
 
     #[test]
-    fn chinese_variants_are_parsed_and_zh_is_the_fallback() {
-        assert_eq!(Lang::from_code("zh"), Some(Lang::ZhCn));
-        assert_eq!(Lang::from_code("zh_CN"), Some(Lang::ZhCn));
-        assert_eq!(Lang::from_code("zh-TW"), Some(Lang::ZhTw));
-        assert_eq!(Lang::from_code("zh_tw"), Some(Lang::ZhTw));
-        assert_eq!(Lang::from_code("zh-Hant"), Some(Lang::ZhTw));
-        assert_eq!(Lang::from_code("zh-Hans"), Some(Lang::ZhCn));
-        assert_eq!(Lang::from_code("en-US"), Some(Lang::EnUs));
-        assert_eq!(Lang::from_code("fr"), None);
-        // 繁體与英文缺失时都回退到 zh（简体表）。
+    fn default_language_is_english() {
+        assert_eq!(Lang::default(), Lang::EnUs);
+        assert_eq!(current_language(), Lang::EnUs);
+        assert_eq!(Lang::EnUs.fallback(), None);
+        assert_eq!(Lang::ZhCn.fallback(), Some(Lang::EnUs));
         assert_eq!(Lang::ZhTw.fallback(), Some(Lang::ZhCn));
-        assert_eq!(Lang::EnUs.fallback(), Some(Lang::ZhCn));
-        assert_eq!(Lang::ZhCn.fallback(), None);
         assert!(Lang::ZhTw.is_chinese() && Lang::ZhCn.is_chinese());
         assert!(!Lang::EnUs.is_chinese());
     }
 
     #[test]
+    fn locale_codes_are_parsed() {
+        assert_eq!(Lang::from_code("en"), Some(Lang::EnUs));
+        assert_eq!(Lang::from_code("en-US"), Some(Lang::EnUs));
+        assert_eq!(Lang::from_code("en_GB.UTF-8"), Some(Lang::EnUs));
+        assert_eq!(Lang::from_code("zh"), Some(Lang::ZhCn));
+        assert_eq!(Lang::from_code("zh_CN.UTF-8"), Some(Lang::ZhCn));
+        assert_eq!(Lang::from_code("zh-Hans-CN"), Some(Lang::ZhCn));
+        assert_eq!(Lang::from_code("zh-TW"), Some(Lang::ZhTw));
+        assert_eq!(Lang::from_code("zh_tw.utf8"), Some(Lang::ZhTw));
+        assert_eq!(Lang::from_code("zh-Hant"), Some(Lang::ZhTw));
+        assert_eq!(Lang::from_code("zh-HK"), Some(Lang::ZhTw));
+        assert_eq!(Lang::from_code("fr-FR"), None);
+        assert_eq!(Lang::from_code("C"), None);
+    }
+
+    #[test]
     fn language_codes_and_files_are_unique() {
-        let langs = [Lang::ZhCn, Lang::ZhTw, Lang::EnUs];
+        let langs = [Lang::EnUs, Lang::ZhCn, Lang::ZhTw];
         let codes: BTreeSet<&str> = langs.iter().map(|lang| lang.code()).collect();
         let files: BTreeSet<&str> = langs.iter().map(|lang| lang.file_name()).collect();
         assert_eq!(codes.len(), langs.len());
@@ -271,43 +319,43 @@ mod tests {
     }
 
     #[test]
-    fn traditional_chinese_covers_every_simplified_key_with_same_placeholders() {
+    fn translations_are_subsets_of_the_english_base_with_same_placeholders() {
+        let english = table(EN_JSON);
         let simplified = table(ZH_JSON);
         let traditional = table(ZH_TW_JSON);
-        assert!(simplified.len() > 300, "简体表异常：{} 条", simplified.len());
-        assert_eq!(
-            simplified.keys().collect::<BTreeSet<_>>(),
-            traditional.keys().collect::<BTreeSet<_>>(),
-            "zh-TW.json 的 key 集合必须与 zh-CN.json 完全一致"
+        assert!(english.len() > 300, "English base looks empty: {}", english.len());
+        // Translations may temporarily miss keys (they fall back), but must never invent keys.
+        assert!(
+            simplified.keys().all(|key| english.contains_key(key)),
+            "zh-CN.json contains keys missing from the en-US.json base"
         );
-        for (key, value) in &simplified {
-            let other = &traditional[key];
-            assert_eq!(
-                placeholders(value),
-                placeholders(other),
-                "`{key}` 的占位符在简体/繁體之间不一致"
-            );
+        assert!(
+            traditional.keys().all(|key| english.contains_key(key)),
+            "zh-TW.json contains keys missing from the en-US.json base"
+        );
+        for (key, value) in &english {
+            for (locale, other) in [("zh-CN", &simplified), ("zh-TW", &traditional)] {
+                if let Some(other) = other.get(key) {
+                    assert_eq!(
+                        placeholders(value),
+                        placeholders(other),
+                        "`{key}` has inconsistent placeholders between en-US and {locale}"
+                    );
+                }
+            }
         }
     }
 
     #[test]
-    fn english_covers_every_simplified_key() {
-        let simplified = table(ZH_JSON);
-        let english = table(EN_JSON);
-        assert_eq!(
-            simplified.keys().collect::<BTreeSet<_>>(),
-            english.keys().collect::<BTreeSet<_>>(),
-            "en-US.json 的 key 集合必须与 zh-CN.json 完全一致"
-        );
-    }
-
-    #[test]
-    fn switching_to_traditional_uses_the_traditional_table() {
+    fn switching_languages_uses_the_matching_table() {
         set_language(Lang::ZhTw);
         assert_eq!(current_language(), Lang::ZhTw);
         assert_eq!(t("menu.file"), "檔案");
         set_language(Lang::ZhCn);
         assert_eq!(current_language(), Lang::ZhCn);
         assert_eq!(t("menu.file"), "文件");
+        set_language(Lang::EnUs);
+        assert_eq!(current_language(), Lang::EnUs);
+        assert_eq!(t("menu.file"), "File");
     }
 }

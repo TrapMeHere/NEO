@@ -1,25 +1,25 @@
-//! 类型化的 generational 句柄。
+//! Typed generational handles.
 //!
-//! SoA 存储用 `index` 定位槽位；槽位被释放后 `generation` 递增，因此旧句柄会
-//! 被判定为失效，而不会静默指向"复用了同一槽位的新对象"。这是删除/撤销编辑下
-//! 数据安全的关键。
+//! SoA storage uses `index` to locate a slot; when a slot is freed its `generation` is incremented, so old
+//! handles are detected as stale instead of silently pointing at "a new object reusing the same slot". This is
+//! key to data safety under deletion/undo.
 //!
-//! `Handle<T>` 里的 `PhantomData<fn() -> T>` 使句柄恒为 `Send + Sync + Copy`，
-//! 与 `T` 是否 `Send` 无关（句柄本身只是整数对）。
+//! `PhantomData<fn() -> T>` inside `Handle<T>` keeps handles always `Send + Sync + Copy`, regardless of whether
+//! `T` is `Send` (a handle is just a pair of integers).
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-/// 指向 `T` 类型对象槽位的句柄。
+/// Handle to the slot of an object of type `T`.
 pub struct Handle<T> {
     index: u32,
     generation: u32,
     _marker: PhantomData<fn() -> T>,
 }
 
-// 手工实现 Clone/Copy/PartialEq/Eq/Ord，避免 derive 给 `T` 加上不必要的 trait bound：
-// 句柄只是两个整数，与 `T` 是否有 `Copy`/`Eq`/`Ord` 无关。
+// Clone/Copy/PartialEq/Eq/Ord are implemented by hand to avoid derive adding unnecessary trait bounds on `T`:
+// a handle is just two integers, independent of whether `T` is `Copy`/`Eq`/`Ord`.
 impl<T> Clone for Handle<T> {
     #[inline]
     fn clone(&self) -> Self {
@@ -55,7 +55,7 @@ impl<T> Ord for Handle<T> {
 }
 
 impl<T> Handle<T> {
-    /// 构造句柄。通常只由存储层调用。
+    /// Construct a handle. Normally called only by the storage layer.
     #[inline]
     pub const fn new(index: u32, generation: u32) -> Self {
         Self {
@@ -65,19 +65,19 @@ impl<T> Handle<T> {
         }
     }
 
-    /// 槽位下标（`u32`：单类对象上限约 42 亿，远超 OSM 现实规模）。
+    /// Slot index (`u32`: about 4.2 billion per object kind, far beyond realistic OSM scale).
     #[inline]
     pub const fn index(self) -> u32 {
         self.index
     }
 
-    /// 槽位代号；与存储中记录的代号不一致即为失效句柄。
+    /// Slot generation; a handle is stale when it differs from the generation recorded in storage.
     #[inline]
     pub const fn generation(self) -> u32 {
         self.generation
     }
 
-    /// 仅改 Generation，用于重建同一槽位的新句柄。
+    /// Change only the generation, used to rebuild a new handle for the same slot.
     #[inline]
     pub const fn with_generation(self, generation: u32) -> Self {
         Self {
@@ -101,45 +101,45 @@ impl<T> Hash for Handle<T> {
     }
 }
 
-/// 槽位分配/回收状态。存储层实现 `Arena` 时复用这段逻辑。
+/// Slot allocation/recycling state. Storage layers reuse this logic when implementing `Arena`.
 #[derive(Debug, Default)]
 pub struct SlotAllocator {
-    /// 每个槽位当前的 generation。
+    /// Current generation of each slot.
     generations: Vec<u32>,
-    /// 每个槽位是否存活。
+    /// Whether each slot is alive.
     alive: Vec<bool>,
-    /// 可复用槽位的 LIFO 栈。
+    /// LIFO stack of reusable slots.
     free: Vec<u32>,
-    /// 存活槽位数（O(1) 维护；`len()` 曾在 10M 对象上做全量扫描）。
+    /// Number of live slots (maintained in O(1); `len()` used to do a full scan over 10M objects).
     live: usize,
 }
 
 impl SlotAllocator {
-    /// 空分配器。
+    /// Empty allocator.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 槽位总数（含已释放）。
+    /// Total number of slots (including freed ones).
     #[inline]
     pub fn len(&self) -> usize {
         self.generations.len()
     }
 
-    /// 是否没有任何槽位。
+    /// Whether there are no slots at all.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.generations.is_empty()
     }
 
-    /// 预分配容量。
+    /// Preallocate capacity.
     pub fn reserve(&mut self, additional: usize) {
         self.generations.reserve(additional);
         self.alive.reserve(additional);
         self.free.reserve(additional.min(1024));
     }
 
-    /// 分配一个槽位，返回 (index, generation)。
+    /// Allocate a slot; returns (index, generation).
     pub fn alloc(&mut self) -> (u32, u32) {
         if let Some(index) = self.free.pop() {
             debug_assert!(!self.alive[index as usize]);
@@ -155,7 +155,7 @@ impl SlotAllocator {
         }
     }
 
-    /// 释放槽位；generation 递增以作废旧句柄。重复释放返回 `false`。
+    /// Free a slot; increments the generation to invalidate old handles. Returns `false` if already freed.
     pub fn free(&mut self, index: u32) -> bool {
         let Some(alive) = self.alive.get_mut(index as usize) else {
             return false;
@@ -164,8 +164,8 @@ impl SlotAllocator {
             return false;
         }
         *alive = false;
-        // 溢出即意味着同一槽位已复用 2^32 次，旧句柄会重新有效（ABA）。
-        // 这是不可恢复的一致性错误，与其静默回绕不如显式失败（docs/03 的约定）。
+        // Overflow means this slot has been reused 2^32 times and old handles would become valid again (ABA).
+        // This is an unrecoverable consistency error; failing explicitly beats silently wrapping (docs/03 convention).
         self.generations[index as usize] = self.generations[index as usize]
             .checked_add(1)
             .expect("handle generation overflow: slot reused 2^32 times");
@@ -174,24 +174,24 @@ impl SlotAllocator {
         true
     }
 
-    /// 判断句柄是否仍有效。
+    /// Whether a handle is still valid.
     pub fn is_valid<T>(&self, handle: Handle<T>) -> bool {
         let i = handle.index() as usize;
         self.generations.get(i).copied() == Some(handle.generation())
             && self.alive.get(i).copied().unwrap_or(false)
     }
 
-    /// 当前 generation（越界返回 `None`）。
+    /// Current generation (returns `None` when out of range).
     pub fn generation(&self, index: u32) -> Option<u32> {
         self.generations.get(index as usize).copied()
     }
 
-    /// 存活槽位数（O(1)）。
+    /// Number of live slots (O(1)).
     pub fn live_len(&self) -> usize {
         self.live
     }
 
-    /// 估算内存占用（字节）。
+    /// Estimate memory usage in bytes.
     pub fn mem_bytes(&self) -> usize {
         self.generations.capacity() * core::mem::size_of::<u32>()
             + self.alive.capacity() * core::mem::size_of::<bool>()

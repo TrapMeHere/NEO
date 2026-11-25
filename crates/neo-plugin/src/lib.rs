@@ -1,8 +1,8 @@
-//! NEO 插件宿主。
+//! NEO plugin host.
 //!
-//! 默认构建只含清单、权限、包检查和命令翻译，不链接 wasmtime。
-//! `wasm-plugins` 打开后用 wasmtime 50 跑插件：fuel、内存上限、能力求交。
-//! 插件只能把命令交回 [`apply_command`]，不能写 `neo-store`。
+//! The default build only contains the manifest, permission, package checks, and command translation; it does not link wasmtime.
+//! With `wasm-plugins` enabled, plugins run on wasmtime 50: fuel, memory limits, capability intersection.
+//! Plugins can only hand commands back to [`apply_command`]; they cannot write to `neo-store`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -27,42 +27,42 @@ pub use wasm_host::{DispatchReport, LoadedPluginInfo, PluginHost, PluginHostConf
 
 use neo_query::MapQuery;
 
-/// 插件宿主错误。
+/// Plugin host error.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PluginError {
-    /// 清单不合法。
+    /// Invalid manifest.
     #[error("manifest: {0}")]
     Manifest(String),
-    /// ABI 主版本不一致。
+    /// ABI major version mismatch.
     #[error("incompatible api: plugin={plugin}, host={host}")]
     ApiIncompatible {
-        /// 插件声明的 API。
+        /// API declared by the plugin.
         plugin: String,
-        /// 宿主 API。
+        /// Host API.
         host: String,
     },
-    /// 签名缺失或对不上。
+    /// Signature missing or mismatched.
     #[error("signature invalid")]
     SignatureInvalid,
-    /// 能力被拒绝。
+    /// Capability denied.
     #[error("capability denied: {0}")]
     CapabilityDenied(String),
-    /// 插件 trap。
+    /// Plugin trap.
     #[error("plugin trapped: {0}")]
     Trapped(String),
-    /// 配额。
+    /// Quota.
     #[error("quota exceeded: {0}")]
     QuotaExceeded(String),
-    /// 命令执行失败。
+    /// Command execution failed.
     #[error("command failed: {0}")]
     Command(String),
-    /// 没开 `wasm-plugins`。
+    /// `wasm-plugins` is not enabled.
     #[error("wasm plugins are disabled in this build")]
     WasmDisabled,
 }
 
-/// 只读快照的摘要。插件查询面用它，不把 `DataSet` 交进 WASM。
+/// Summary of the read-only snapshot. Used by the plugin query surface; `DataSet` is never handed into WASM.
 pub fn snapshot_facts(query: &impl MapQuery) -> SnapshotFacts {
     SnapshotFacts {
         version: query.data().version(),
@@ -72,20 +72,20 @@ pub fn snapshot_facts(query: &impl MapQuery) -> SnapshotFacts {
     }
 }
 
-/// [`snapshot_facts`] 的结果。
+/// Result of [`snapshot_facts`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SnapshotFacts {
-    /// `DataSet` 版本。
+    /// `DataSet` version.
     pub version: u64,
-    /// 节点数。
+    /// Node count.
     pub nodes: u64,
-    /// way 数。
+    /// Way count.
     pub ways: u64,
-    /// relation 数。
+    /// Relation count.
     pub relations: u64,
 }
 
-/// 当前构建能不能跑 WASM。
+/// Whether the current build can run WASM.
 pub fn wasm_plugins_enabled() -> bool {
     cfg!(feature = "wasm-plugins")
 }

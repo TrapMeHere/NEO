@@ -1,60 +1,60 @@
-//! WebMercator 世界坐标。
+//! WebMercator world coordinates.
 //!
-//! 坐标栈（很重要，三层必须分清）：
+//! Coordinate stack (important; the three layers must be distinguished):
 //!
 //! ```text
-//! LatLon (i32, 1e-7 度, 数据层)
+//! LatLon (i32, 1e-7 degrees, data layer)
 //!    │  forward
 //!    ▼
-//! WorldPoint (f64, WebMercator 米, 空间/索引层)
+//! WorldPoint (f64, WebMercator meters, spatial/index layer)
 //!    │  Camera::world_to_screen
 //!    ▼
-//! ScreenPoint (f32, 物理像素, 渲染/UI 层)
+//! ScreenPoint (f32, physical pixels, render/UI layer)
 //! ```
 //!
-//! WebMercator 是**等角**投影：小区域内形状保持，这是 OSM 编辑器/瓦片服务的标准选择。
-//! 它不保持距离，因此测距要用 haversine（见 `distance_meters`），不能用世界坐标差。
+//! WebMercator is a **conformal** projection: shapes are preserved over small areas, which is the standard choice for OSM editors/tile services.
+//! It does not preserve distance, so distance measurement must use haversine (see `distance_meters`) rather than subtracting world coordinates.
 //!
-//! 用 f64 存世界坐标：地球周长 4.0075e7 米，f64 在这个量级的分辨率约 1e-9 米，
-//! 直到 zoom 25 都不会有精度问题。GPU 侧再转到相机原点相对坐标（f32），见 `scene`。
+//! World coordinates are stored as f64: the Earth's circumference is 4.0075e7 m, and f64 resolution at that magnitude is about 1e-9 m,
+//! so there is no precision problem up to zoom 25. The GPU side then converts to camera-origin-relative coordinates (f32), see `scene`.
 
 use neo_core::LatLon;
 
-/// WebMercator 球体半径（米，OSM 约定）。
+/// WebMercator sphere radius (meters, OSM convention).
 pub const EARTH_RADIUS_M: f64 = 6_378_137.0;
 
-/// 赤道周长（米）。
+/// Equatorial circumference (meters).
 pub const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.685_578_5;
 
-/// WebMercator 允许的最大纬度（约 ±85.05112878°）。
+/// Maximum latitude allowed by WebMercator (about ±85.05112878°).
 pub const MAX_MERCATOR_LAT: f64 = 85.051_128_779_806_6;
 
-/// 世界坐标：WebMercator 米。
+/// World coordinates: WebMercator meters.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct WorldPoint {
-    /// 东向（米，0 = 180°W）。
+    /// Easting (meters, 0 = 180°W).
     pub x: f64,
-    /// 南向（米，0 = 北纬 85.05°）。
+    /// Southing (meters, 0 = 85.05°N).
     pub y: f64,
 }
 
 impl WorldPoint {
-    /// 构造。
+    /// Construct.
     #[inline]
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
 
-    /// 经纬度 → 世界坐标。
+    /// Lon/lat → world coordinates.
     pub fn from_latlon(p: LatLon) -> Self {
         let (lat, lon) = p.to_degrees();
         Self::from_degrees(lat, lon)
     }
 
-    /// 十进制度 → 世界坐标。
+    /// Decimal degrees → world coordinates.
     pub fn from_degrees(lat: f64, lon: f64) -> Self {
         let lat = lat.clamp(-MAX_MERCATOR_LAT, MAX_MERCATOR_LAT);
-        // x=0 对应 180°W，x=C 对应 180°E（OSM 瓦片约定）。
+        // x=0 corresponds to 180°W and x=C to 180°E (OSM tile convention).
         let lon = lon.clamp(-180.0, 180.0);
         let x = (lon + 180.0) / 360.0 * EARTH_CIRCUMFERENCE_M;
         let lat_rad = lat.to_radians();
@@ -65,7 +65,7 @@ impl WorldPoint {
         }
     }
 
-    /// 世界坐标 → 经纬度。
+    /// World coordinates → lon/lat.
     pub fn to_latlon(self) -> LatLon {
         let lon = self.x / EARTH_CIRCUMFERENCE_M * 360.0 - 180.0;
         let y_norm = 1.0 - 2.0 * self.y / EARTH_CIRCUMFERENCE_M;
@@ -73,25 +73,25 @@ impl WorldPoint {
         LatLon::from_degrees(lat, lon)
     }
 
-    /// 世界坐标差 → 屏幕像素距离（需要相机缩放）。
+    /// World-coordinate difference → screen-pixel distance (requires camera zoom).
     #[inline]
     pub fn dist(self, other: Self) -> f64 {
         ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
     }
 
-    /// 加上向量。
+    /// Add a vector.
     #[inline]
     pub fn offset(self, dx: f64, dy: f64) -> Self {
         Self::new(self.x + dx, self.y + dy)
     }
 }
 
-/// 世界坐标包围盒。
+/// World-coordinate bounding box.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldBounds {
-    /// 最小点（西北）。
+    /// Minimum point (north-west).
     pub min: WorldPoint,
-    /// 最大点（东南）。
+    /// Maximum point (south-east).
     pub max: WorldPoint,
 }
 
@@ -102,7 +102,7 @@ impl Default for WorldBounds {
 }
 
 impl WorldBounds {
-    /// 空盒（反向极值，便于 expand）。
+    /// Empty box (inverted extremes, convenient for expand).
     pub const EMPTY: Self = Self {
         min: WorldPoint {
             x: f64::INFINITY,
@@ -114,7 +114,7 @@ impl WorldBounds {
         },
     };
 
-    /// 由两个点构造（自动排序）。
+    /// Construct from two points (sorted automatically).
     pub fn from_points(a: WorldPoint, b: WorldPoint) -> Self {
         Self {
             min: WorldPoint::new(a.x.min(b.x), a.y.min(b.y)),
@@ -122,7 +122,7 @@ impl WorldBounds {
         }
     }
 
-    /// 由点集构造。
+    /// Construct from a set of points.
     pub fn from_points_iter<I: IntoIterator<Item = WorldPoint>>(iter: I) -> Self {
         let mut b = Self::EMPTY;
         for p in iter {
@@ -131,17 +131,17 @@ impl WorldBounds {
         b
     }
 
-    /// 单点盒。
+    /// Single-point box.
     pub fn from_point(p: WorldPoint) -> Self {
         Self { min: p, max: p }
     }
 
-    /// 是否为空。
+    /// Whether it is empty.
     pub fn is_empty(&self) -> bool {
         self.min.x > self.max.x || self.min.y > self.max.y
     }
 
-    /// 扩展以包含一个点。
+    /// Expand to include a point.
     pub fn expand_point(&mut self, p: WorldPoint) {
         self.min.x = self.min.x.min(p.x);
         self.min.y = self.min.y.min(p.y);
@@ -149,7 +149,7 @@ impl WorldBounds {
         self.max.y = self.max.y.max(p.y);
     }
 
-    /// 扩展以包含一个盒子。
+    /// Expand to include a box.
     pub fn expand(&mut self, other: &Self) {
         if other.is_empty() {
             return;
@@ -160,13 +160,13 @@ impl WorldBounds {
         self.max.y = self.max.y.max(other.max.y);
     }
 
-    /// 包含点。
+    /// Contains a point.
     #[inline]
     pub fn contains(&self, p: WorldPoint) -> bool {
         p.x >= self.min.x && p.x <= self.max.x && p.y >= self.min.y && p.y <= self.max.y
     }
 
-    /// 与另一盒相交（含边界）。
+    /// Intersects another box (boundaries included).
     #[inline]
     pub fn intersects(&self, other: &Self) -> bool {
         !(other.min.x > self.max.x
@@ -175,19 +175,19 @@ impl WorldBounds {
             || other.max.y < self.min.y)
     }
 
-    /// 中心。
+    /// Center.
     pub fn center(&self) -> WorldPoint {
         WorldPoint::new((self.min.x + self.max.x) * 0.5, (self.min.y + self.max.y) * 0.5)
     }
 
-    /// 宽高（米）。
+    /// Width and height (meters).
     pub fn size(&self) -> (f64, f64) {
         (self.max.x - self.min.x, self.max.y - self.min.y)
     }
 
-    /// 转成 EPSG:3857 的 `minx,miny,maxx,maxy`（米，y 向北）。
+    /// Convert to EPSG:3857's `minx,miny,maxx,maxy` (meters, y pointing north).
     ///
-    /// 本仓库的世界坐标 x 从 180°W 起算、y 向南；标准 3857 的原点在赤道与本初子午线，y 向北。
+    /// This repository's world x starts at 180°W and y points south; standard 3857's origin is at the equator and prime meridian, with y pointing north.
     pub fn to_epsg3857(self) -> [f64; 4] {
         let half = EARTH_CIRCUMFERENCE_M / 2.0;
         [
@@ -198,7 +198,7 @@ impl WorldBounds {
         ]
     }
 
-    /// 命中测试用的放大（米）。
+    /// Expansion for hit testing (meters).
     pub fn expanded_by(&self, meters: f64) -> Self {
         Self {
             min: WorldPoint::new(self.min.x - meters, self.min.y - meters),
@@ -207,7 +207,7 @@ impl WorldBounds {
     }
 }
 
-/// 两点间的测地线距离（米，haversine）。
+/// Geodesic distance between two points (meters, haversine).
 pub fn distance_meters(a: LatLon, b: LatLon) -> f64 {
     let (lat1, lon1) = (a.lat.to_degrees().to_radians(), a.lon.to_degrees().to_radians());
     let (lat2, lon2) = (b.lat.to_degrees().to_radians(), b.lon.to_degrees().to_radians());

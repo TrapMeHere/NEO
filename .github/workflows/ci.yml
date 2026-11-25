@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # 与 rust-toolchain.toml channel 一致；@master 现已要求显式 toolchain
+      # Matches the channel in rust-toolchain.toml; @master now requires an explicit toolchain
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.100.0
         with:

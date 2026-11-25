@@ -1,4 +1,4 @@
-//! 几何操作：只读当前数据集，产出命令批。界面负责翻译 `key`。
+//! Geometry operations: read the current dataset only and produce command batches. The UI translates `key`.
 
 use std::collections::HashMap;
 
@@ -9,28 +9,28 @@ use neo_editor::{
 };
 use neo_geo::WorldPoint;
 
-/// 交给界面翻译的一条状态。`field` 是 `{name}` 占位符。
+/// A status entry handed to the UI for translation. `field` is a `{name}` placeholder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolNote {
-    /// i18n 键。
+    /// i18n key.
     pub key: &'static str,
-    /// 单个占位符。
+    /// A single placeholder.
     pub field: Option<(&'static str, String)>,
 }
 
-/// 几何操作的结果。命令已经执行，或明确没有执行。
+/// Result of a geometry operation. Commands have either been executed, or explicitly not executed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolEffect {
-    /// 没有改数据。
+    /// No data was changed.
     Note(ToolNote),
-    /// 执行了一批命令。
+    /// A batch of commands was executed.
     Edited {
-        /// 成功文案。
+        /// Success message.
         note: ToolNote,
-        /// 执行后要单独选中的对象。
+        /// Objects to select separately after execution.
         select: Option<(ObjectKind, ObjectId)>,
     },
-    /// 走已有的批量移动。
+    /// Use the existing batch move.
     Moved(crate::Outcome),
 }
 
@@ -108,7 +108,7 @@ fn fail(err: impl ToString) -> ToolEffect {
     note_field("app.error.generic", "err", err.to_string())
 }
 
-/// 把选中节点粘成第一个节点。
+/// Glue the selected nodes into the first node.
 pub fn merge_selected_nodes(editor: &mut Editor) -> ToolEffect {
     let selected: Vec<ObjectId> = editor.selection().nodes().iter().copied().collect();
     if selected.len() < 2 {
@@ -211,7 +211,7 @@ pub fn merge_selected_nodes(editor: &mut Editor) -> ToolEffect {
     }
 }
 
-/// 按选择的长轴把节点压到同一条经线或纬线上。
+/// Collapse the nodes onto a single meridian or parallel according to the selection's long axis.
 pub fn align_selected_nodes(editor: &mut Editor) -> ToolEffect {
     let nodes = selection_nodes(editor);
     if nodes.len() < 2 {
@@ -257,7 +257,7 @@ pub fn align_selected_nodes(editor: &mut Editor) -> ToolEffect {
     ToolEffect::Moved(outcome)
 }
 
-/// 沿长轴把首尾之间的节点等距分布。
+/// Distribute the nodes between the ends evenly along the long axis.
 pub fn distribute_selected_nodes(editor: &mut Editor) -> ToolEffect {
     let mut nodes = selection_nodes(editor);
     if nodes.len() < 3 {
@@ -316,7 +316,7 @@ pub fn distribute_selected_nodes(editor: &mut Editor) -> ToolEffect {
     ToolEffect::Moved(outcome)
 }
 
-/// 以选中节点包围盒中心为轴翻转纬度或经度。
+/// Flip latitude or longitude around the centre of the selected nodes' bounding box.
 pub fn mirror_selected_nodes(editor: &mut Editor, horizontal: bool) -> ToolEffect {
     let nodes = selection_nodes(editor);
     if nodes.is_empty() {
@@ -342,7 +342,7 @@ pub fn mirror_selected_nodes(editor: &mut Editor, horizontal: bool) -> ToolEffec
     ToolEffect::Moved(outcome)
 }
 
-/// 被多条 way 共用的节点，为其余 way 各复制一份。
+/// A node shared by several ways: duplicate it once for each of the remaining ways.
 pub fn unglue_selected_nodes(editor: &mut Editor) -> ToolEffect {
     let nodes = selection_nodes(editor);
     let mut commands: Vec<Box<dyn Command>> = Vec::new();
@@ -389,7 +389,7 @@ pub fn unglue_selected_nodes(editor: &mut Editor) -> ToolEffect {
     }
 }
 
-/// 沿 way 法线偏移 10 米复制一条同标签 way。
+/// Copy a way with the same tags, offset 10 metres along its normal.
 pub fn parallel_copy_way(editor: &mut Editor) -> ToolEffect {
     let Some((ObjectKind::Way, way)) = primary_target(editor) else {
         return note("app.error.no_selection");
@@ -442,7 +442,7 @@ pub fn parallel_copy_way(editor: &mut Editor) -> ToolEffect {
     }
 }
 
-/// 把选中 way 的每一段压成水平或垂直。
+/// Force every segment of the selected ways to be horizontal or vertical.
 pub fn orthogonalize_selected(editor: &mut Editor) -> ToolEffect {
     let mut way_ids: Vec<ObjectId> = editor.selection().ways().iter().copied().collect();
     if way_ids.is_empty()
@@ -508,7 +508,7 @@ pub fn orthogonalize_selected(editor: &mut Editor) -> ToolEffect {
     ToolEffect::Moved(outcome)
 }
 
-/// 把多个闭合 way 收成一个 multipolygon，并清空成员标签。
+/// Collect several closed ways into one multipolygon and clear the members' tags.
 pub fn join_selected_areas(editor: &mut Editor) -> ToolEffect {
     let ways: Vec<ObjectId> = editor.selection().ways().iter().copied().collect();
     if ways.len() < 2 {
@@ -559,7 +559,7 @@ pub fn join_selected_areas(editor: &mut Editor) -> ToolEffect {
     }
 }
 
-/// 把选中节点投影到选中 way 上，必要时插入为成员。
+/// Project the selected nodes onto the selected way, inserting them as members when necessary.
 pub fn move_node_onto_way(editor: &mut Editor) -> ToolEffect {
     let Some(node) = editor.selection().nodes().iter().next().copied() else {
         return note("app.error.no_node_selected");
@@ -629,7 +629,7 @@ pub fn move_node_onto_way(editor: &mut Editor) -> ToolEffect {
     }
 }
 
-/// 沿法线偏移 5 米，生成闭合建筑轮廓。
+/// Offset by 5 metres along the normal to generate a closed building outline.
 pub fn extrude_selected_way(editor: &mut Editor) -> ToolEffect {
     let Some((ObjectKind::Way, way)) = primary_target(editor) else {
         return note("app.error.no_selection");

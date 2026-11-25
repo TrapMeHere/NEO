@@ -1,4 +1,4 @@
-//! chrome 面板。
+//! chrome panel.
 
 use egui::{Color32, FontId, RichText, Stroke, Ui};
 use egui_phosphor::regular as ph;
@@ -6,7 +6,7 @@ use neo_i18n::t;
 
 use super::{UiActions, UiMode, UiState};
 
-/// 深色现代主题（JOSM 蓝作强调色）。
+/// Modern dark theme (JOSM blue as the accent color).
 pub fn apply_modern_style(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     let accent = Color32::from_rgb(72, 150, 240);
@@ -48,10 +48,10 @@ pub fn apply_modern_style(ctx: &egui::Context) {
 }
 
 // ---------------------------------------------------------------------------
-// 菜单栏
+// Menu bar
 // ---------------------------------------------------------------------------
 
-/// 顶部菜单栏（文件/编辑/视图/影像/工具/帮助）。
+/// Top menu bar (File/Edit/View/Imagery/Tools/Help).
 pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f64, lon: f64) {
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(t("menu.file"), |ui| {
@@ -262,7 +262,7 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
         });
 
         ui.menu_button(t("menu.tools"), |ui| {
-            // 选择与绘制
+            // Selection and drawing
             if ui
                 .selectable_label(
                     state.mode == UiMode::Select,
@@ -281,7 +281,7 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
             ] {
                 let selected = state.mode == mode;
                 if ui.selectable_label(selected, format!("{icon} {label}")).clicked() {
-                    // 再点一次取消，回到选择。
+                    // Clicking again cancels and returns to selection.
                     actions.mode = Some(if selected { UiMode::Select } else { mode });
                     ui.close();
                 }
@@ -294,7 +294,7 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             ui.separator();
-            // 测距
+            // Measure
             let measuring = state.mode == UiMode::Measure;
             if ui
                 .selectable_label(measuring, format!("{} {}", ph::RULER, t("tool.measure")))
@@ -308,7 +308,7 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             ui.separator();
-            // 路径：分割 ↔ 合并相邻，反转、简化
+            // Way: split ↔ merge adjacent, reverse, simplify
             let splitting = state.mode == UiMode::SplitPoint;
             if ui
                 .selectable_label(
@@ -346,7 +346,7 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             ui.separator();
-            // 节点：粘合 ↔ 解粘，对齐/等距分布，镜像成对
+            // Nodes: glue ↔ unglue, align/distribute, mirrored pairs
             if ui
                 .add_enabled(
                     state.selection_len >= 2,
@@ -412,7 +412,7 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
                 ui.close();
             }
             ui.separator();
-            // 面与其它几何工具
+            // Areas and other geometry tools
             if ui
                 .add_enabled(
                     state.selection_len >= 2,
@@ -504,7 +504,7 @@ pub fn menu_bar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>, lat: f
 }
 
 // ---------------------------------------------------------------------------
-// 顶部常用功能工具栏
+// Top common-function toolbar
 // ---------------------------------------------------------------------------
 
 fn icon_button(ui: &mut Ui, icon: &str, tip: &str, enabled: bool) -> bool {
@@ -518,7 +518,7 @@ fn tool_button(ui: &mut Ui, icon: &str, tip: &str, selected: bool) -> bool {
         .clicked()
 }
 
-/// 顶部工具栏：文件 / 编辑 / 视图 常用操作。
+/// Top toolbar: common File / Edit / View operations.
 pub fn top_toolbar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>) {
     ui.horizontal(|ui| {
         if icon_button(ui, ph::CLOUD_ARROW_DOWN, t("menu.file.download"), true) {
@@ -578,12 +578,12 @@ pub fn top_toolbar(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>) {
 }
 
 // ---------------------------------------------------------------------------
-// 左侧竖排工具栏（JOSM toolbox）
+// Left vertical tool palette (JOSM toolbox)
 // ---------------------------------------------------------------------------
 
-/// 左侧竖排工具栏：创建点/线/面 + 测距 + 几何操作。
+/// Left vertical tool palette: create point/line/area + measure + geometry operations.
 ///
-/// 点/线/面互斥且可取消选中；三者都未选中时即为选择工具。
+/// Point/line/area are mutually exclusive and can be deselected; when none is selected the tool is Select.
 pub fn tool_palette(ui: &mut Ui, actions: &mut UiActions, state: UiState<'_>) {
     ui.vertical_centered(|ui| {
         ui.add_space(4.0);

@@ -1,62 +1,63 @@
-//! `.neopkg` 里的 `manifest.toml` 子集。
+//! The `manifest.toml` subset inside `.neopkg`.
 //!
-//! 不引入 toml crate：只接受本文件写明的键，避免插件清单变成通用配置语言。
+//! No toml crate is pulled in: only the keys spelled out in this file are accepted, so the plugin manifest
+//! does not turn into a general-purpose configuration language.
 
 use crate::PluginError;
 
-/// 清单里的能力声明。
+/// Capability declarations in the manifest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ManifestCaps {
-    /// `submit-command`。
+    /// The `submit-command` capability.
     pub command: bool,
-    /// 面板。
+    /// Panels.
     pub ui: bool,
-    /// 事件主题。
+    /// Event topics.
     pub events: Vec<String>,
-    /// 网络主机或 URL。
+    /// Network hosts or URLs.
     pub network: Vec<String>,
-    /// 读插件目录。
+    /// Reads the plugin directory.
     pub filesystem: bool,
-    /// 影像。
+    /// Imagery.
     pub imagery: bool,
 }
 
-/// 插件清单。
+/// Plugin manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginManifest {
-    /// 必须是 1。
+    /// Must be 1.
     pub schema: u32,
-    /// 稳定 id。
+    /// Stable id.
     pub id: String,
-    /// 显示名。
+    /// Display name.
     pub name: String,
-    /// 插件版本。
+    /// Plugin version.
     pub version: String,
-    /// 宿主 ABI，`1` 或 `1.x`。
+    /// Host ABI, `1` or `1.x`.
     pub api: String,
-    /// 包内入口文件名。
+    /// Entry file name inside the package.
     pub entry: String,
-    /// 可选的最低 NEO 版本。
+    /// Optional minimum NEO version.
     pub min_neo_version: Option<String>,
-    /// 声明的能力。
+    /// Declared capabilities.
     pub capabilities: ManifestCaps,
-    /// 十六进制 SHA-256。空字符串表示未签名。
+    /// Hex SHA-256. An empty string means unsigned.
     pub signature: String,
 }
 
 impl PluginManifest {
-    /// 宿主只实现 ABI 1.x。
+    /// The host only implements ABI 1.x.
     pub fn api_compatible(&self) -> bool {
         api_compatible(&self.api)
     }
 }
 
-/// `1`、`1.0`、`1.2.3` 兼容；`2.0` 不兼容。
+/// `1`, `1.0`, `1.2.3` are compatible; `2.0` is not.
 pub fn api_compatible(api: &str) -> bool {
     api.split('.').next() == Some("1")
 }
 
-/// 解析清单文本。
+/// Parses the manifest text.
 pub fn parse_manifest(text: &str) -> Result<PluginManifest, PluginError> {
     let mut schema = 0u32;
     let mut id = String::new();

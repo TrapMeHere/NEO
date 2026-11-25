@@ -1,4 +1,4 @@
-//! NeoApp::canvas 方法。行为与拆分前的 app.rs 相同。
+//! The NeoApp::canvas method. Behavior is identical to the pre-split app.rs.
 
 use crate::map_callback::MapCallback;
 use eframe::egui;
@@ -14,7 +14,7 @@ use super::{
 };
 
 impl NeoApp {
-    /// 测试/演示用：选视口内第一个可见（可拾取）的节点
+    /// For tests/demos: select the first visible (pickable) node in the viewport
     pub(super) fn pick_visible_node(&self) -> Option<ObjectId> {
         let visible = self.camera.visible_bounds();
         self.editor
@@ -24,7 +24,7 @@ impl NeoApp {
             .map(|node| node.id)
     }
 
-    /// 测试/演示用：选一条视口内节点最多的 way
+    /// For tests/demos: select the way with the most nodes in the viewport
     pub(super) fn pick_visible_way(&self) -> Option<ObjectId> {
         let visible = self.camera.visible_bounds();
         let mut best: Option<(usize, ObjectId)> = None;
@@ -50,8 +50,8 @@ impl NeoApp {
     }
 
     pub(super) fn pick_at(&self, screen: [f32; 2]) -> Pick {
-        // 节点优先。内圈其次，这样点在面上选的是面，而不是旁边的线。
-        // 最后才是线的外边距。
+        // Nodes first. Area inner rings next, so clicking on an area selects the area rather than a nearby line.
+        // Line margins come last.
         let node_hit = {
             let tester = HitTester::new(self.editor.data(), self.editor.index());
             tester.pick_node(&self.camera, screen, NODE_PICK_MARGIN_PX)
@@ -86,7 +86,7 @@ impl NeoApp {
         }
     }
 
-    /// 点在面的内圈上时选中该面。重叠时取面积更小的那个。
+    /// Select the area when the point is on its inner ring. When they overlap, take the one with the smaller area.
     fn pick_area_band(&self, screen: [f32; 2]) -> Option<Pick> {
         let scene = self.scene.as_ref()?;
         let world = self.camera.screen_to_world(screen);
@@ -131,7 +131,7 @@ impl NeoApp {
         })
     }
 
-    /// 当前缩放是否允许「选中/悬停 way 时强制显示成员节点」（与节点 LOD 下限一致：z≥17）。
+    /// Whether the current zoom allows forcing member nodes of a selected/hovered way to be visible (consistent with the node LOD floor: z≥17).
     pub(super) fn way_member_nodes_force_zoom(&self) -> bool {
         let zoom = self
             .scene
@@ -141,7 +141,7 @@ impl NeoApp {
         zoom >= neo_scene::NODE_MIN_ZOOM
     }
 
-    /// 节点是否因选中/悬停 way 而强制显示（等同高缩放下全部节点可见；仅 z≥17）。
+    /// Whether the node is force-shown because its way is selected/hovered (equivalent to all nodes visible at high zoom; only for z≥17).
     pub(super) fn node_forced_visible(&self, node: ObjectId) -> bool {
         if !self.way_member_nodes_force_zoom() {
             return false;
@@ -166,10 +166,10 @@ impl NeoApp {
         false
     }
 
-    /// 节点在当
-    /// zoom 下是否可
-    /// 可拾取（
-    /// renderer 共用 `node_visible_at` 规则；选中/悬停 way 的成员节点始终可选）
+    /// Whether the node is selectable at the
+    /// current zoom (the same `node_visible_at` rule as
+    /// the renderer; member nodes of a selected
+    /// or hovered way are always selectable)
     pub(super) fn node_selectable(&self, node: ObjectId) -> bool {
         if self.node_forced_visible(node) {
             return true;
@@ -178,12 +178,12 @@ impl NeoApp {
             return false;
         };
         let refs = self.editor.referrers().ways_of_node(handle).len();
-        // 用场景构建时
-        // zoom，而不是实
-        // zoom：画面还没重建时两者不一致，
-        // 否则会出
-        // 看不见的节点能选中"
-        // 看得见的节点点不
+        // Use the zoom from scene build time,
+        // not the actual
+        // zoom: they disagree while the view has not been rebuilt,
+        // otherwise you get "invisible
+        // nodes can be selected while visible
+        // nodes cannot be clicked".
 
         let zoom = self
             .scene
@@ -193,11 +193,11 @@ impl NeoApp {
         neo_scene::node_visible_at(zoom, refs)
     }
 
-    /// 清理已不存在于数据中的选择（节点/路径/关系）。
+    /// Clean up selections that no longer exist in the data (nodes/ways/relations).
     ///
-    /// 选择不再与渲染状态挂钩（框选可以选中缩放 LOD 隐藏的节点，见
-    /// [`Self::select_in_box`]），所以缩放到节点 LOD 以下也不会清掉已选中的节点；
-    /// 这里只剔除数据里已经不存在的陈旧 ID（删除、合并后）。
+    /// Selection is no longer coupled to render state (box selection can select nodes hidden by zoom LOD, see
+    /// [`Self::select_in_box`]), so zooming below the node LOD does not clear already-selected nodes;
+    /// here we only drop stale IDs that no longer exist in the data (after deletion or merging).
     pub(super) fn prune_stale_node_selection(&mut self) {
         let data = self.editor.data();
         let stale_nodes: Vec<ObjectId> = self
@@ -251,12 +251,12 @@ impl NeoApp {
         let editable =
             self.data_listed && self.layer_active && self.layer_visible && !self.download_state.selecting;
 
-        // 左键拖拽：命中节
+        // Left-button drag: hit a node
 
-        // 移动该节点；否则若已有选中集合
-        // 直接拖动选中元素
-        // （不需要长按：选中后任意位置左键拖拽即可）
-        // 下载框选：左键拖出矩形（不进入编辑拖拽）
+        // and move it; otherwise, if there is a selection,
+        // drag the selected elements directly
+        // (no long press needed: once selected, left-drag anywhere)
+        // Download box select: drag out a rectangle with the left button (does not enter edit dragging)
         if self.download_state.selecting {
             if response.drag_started_by(egui::PointerButton::Primary) {
                 let press_origin = ui.input(|i| i.pointer.press_origin());
@@ -295,13 +295,13 @@ impl NeoApp {
 
         if editable && response.drag_started_by(egui::PointerButton::Primary) && self.mode == UiMode::Select {
             //
-            // 按下原点"而不是当前指针位置来判定命中/外边距：拖拽回调触发时指针已经移动了几像素
+            // Use the "press origin" rather than the current pointer position to decide hits/margins: by the time the drag callback fires the pointer has already moved a few pixels
             let press_origin = ui.input(|i| i.pointer.press_origin());
             if let Some(pos) = press_origin.or_else(|| response.interact_pointer_pos()) {
                 let screen = pointer_screen(pos);
                 let world = self.camera.screen_to_world(screen);
                 if let Some((way, seg)) = self.pick_midpoint_handle(screen) {
-                    // 按下中点即插入节点，并立即进入拖动该新点。
+                    // Pressing on a segment midpoint inserts a node immediately and starts dragging that new point.
                     match self.controller.insert_midpoint_node(&mut self.editor, way, seg) {
                         Ok(node) => {
                             let from = self
@@ -317,7 +317,9 @@ impl NeoApp {
                                 current: world,
                             });
                             self.suppress_primary_click = true;
-                            self.apply_outcome(neo_tools::Outcome::Edited(format!("在中点创建节点 {node}")));
+                            self.apply_outcome(neo_tools::Outcome::Edited(format!(
+                                "Create node {node} at midpoint"
+                            )));
                             ui.ctx().request_repaint();
                         }
                         Err(err) => {
@@ -326,9 +328,9 @@ impl NeoApp {
                     }
                 } else {
                     let pick = self.pick_at(screen);
-                    // 能拖动必须先选中：按下时命中未选中的要
+                    // Dragging requires selection first: pressing on an unselected target
 
-                    // 先把它设为选中（红框立即出现）
+                    // first makes it the selection (the red box appears immediately)
                     if let Some(node) = pick.node {
                         if !self.editor.selection().contains(ObjectKind::Node, node) {
                             self.editor.selection_mut().select_only(ObjectKind::Node, node);
@@ -338,9 +340,9 @@ impl NeoApp {
                     {
                         self.editor.selection_mut().select_only(ObjectKind::Way, way);
                     }
-                    // 拖动范围 = 当前选中的节
-                    // + 选中 way 的全部节点
-                    // （未命中任何要素时，只有指针在选中要素外边距内才允许拖动。）
+                    // Drag scope = the currently selected nodes
+                    // + all nodes of selected ways
+                    // (When no feature is hit, dragging is allowed only if the pointer is within a selected feature's margin.)
                     let hit_feature = pick.node.is_some() || pick.way.is_some();
                     let within_selection_margin = !self.editor.selection().is_empty()
                         && self
@@ -354,9 +356,9 @@ impl NeoApp {
                             .any(|(_, pos)| pos.lat.to_degrees().abs() > neo_geo::MAX_MERCATOR_LAT)
                         {
                             // WebMercator
-                            // |lat|>85.05° 压到边界；拖动会
-                            // clamp 后的
-                            // 纬度写回数据（对南极数据是静默损坏）
+                            // |lat|>85.05° is clamped to the boundary; dragging would
+                            // write the clamped
+                            // latitude back into the data (silent corruption for Antarctic data)
                             self.status = t("app.error.polar_drag").to_owned();
                         } else if !nodes.is_empty() {
                             self.drag = Some(DragState {
@@ -367,15 +369,15 @@ impl NeoApp {
                             ui.ctx().request_repaint();
                         }
                     } else {
-                        // 空白处左键拖
-                        // = 框选（JOSM 的选择工具行为）
+                        // Left-drag on empty space
+                        // = box select (JOSM's selection tool behavior)
                         self.box_select = Some((world, world));
                     }
                 }
             }
         }
 
-        // 左键拖动：直接预览写入坐标，要素跟随鼠标（释放时再记一条 MoveNode 历史）。
+        // Left-button drag: preview the written coordinates directly, features follow the mouse (a single MoveNode history entry is recorded on release).
         if editable
             && response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
@@ -400,7 +402,7 @@ impl NeoApp {
             self.box_select = Some((start, self.camera.screen_to_world(pointer_screen(pos))));
         }
 
-        // 右键拖动：平移地图（背景）
+        // Right-button drag: pan the map (background)
         if response.dragged_by(egui::PointerButton::Secondary) {
             let delta = response.drag_delta();
             self.camera.pan_by_screen(delta.x * ppp, delta.y * ppp);
@@ -410,10 +412,10 @@ impl NeoApp {
             && let Some(drag) = self.drag.take()
             && editable
         {
-            // 只有活动图层才提交移
-            // 释放时才写入 DataSet：一次批量移
-            // = 一次重
-            // + 一条历史
+            // Only active layers commit moves
+            // Write to the DataSet on release: one batch move
+            // = one rebuild
+            // + one history entry
             let moves: Vec<(ObjectId, LatLon, LatLon)> = drag
                 .nodes
                 .iter()
@@ -421,7 +423,7 @@ impl NeoApp {
                 .collect();
             let outcome = self.controller.move_nodes_batch(&mut self.editor, &moves);
             self.apply_outcome(outcome);
-            // 有实质拖动时 egui 通常不再发 click；清掉中点按下的抑制标记。
+            // After a real drag egui usually stops emitting click; clear the midpoint-press suppression flag.
             self.suppress_primary_click = false;
             ui.ctx().request_repaint();
         }
@@ -446,7 +448,7 @@ impl NeoApp {
                 if self.mode == UiMode::Measure {
                     self.measure_click(world);
                 } else if self.mode == UiMode::SplitPoint {
-                    // 按点分割：点中的节点是路径内部节点时，把经过它的路径在此分割。
+                    // Split at node: when the clicked node is an interior node of a way, split the ways through it here.
                     let pick = self.pick_at(screen);
                     if let Some(node) = pick.node {
                         let outcome = self.controller.split_ways_at_node(&mut self.editor, node);
@@ -468,7 +470,7 @@ impl NeoApp {
             }
         }
 
-        // 绘制：空格 = 左键落点。
+        // Drawing: Space = left-click placement.
         if editable
             && self.controller.tool.is_draw()
             && response.hovered()
@@ -484,7 +486,7 @@ impl NeoApp {
             self.place_draw_at(screen, world, additive, alt);
         }
 
-        // 绘制：右键单击回退上一步绘制（右键拖平移仍可用）。
+        // Drawing: right-click undoes the previous drawing step (right-drag panning still works).
         if editable && self.controller.tool.is_draw() && response.clicked_by(egui::PointerButton::Secondary) {
             let outcome = self.controller.undo_last_draw(&mut self.editor);
             if outcome != neo_tools::Outcome::None {
@@ -504,8 +506,8 @@ impl NeoApp {
             }
         }
 
-        // 鼠标悬停位置（状态栏经纬
-        // + 测距实时终点）+ 绘制吸附预览 + 中点三角候选 way
+        // Mouse hover position (status-bar lon/lat
+        // + live measurement endpoint) + draw-snap preview + midpoint triangle candidate ways
         if response.hovered() {
             if let Some(pointer) = ui.input(|i| i.pointer.hover_pos())
                 && rect.contains(pointer)
@@ -523,7 +525,7 @@ impl NeoApp {
                     self.hover_latlon = Some(snap_world.to_latlon());
                 }
                 self.hover_way = if self.mode == UiMode::Select {
-                    // 中点优先：悬停在三角上时仍保留对应 way。
+                    // Midpoint first: keep the corresponding way while hovering its triangle.
                     self.pick_midpoint_handle(screen)
                         .map(|(way, _)| way)
                         .or_else(|| self.pick_at(screen).way)
@@ -562,7 +564,7 @@ impl NeoApp {
                 paint_scene_labels(ui.painter(), scene, &self.camera, rect, ppp);
             }
         }
-        // 活动数据层：已下载范围外置灰（多次框选取并集挖洞）。
+        // Active data layer: gray out areas outside the downloaded extent (multiple box selections take the union and punch holes).
         if self.data_listed && self.layer_active && self.layer_visible && !self.downloaded_bboxes.is_empty() {
             draw_undownloaded_mask(ui.painter(), rect, &self.camera, ppp, &self.downloaded_bboxes);
         }
@@ -572,7 +574,7 @@ impl NeoApp {
                 let point = self.camera.world_to_screen(world);
                 egui::pos2(rect.min.x + point[0] / ppp, rect.min.y + point[1] / ppp)
             };
-            // CAD：左→右窗选（蓝），右→左相交选（绿虚线感：半透明填充 + 描边）。
+            // CAD: left→right window select (blue), right→left crossing select (green dashed look: translucent fill + stroke).
             let crossing = neo_geo::box_select_mode(start, end) == neo_geo::BoxSelectMode::Crossing;
             let (stroke, fill) = if crossing {
                 (
@@ -593,15 +595,15 @@ impl NeoApp {
                 egui::StrokeKind::Inside,
             );
         }
-        // 选中高亮 + 选中/悬停 way 的成员节点（普通节点样式）
+        // Selection highlight + member nodes of selected/hovered ways (normal node style)
         self.draw_way_member_nodes_overlay(ui, rect, ppp);
         self.draw_selection_overlay(ui, rect, ppp);
         self.draw_midpoint_handles(ui, rect, ppp);
         self.draw_snap_overlay(ui, rect, ppp);
         self.draw_pending_draw_overlay(ui, rect, ppp);
-        // 测距叠层：起
+        // Measurement overlay: start
 
-        // 终点（或鼠标位置），并显示距离
+        // endpoint (or mouse position), showing the distance
         if let Some(start) = self.measure_start
             && let Some(end) = self.measure_end.or(self.hover_world)
         {
@@ -630,8 +632,8 @@ impl NeoApp {
                 yellow,
             );
         }
-        // 下载框选矩形（拖拽
-        // + 已选范围）
+        // Download box-select rectangle (drag
+        // + already-selected extent)
         let bbox_corners = if let Some((start, current)) = self.bbox_drag {
             Some((start, current))
         } else {
@@ -671,11 +673,11 @@ impl NeoApp {
         );
     }
 
-    /// 框选（CAD / JOSM）：左→右仅整体在框内；右→左选相交或在框内。
+    /// Box selection (CAD / JOSM): left→right only selects features entirely inside; right→left selects intersecting or contained features.
     ///
-    /// **只看几何、不看渲染状态**：缩放 LOD 隐藏的节点（z<17、非共享节点等）只要
-    /// 落在框内（或与框相交）都会被选中，便于批量编辑/删除当前画面里看不见的要素。
-    /// 点选与悬停仍遵循可见性规则（见 [`Self::node_selectable`]）。
+    /// **Geometry only, no render state**: nodes hidden by zoom LOD (z<17, non-shared nodes, etc.) are selected as long as
+    /// they fall inside the box (or intersect it), enabling batch edits/deletes of features that are not visible in the current view.
+    /// Clicking and hovering still follow the visibility rules (see [`Self::node_selectable`]).
     pub(super) fn select_in_box(&mut self, start: WorldPoint, end: WorldPoint, additive: bool) {
         let bounds = WorldBounds::from_points(start, end);
         let mode = neo_geo::box_select_mode(start, end);
@@ -720,9 +722,9 @@ impl NeoApp {
         self.resync_tags();
     }
 
-    /// 鼠标屏幕坐标到"选中要素"几何的最近距离（像素）；没有选中要素时返回 None。
+    /// Nearest distance in pixels from the mouse screen position to the selected features' geometry; returns None when nothing is selected.
     ///
-    /// 节点按点距离；way 按折线线段距离。用于判断是否在可拖动外边距内。
+    /// Nodes use point distance; ways use polyline segment distance. Used to decide whether the pointer is within the draggable margin.
     pub(super) fn selection_screen_distance(&self, screen: [f32; 2]) -> Option<f32> {
         let selection = self.editor.selection();
         if selection.is_empty() {
@@ -764,7 +766,7 @@ impl NeoApp {
         best.is_finite().then_some(best)
     }
 
-    /// 绘制工具在屏幕位置落点（左键 / 空格共用）。
+    /// Place a point at a screen position with the drawing tool (shared by left click / Space).
     pub(super) fn place_draw_at(&mut self, screen: [f32; 2], world: WorldPoint, additive: bool, alt: bool) {
         let pick = self.pick_at(screen);
         let snap = self.resolve_draw_snap(screen, alt);
@@ -781,14 +783,14 @@ impl NeoApp {
         }
     }
 
-    /// 绘制完成后恢复选择工具。
+    /// Restore the selection tool after drawing finishes.
     pub(super) fn switch_to_select_tool(&mut self) {
         self.mode = UiMode::Select;
         self.controller.set_tool(neo_tools::ToolKind::Select);
         self.status = tf("app.status.tool", &[("tool", self.mode_label())]);
     }
 
-    /// 选择模式下应显示/可点中点手柄的 way：选中集合 ∪ 悬停 way。
+    /// Ways whose midpoint handles should be shown/clickable in selection mode: the selection ∪ hovered way.
     fn midpoint_candidate_ways(&self) -> Vec<ObjectId> {
         let mut ways: Vec<ObjectId> = self.editor.selection().ways().iter().copied().collect();
         if let Some(way) = self.hover_way
@@ -799,7 +801,7 @@ impl NeoApp {
         ways
     }
 
-    /// 候选 way 上可见的线段中点手柄（屏幕坐标足够长才出现）。
+    /// Visible segment midpoint handles on candidate ways (shown only when the screen-space segment is long enough).
     fn iter_midpoint_handles(
         &self,
         rect: egui::Rect,
@@ -851,10 +853,10 @@ impl NeoApp {
         out
     }
 
-    /// 命中线段中点三角；返回 `(way, seg)`。
+    /// Hit the segment midpoint triangle; returns `(way, seg)`.
     pub(super) fn pick_midpoint_handle(&self, screen: [f32; 2]) -> Option<(ObjectId, usize)> {
         let mut ways = self.midpoint_candidate_ways();
-        // 点击瞬间也纳入指针下方的 way，避免仅悬停未写入 hover_way 时点不中。
+        // At click time also include the way under the pointer, so clicks do not miss when only hover (not hover_way) is set.
         if let Some(way) = self.pick_at(screen).way
             && !ways.contains(&way)
         {
@@ -903,7 +905,7 @@ impl NeoApp {
         best.map(|(_, way, seg)| (way, seg))
     }
 
-    /// 线段中点三角标记（选中或悬停的 way；颜色/可见性与普通节点一致）。
+    /// Segment midpoint triangle markers (selected or hovered ways; colors/visibility match ordinary nodes).
     pub(super) fn draw_midpoint_handles(&self, ui: &egui::Ui, rect: egui::Rect, ppp: f32) {
         if self.mode != UiMode::Select || !self.layer_active {
             return;
@@ -913,15 +915,15 @@ impl NeoApp {
             .as_ref()
             .map(|scene| scene.camera.zoom)
             .unwrap_or(self.camera.zoom);
-        // 与普通节点同一 LOD：z < 17 不显示。
+        // Same LOD as ordinary nodes: not shown below z < 17.
         if !neo_scene::node_visible_at(zoom, 2) {
             return;
         }
         let painter = ui.painter();
-        // 与默认节点色一致（非高亮）。
+        // Same as the default node color (not highlighted).
         let fill = egui::Color32::from_rgba_unmultiplied(250, 250, 250, 255);
         let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 60));
-        let size = 3.5; // 约等于默认 node_radius_px
+        let size = 3.5; // Roughly the default node_radius_px
         for (_, _, mid, along) in self.iter_midpoint_handles(rect, ppp) {
             let len = along.length().max(1.0);
             let tangent = along / len;
@@ -933,7 +935,7 @@ impl NeoApp {
         }
     }
 
-    /// 绘制工具下解析吸附（设置关闭或按住 Alt 时返回 None）。
+    /// Resolve snapping for the drawing tool (returns None when disabled in settings or when Alt is held).
     pub(super) fn resolve_draw_snap(&self, screen: [f32; 2], alt_held: bool) -> Option<SnapHit> {
         if !self.controller.tool.is_draw()
             || !self.settings.draw_snap_enabled
@@ -957,7 +959,7 @@ impl NeoApp {
         )
     }
 
-    /// 吸附 / 可续画端点预览（仅画布，不写状态栏）。
+    /// Snap / resumable-endpoint preview (canvas only, does not write the status bar).
     pub(super) fn draw_snap_overlay(&self, ui: &egui::Ui, rect: egui::Rect, ppp: f32) {
         if !self.data_listed || !self.layer_visible || !self.controller.tool.is_draw() {
             return;
@@ -992,7 +994,7 @@ impl NeoApp {
                         egui::Stroke::new(1.5, egui::Color32::from_rgb(240, 250, 255)),
                     );
                 }
-                // 十字标记
+                // Crosshair marker
                 let arm = 6.0;
                 painter.line_segment(
                     [screen + egui::vec2(-arm, 0.0), screen + egui::vec2(arm, 0.0)],
@@ -1034,7 +1036,7 @@ impl NeoApp {
         }
     }
 
-    /// 绘制中：路径加粗、节点放大，并从末点拉出到鼠标的橡皮筋。
+    /// While drawing: thicker ways, enlarged nodes, and a rubber band from the last point to the mouse.
     pub(super) fn draw_pending_draw_overlay(&self, ui: &egui::Ui, rect: egui::Rect, ppp: f32) {
         if !self.data_listed || !self.layer_visible || !self.controller.tool.is_draw() {
             return;
@@ -1085,7 +1087,7 @@ impl NeoApp {
             && let Some(pos) = self.editor.data().nodes.position(handle)
             && let Some(hover) = self.hover_world
         {
-            // 面绘制时若已回到起点附近，橡皮筋可暗示即将闭合；这里统一连到指针。
+            // During area drawing, if back near the start point the rubber band can hint imminent closure; here it is always connected to the pointer.
             painter.line_segment(
                 [to_screen(pos), to_screen(hover.to_latlon())],
                 egui::Stroke::new(2.5, egui::Color32::from_rgba_unmultiplied(70, 190, 255, 180)),
@@ -1093,7 +1095,7 @@ impl NeoApp {
         }
     }
 
-    /// 选中或悬停 way 的全部成员节点：外观与高缩放下普通节点一致（非高亮），便于点选。
+    /// All member nodes of selected or hovered ways: same look as ordinary nodes at high zoom (not highlighted), for easy clicking.
     pub(super) fn draw_way_member_nodes_overlay(&self, ui: &egui::Ui, rect: egui::Rect, ppp: f32) {
         if !self.data_listed || !self.layer_visible || !self.layer_active {
             return;
@@ -1127,7 +1129,7 @@ impl NeoApp {
                 if !seen.insert(node) {
                     continue;
                 }
-                // 已选中的节点由红色高亮层绘制，这里只补「普通可见」。
+                // Already-selected nodes are drawn by the red highlight layer; here only the "normal visible" look is added.
                 if self.editor.selection().contains(ObjectKind::Node, node) {
                     continue;
                 }
@@ -1144,7 +1146,7 @@ impl NeoApp {
         }
     }
 
-    /// 选中的点/线用红色。选中的关系用紫色标出它的一级成员，不展开子关系。
+    /// Selected points/lines are red. A selected relation marks its first-level members in purple without expanding child relations.
     pub(super) fn draw_selection_overlay(&self, ui: &egui::Ui, rect: egui::Rect, ppp: f32) {
         if !self.data_listed || !self.layer_visible {
             return;
@@ -1355,14 +1357,14 @@ impl NeoApp {
         }
     }
 
-    /// 当前测距结果（米）
+    /// Current measurement result (meters)
     pub(super) fn measure_distance(&self) -> Option<f64> {
         let start = self.measure_start?;
         let end = self.measure_end.or(self.hover_world)?;
         Some(start.dist(end))
     }
 
-    /// 测距工具点击：起点 → 终点 → 重新开始。
+    /// Measurement tool click: start → end → restart.
     pub(super) fn measure_click(&mut self, world: WorldPoint) {
         if self.measure_start.is_none() {
             self.measure_start = Some(world);
@@ -1386,7 +1388,7 @@ impl NeoApp {
     }
 }
 
-/// 按优先级画名称：先占位的留下，后来的避开已有名字和图标。过长的名字折成最多三行。
+/// Draw names by priority: earlier placements keep their spot, later ones avoid existing names and icons. Overlong names wrap to at most three lines.
 fn paint_scene_labels(
     painter: &egui::Painter,
     scene: &neo_scene::SceneFrame,
@@ -1506,7 +1508,7 @@ fn label_screen_rect(
     egui::Rect::from_min_max(min, max)
 }
 
-/// 名称跟要素颜色，浅色字配深描边，深色字配浅描边。
+/// Name color follows the feature color; light text gets a dark outline, dark text a light outline.
 fn paint_feature_name(
     painter: &egui::Painter,
     pivot: egui::Pos2,
@@ -1636,7 +1638,7 @@ fn paint_fork(painter: &egui::Painter, center: egui::Pos2, mark: f32, color: egu
     painter.line_segment([top, top + egui::vec2(mark * 0.45, mark * 0.5)], stroke);
 }
 
-/// 把字的锚点钉在 `pivot` 上再顺时针旋转。`TextShape` 默认绕左上角转，这里先把锚点对齐。
+/// Pin the text anchor on `pivot` before rotating clockwise. `TextShape` rotates around the top-left corner by default, so align the anchor first.
 fn rotated_text(
     pivot: egui::Pos2,
     galley: std::sync::Arc<egui::Galley>,
@@ -1652,7 +1654,7 @@ fn rotated_text(
     egui::Shape::Text(shape)
 }
 
-/// 视口减去已下载 bbox 并集：框外半透明置灰。
+/// Viewport minus the union of downloaded bboxes: areas outside are grayed out translucently.
 fn draw_undownloaded_mask(
     painter: &egui::Painter,
     viewport: egui::Rect,
@@ -1691,7 +1693,7 @@ fn draw_undownloaded_mask(
     }
 }
 
-/// 节点是否为某条未闭合 way 的端点（用于续画高亮）。
+/// Whether the node is an endpoint of some unclosed way (for resume-drawing highlight).
 fn is_open_way_endpoint(app: &NeoApp, node: ObjectId) -> bool {
     let Some(handle) = app.editor.data().node_handle(node) else {
         return false;
@@ -1711,35 +1713,35 @@ fn is_open_way_endpoint(app: &NeoApp, node: ObjectId) -> bool {
         })
 }
 
-/// `outer` 减去 `hole` 后的矩形碎片（最多 4 块）。
+/// Rectangular fragments left after subtracting `hole` from `outer` (at most 4).
 fn subtract_rect(outer: egui::Rect, hole: egui::Rect) -> Vec<egui::Rect> {
     let clip = outer.intersect(hole);
     if clip.width() <= 0.0 || clip.height() <= 0.0 {
         return vec![outer];
     }
     let mut out = Vec::with_capacity(4);
-    // 上
+    // top
     if clip.min.y > outer.min.y {
         out.push(egui::Rect::from_min_max(
             outer.min,
             egui::pos2(outer.max.x, clip.min.y),
         ));
     }
-    // 下
+    // bottom
     if clip.max.y < outer.max.y {
         out.push(egui::Rect::from_min_max(
             egui::pos2(outer.min.x, clip.max.y),
             outer.max,
         ));
     }
-    // 左（中间条）
+    // left (middle strip)
     if clip.min.x > outer.min.x {
         out.push(egui::Rect::from_min_max(
             egui::pos2(outer.min.x, clip.min.y),
             egui::pos2(clip.min.x, clip.max.y),
         ));
     }
-    // 右（中间条）
+    // right (middle strip)
     if clip.max.x < outer.max.x {
         out.push(egui::Rect::from_min_max(
             egui::pos2(clip.max.x, clip.min.y),

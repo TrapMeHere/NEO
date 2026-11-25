@@ -1,18 +1,18 @@
-//! export 面板。
+//! export panel.
 
 use egui_phosphor::regular as ph;
 use neo_i18n::t;
 
 use super::{ExportFormat, UiActions};
 
-/// 导出窗口状态。
+/// Export window state.
 #[derive(Clone, Debug, Default)]
 pub struct ExportUiState {
-    /// 选择的格式。
+    /// Selected format.
     pub format: Option<ExportFormat>,
 }
 
-/// 统一导出窗口：用户选择格式。
+/// Unified export window: the user picks a format.
 pub fn export_window(
     ctx: &egui::Context,
     actions: &mut UiActions,

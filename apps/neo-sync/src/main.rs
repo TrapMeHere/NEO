@@ -1,6 +1,6 @@
-//! NEO 同步旁路：登录、下载、上传、笔记。
+//! NEO sync sidecar: login, download, upload, notes.
 //!
-//! 从 stdin 读 JSON 行，向 stdout 写 JSON 行。不链接 egui。
+//! Reads JSON lines from stdin and writes JSON lines to stdout. Does not link egui.
 
 #![forbid(unsafe_code)]
 
@@ -234,14 +234,14 @@ fn start_oauth(state: &mut State, client_id: String, redirect_uri: String) -> Sy
                     accounts::OAuthCallbackParse::Failed(error) => {
                         let _ = write!(
                             stream,
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body><h3>NEO OAuth</h3><p>登录失败，请回到 NEO 查看错误。</p></body></html>"
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body><h3>NEO OAuth</h3><p>Sign-in failed. Return to NEO to see the error.</p></body></html>"
                         );
                         return Err(error);
                     }
                     accounts::OAuthCallbackParse::Code(code) => {
                         let _ = write!(
                             stream,
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body><h3>NEO OAuth</h3><p>登录完成，可以关闭此窗口。</p></body></html>"
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body><h3>NEO OAuth</h3><p>Signed in. You can close this window.</p></body></html>"
                         );
                         let _ = stream.flush();
                         let transport = ReqwestTransport::new().map_err(|e| e.to_string())?;

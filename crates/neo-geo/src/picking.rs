@@ -1,22 +1,22 @@
-//! 命中测试（拾取）。
+//! Hit testing (picking).
 //!
-//! 算法（每次点击的固定成本，不随对象总数线性增长）：
+//! Algorithm (constant cost per click, not linear in the total object count):
 //!
 //! ```text
 //! screen (px)
 //!   │ Camera::screen_to_world
 //!   ▼
-//! world point  ──radius_m = radius_px / px_per_meter──►  放大后的 bbox
+//! world point  ──radius_m = radius_px / px_per_meter──►  expanded bbox
 //!   │ SpatialIndex::query(bbox)
 //!   ▼
-//! 候选 entries（通常个位数）
-//!   │ 精确距离：node=点距；way=点到折线；按屏幕像素比较
+//! candidate entries (usually single digits)
+//!     │ exact distance: node=point distance; way=point-to-polyline; compared in screen pixels
 //!   ▼
-//! Hit（node 优先于 way，同距离取最近）
+//! Hit (node takes priority over way; nearest wins at equal distance)
 //! ```
 //!
-//! 注意：距离判定必须在**屏幕像素**里做，而不是世界米——因为 OSM 编辑器的容差语义
-//! 是"鼠标周围 N 像素"，它随 zoom 变化（见 docs/04）。
+//! Note: distance must be measured in **screen pixels**, not world meters — because an OSM editor's tolerance semantics
+//! are "N pixels around the mouse", which vary with zoom (see docs/04).
 
 use neo_core::{Handle, ObjectId, ObjectKind};
 use neo_store::{DataSet, NodeSlot, WaySlot};
@@ -26,48 +26,48 @@ use crate::geometry;
 use crate::spatial::SpatialIndex;
 use crate::world::WorldPoint;
 
-/// 拾取结果。
+/// Pick result.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hit {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 对象 ID。
+    /// Object ID.
     pub id: ObjectId,
-    /// 节点句柄（若命中节点）。
+    /// Node handle (if a node was hit).
     pub node: Option<Handle<NodeSlot>>,
-    /// Way 句柄（若命中 way）。
+    /// Way handle (if a way was hit).
     pub way: Option<Handle<WaySlot>>,
-    /// 屏幕像素距离。
+    /// Screen-pixel distance.
     pub distance_px: f32,
 }
 
 impl Hit {
-    /// 是否命中节点。
+    /// Whether a node was hit.
     #[inline]
     pub fn is_node(&self) -> bool {
         self.kind == ObjectKind::Node
     }
 
-    /// 是否命中 way。
+    /// Whether a way was hit.
     #[inline]
     pub fn is_way(&self) -> bool {
         self.kind == ObjectKind::Way
     }
 }
 
-/// 命中测试器。
+/// Hit tester.
 pub struct HitTester<'a> {
     data: &'a DataSet,
     index: &'a SpatialIndex,
 }
 
 impl<'a> HitTester<'a> {
-    /// 构造。
+    /// Construct.
     pub fn new(data: &'a DataSet, index: &'a SpatialIndex) -> Self {
         Self { data, index }
     }
 
-    /// 拾取节点。
+    /// Pick a node.
     pub fn pick_node(&self, camera: &Camera, screen: [f32; 2], radius_px: f32) -> Option<Hit> {
         let world = camera.screen_to_world(screen);
         let radius_m = camera.px_to_meters(radius_px);
@@ -103,7 +103,7 @@ impl<'a> HitTester<'a> {
         best
     }
 
-    /// 拾取 way（点在折线上的最近距离）。
+    /// Pick a way (nearest distance from the point to the polyline).
     pub fn pick_way(&self, camera: &Camera, screen: [f32; 2], radius_px: f32) -> Option<Hit> {
         let world = camera.screen_to_world(screen);
         let radius_m = camera.px_to_meters(radius_px);
@@ -139,20 +139,20 @@ impl<'a> HitTester<'a> {
         best
     }
 
-    /// 拾取：节点优先（OSM 编辑习惯：可移动点优先级高于线）。
+    /// Pick: nodes first (OSM editing habit: movable points take priority over lines).
     pub fn pick(&self, camera: &Camera, screen: [f32; 2], radius_px: f32) -> Option<Hit> {
         self.pick_node(camera, screen, radius_px)
             .or_else(|| self.pick_way(camera, screen, radius_px))
     }
 
-    /// 按不同元素类型各自的"可选择外边距"拾取。
+    /// Pick using per-element-type "selectable margins".
     ///
-    /// 规则（与 OSM 编辑习惯一致）：
-    /// * 鼠标在节点外边距内 → 选**节点**（即使它压在 way 上，也不会误选 way）；
-    /// * 否则在 way 外边距内 → 选 way；
-    /// * 两类元素使用**互相独立**的边距（节点通常更大，因为点目标小）。
+    /// Rules (consistent with OSM editing habits):
+    /// * if the mouse is within the node margin → select the **node** (even if it lies on a way, the way is not wrongly selected);
+    /// * otherwise, within the way margin → select the way;
+    /// * the two element types use **mutually independent** margins (nodes are usually larger because point targets are small).
     ///
-    /// 这样"外边距"既是可拖动范围，也是可选择范围，而两种元素的边距不会互相吞并。
+    /// Thus a "margin" is both the draggable range and the selectable range, and the margins of the two element types do not swallow each other.
     pub fn pick_with_margins(
         &self,
         camera: &Camera,
@@ -164,8 +164,8 @@ impl<'a> HitTester<'a> {
             .or_else(|| self.pick_way(camera, screen, way_margin_px))
     }
 
-    /// 带节点过滤的外边距拾取：`accept_node` 返回 false 的节点（如按 LOD 不可见）会被忽略，
-    /// 并**回退到 way**——否则隐藏节点会"截胡"其下方 way 的点击，导致点击要素本身无法选中。
+    /// Margin picking with node filtering: nodes for which `accept_node` returns false (e.g. invisible by LOD) are ignored,
+    /// and the pick **falls back to the way** — otherwise hidden nodes would "intercept" clicks on the way beneath them, making the feature itself unselectable.
     pub fn pick_with_margins_filtered(
         &self,
         camera: &Camera,
@@ -180,7 +180,7 @@ impl<'a> HitTester<'a> {
         node.or_else(|| self.pick_way(camera, screen, way_margin_px))
     }
 
-    /// 拾取全部候选（按距离升序，供多选/循环选择）。
+    /// Pick all candidates (ascending by distance; for multi-select/cycling selection).
     pub fn pick_all(&self, camera: &Camera, screen: [f32; 2], radius_px: f32) -> Vec<Hit> {
         let world = camera.screen_to_world(screen);
         let radius_m = camera.px_to_meters(radius_px);

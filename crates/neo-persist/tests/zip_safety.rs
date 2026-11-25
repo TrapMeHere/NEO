@@ -1,4 +1,4 @@
-//! `.joz` 解压安全：拒绝 zip-slip 与超限条目。
+//! `.joz` extraction safety: reject zip-slip and oversized entries.
 
 use std::io::Write;
 
@@ -25,8 +25,8 @@ fn joz_rejects_path_traversal() {
     }
     let extract = base.join("extract");
     let result = read_joz(&path, &extract);
-    // 实现可以选择拒绝，或把条目名净化成 `evil.txt` 后落在解压目录内；
-    // 关键不变量是绝不能写到目录外。
+    // The implementation may either reject the entry or sanitize its name to `evil.txt` inside the
+    // extraction directory; the critical invariant is that nothing is ever written outside the directory.
     assert!(!base.join("evil.txt").exists());
     assert!(!base.join("..").join("evil.txt").exists());
     if let Err(err) = result {

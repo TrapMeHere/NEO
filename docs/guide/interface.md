@@ -1,93 +1,95 @@
-# 界面说明
+# Interface
 
-NEO 采用 JOSM 风格布局（现代化、深色主题）：
+NEO uses a JOSM-style layout (modern, dark theme):
 
 ```
-┌ 菜单栏：文件 / 编辑 / 视图 / 工具 / 帮助 ─────────────────────────────┐
-├ 常用工具栏：打开/保存/导出 · 撤销/重做/删除 · 缩放 ─────────────────────┤
-├──────┬───────────────────────────────────────────┬───────────────────────┤
-│ 竖排  │                                           │ 图层                  │
-│ 工具  │           地图画布（wgpu）                  │ 标签 / 成员            │
-│ 栏    │                                           │ 选择                  │
-│      │                                           │ 关系                  │
-│      │                                           │ 校验结果 / 冲突        │
-├──────┴───────────────────────────────────────────┴───────────────────────┤
-│ 经纬度 · 比例尺 · 缩放 · 测距结果 · 选中数 · 撤销/重做 · 最近操作          │
-└──────────────────────────────────────────────────────────────────────────┘
+┌ Menu bar: File / Edit / View / Tools / Help ───────────────────────────────┐
+├ Common toolbar: Open/Save/Export · Undo/Redo/Delete · Zoom ────────────────┤
+├──────┬─────────────────────────────────────────────┬───────────────────────┤
+│Vert. │                                             │ Layers                │
+│ tool │              Map canvas (wgpu)              │ Tags / Members        │
+│ bar  │                                             │ Selection             │
+│      │                                             │ Relations             │
+│      │                                             │ Validation / Conflicts│
+├──────┴─────────────────────────────────────────────┴───────────────────────┤
+│ Lat/Lon · Scale · Zoom · Measure · Selection · Undo/Redo · Last action     │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 左侧工具栏
+## Left toolbar
 
-选择（S）、绘制（A）、删除（X）、测距（M），以及完成线（Enter）、
-分割 way、反转方向、合并两条相邻 way。当前工具为蓝色高亮。
+Select (S), Draw (A), Delete (X), Measure (M), plus Finish line (Enter),
+Split way, Reverse direction, Merge two adjacent ways. The current tool is highlighted in blue.
 
-## 右侧面板
+## Right panels
 
-### 图层
+### Layers
 
-- **眼睛图标**：显示/隐藏图层（隐藏后画布为空，但可继续平移/缩放）
-- **对勾方框**：是否为「活动数据图层」
-- **图层名**：右键 → `信息…` / `缩放至图层` / `另存为 XML…`
+- **Eye icon**: show/hide the layer (when hidden the canvas is empty, but panning/zooming still work)
+- **Checkbox**: whether this is the "active data layer"
+- **Layer name**: right-click → `Info…` / `Zoom to Layer` / `Save As XML…`
 
-**非活动图层**：GPU shader 把数据渲染为**灰度 + 50% 不透明度**，并进入只读：
-不能选择、拖动、绘制、测距（平移/缩放可用），切换时自动清空选择。
+**Inactive layer**: the GPU shader renders the data in **grayscale at 50% opacity** and makes it read-only:
+selecting, dragging, drawing, and measuring are disabled (panning/zooming still work), and the selection is cleared automatically when switching.
 
-![非活动图层](../assets/ui-layer-inactive.png)
+![Inactive layer](../assets/ui-layer-inactive.png)
 
-### 标签 / 成员
+### Tags / Members
 
-选中对象后以 `key = value` 表格显示全部标签，可直接编辑、添加、删除、应用。
-way 显示节点成员列表；relation 显示成员（type / id / role）。无选择时留空。
+After selecting an object, all tags are shown in a `key = value` table and can be edited, added, deleted, and applied directly.
+A way shows its node member list; a relation shows its members (type / id / role). Empty when nothing is selected.
 
-### 选择
+### Selection
 
-列出当前选中对象；无选择时留空。
+Lists the currently selected objects; empty when nothing is selected.
 
-### 关系
+### Relations
 
-列出数据集中全部 relation（id + name，若有）；为空时留空。
+Lists all relations in the data set (id + name, if present); empty when there are none.
 
-### 校验结果
+### Validation Results
 
-点击「运行校验」对当前数据执行 12 条 JOSM 风格规则（way 少于 2 节点、相邻重复节点、
-未闭合 building、重复 way、无标签 way/relation、空 relation、孤立未标注节点、重复坐标、
-可疑标签组合、multipolygon 角色异常、way 自相交）。结果按错误/警告列出，
-点击条目会选中并定位到对应对象。
+Click "Run Validation" to execute 24 JOSM-style rules on the current data (way too short/long, adjacent and
+non-adjacent duplicate nodes, duplicate coordinates, unclosed building/area, duplicate way, untagged
+way/relation/node, empty relation, relation without `type`, duplicate relation members, suspicious tag
+combinations, multipolygon role/no-outer/unclosed-outer problems, self-intersecting way, closed way with too
+few nodes, invalid/out-of-range `layer`, invalid `oneway`, empty `name`). Results are listed as errors/warnings,
+and clicking an entry selects and locates the corresponding object.
 
-![校验面板](../assets/ui-validation.png)
+![Validation panel](../assets/ui-validation.png)
 
-### 冲突
+### Conflicts
 
-上传 409 冲突显示在上传窗口：可「保留本地并重试」、「采用远端」、「合并标签」或「合并几何」。
-手合并（字段/几何选择）待后续；`neo-editor::MergeCase` 已就绪。
+Upload 409 conflicts are shown in the upload window: "Keep local and retry", "Take remote", "Merge tags", or "Merge geometry".
+Manual merging (field/geometry selection) is still to come; `neo-editor::MergeCase` is already in place.
 
-## 底部状态栏
+## Bottom status bar
 
-- 鼠标所在经纬度（6 位小数）
-- 自适应比例尺（m / km）
-- 当前缩放级别
-- 测距结果（使用测距工具时）
-- 选中数、撤销/重做栈长度
-- 右侧：最近操作或错误信息
+- Latitude/longitude under the mouse (6 decimal places)
+- Adaptive scale bar (m / km)
+- Current zoom level
+- Measurement result (when the measure tool is in use)
+- Selection count, undo/redo stack lengths
+- On the right: last action or error message
 
-## 菜单
+## Menus
 
-| 菜单 | 内容 |
+| Menu | Contents |
 |---|---|
-| 文件 | 打开 PBF/XML、保存 XML、导出 osmChange/PBF、保存/打开会话 |
-| 编辑 | 撤销、重做、删除选中、从 journal 恢复 |
-| 视图 | 放大、缩小、缩放至数据 |
-| 工具 | 选择/绘制/删除/测距、完成线、分割/反转/合并 way |
-| 帮助 | **设置…**（语言 + 快捷键）、**关于 NEO**（字体覆盖、许可） |
+| File | Open PBF/XML, Save XML, Export osmChange/PBF, Save/Open session |
+| Edit | Undo, Redo, Delete selection, Recover from journal |
+| View | Zoom in, Zoom out, Zoom to data |
+| Tools | Select/Draw/Delete/Measure, Finish line, Split/Reverse/Merge way |
+| Help | **Settings…** (language + shortcuts), **About NEO** (font overrides, licenses) |
 
-## 节点 LOD 与拾取
+## Node LOD and picking
 
-| 缩放 | 显示 | 可拾取 |
+| Zoom | Displayed | Pickable |
 |---|---|---|
-| z ≤ 16 | 无节点 | 只有 way |
-| z 17–18 | 共享节点（≥2 条 way）小点 | 可见节点 + way |
-| z ≥ 19 | 全部节点（共享=方块，普通=圆点） | 全部节点 + way |
+| z ≤ 16 | no nodes | ways only |
+| z 17–18 | small dots for shared nodes (≥2 ways) | visible nodes + ways |
+| z ≥ 19 | all nodes (shared = square, normal = circle) | all nodes + ways |
 
-隐藏节点不会拦截其下方 way 的点击：拾取阶段会过滤不可见节点并回退到 way。
+Hidden nodes do not intercept clicks on ways beneath them: the picking stage filters out invisible nodes and falls back to ways.
 
-![英文界面（可在设置中切换）](../assets/ui-en.png)
+![English interface (switchable in settings)](../assets/ui-en.png)

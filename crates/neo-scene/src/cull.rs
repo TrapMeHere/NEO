@@ -1,12 +1,12 @@
-//! CPU 侧视锥剔除，产出 indirect draw 的 `instance_count`。
+//! CPU-side frustum culling, producing the `instance_count` for indirect draw.
 //!
-//! 结果交给 GPU：`1` 画整批，`0` 丢掉整批。顶点不在这里重写。
+//! The result is handed to the GPU: `1` draws the whole batch, `0` drops it. Vertices are not rewritten here.
 
 use neo_geo::{Camera, WorldPoint};
 
 use crate::batches::RenderBatch;
 
-/// 批次是否与视口（外扩 64px）相交。相交则实例数为 1。
+/// Whether a batch intersects the viewport (expanded by 64px). If it does, the instance count is 1.
 pub fn instance_count(batch: &RenderBatch, camera: &Camera, origin: WorldPoint) -> u32 {
     if batch.indices.is_empty() || batch.vertices.is_empty() {
         return 0;

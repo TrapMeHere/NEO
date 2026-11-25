@@ -1,8 +1,8 @@
 ﻿# Build a Windows zip layout and write the update manifest the other platforms share.
 # Linux and macOS wrappers live in packaging/. This script does not cross-compile.
 #
-# 不清理 out\cargo\release。编完后把 exe + fonts/presets/i18n 放到 out\neo-desktop\release，
-# 再打进 dist 发行布局。
+# Does not clean out\cargo\release. After building, puts the exe + fonts/presets/i18n into out\neo-desktop\release,
+# then packs the dist release layout.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -23,7 +23,7 @@ function Publish-Bundle([string]$BundleDir) {
         try {
             Remove-Item -LiteralPath $BundleDir -Recurse -Force -ErrorAction Stop
         } catch {
-            throw "无法重建 $BundleDir（可能 exe 仍在运行）。请先关闭后重试。`n$($_.Exception.Message)"
+            throw "cannot rebuild $BundleDir (the exe may still be running). Close it and retry.`n$($_.Exception.Message)"
         }
     }
     New-Item -ItemType Directory -Force -Path $BundleDir | Out-Null

@@ -1,15 +1,15 @@
-//! 并行 PBF 导入：blob 级并行解码 + 顺序装配（阶段 2.8）。
+//! Parallel PBF import: blob-level parallel decoding + sequential assembly (stage 2.8).
 //!
-//! 设计（docs/08 §2.4）：
+//! Design (docs/08 §2.4):
 //!
-//! 1. 顺序读文件得到 `Vec<Blob>`（I/O + 头解析很便宜）；
-//! 2. `rayon` 并行对每个 blob 做 zlib 解压 + protobuf 解码，产出**拥有所有权的
-//!    Raw DTO**（不跨线程共享 `PrimitiveBlock` 借用）；
-//! 3. 单线程按 Node → Way → Relation 的顺序装配进 `DataSet`（string interning 是
-//!    可变全局状态，保持单写者语义）。
+//! 1. Read the file sequentially into `Vec<Blob>` (I/O + header parsing are cheap);
+//! 2. `rayon` zlib-decompresses and protobuf-decodes each blob in parallel, producing **owned
+//!    Raw DTOs** (no cross-thread sharing of borrowed `PrimitiveBlock`);
+//! 3. A single thread assembles them into a `DataSet` in Node → Way → Relation order (string interning is
+//!    mutable global state, preserving single-writer semantics).
 //!
-//! 正确性与顺序导入一致（由 `tests/pbf_parallel.rs` 对拍）；取消语义同
-//! [`crate::pbf::import_pbf_with_options`]。
+//! Correctness matches sequential import (verified against `tests/pbf_parallel.rs`); cancellation semantics are the same as
+//! [`crate::pbf::import_pbf_with_options`].
 
 use std::path::Path;
 use std::time::Instant;
@@ -22,7 +22,7 @@ use rayon::prelude::*;
 
 use crate::pbf::{ImportOptions, ImportReport};
 
-/// 原始节点。
+/// Raw node.
 struct RawNode {
     id: i64,
     lat: i64,
@@ -31,7 +31,7 @@ struct RawNode {
     meta: Meta,
 }
 
-/// 原始 way。
+/// Raw way.
 struct RawWay {
     id: i64,
     refs: Vec<i64>,
@@ -39,7 +39,7 @@ struct RawWay {
     meta: Meta,
 }
 
-/// 原始 relation。
+/// Raw relation.
 struct RawRelation {
     id: i64,
     members: Vec<(ObjectKind, i64, String)>,
@@ -54,12 +54,12 @@ struct RawBlob {
     relations: Vec<RawRelation>,
 }
 
-/// 并行导入（默认选项）。
+/// Parallel import (default options).
 pub fn import_pbf_parallel(path: impl AsRef<Path>) -> Result<DataSet, NeoError> {
     Ok(import_pbf_parallel_with_options(path, ImportOptions::default())?.0)
 }
 
-/// 并行导入，返回统计。
+/// Parallel import returning statistics.
 pub fn import_pbf_parallel_with_options(
     path: impl AsRef<Path>,
     options: ImportOptions,
@@ -68,16 +68,16 @@ pub fn import_pbf_parallel_with_options(
     let input_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let started = Instant::now();
 
-    // 1) 顺序读取 blob 边界（不解析内容）
+    // 1) Read blob boundaries sequentially (without parsing contents)
     let blobs: Vec<Blob> = BlobReader::from_path(path)
         .map_err(|e| NeoError::Parse(e.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| NeoError::Parse(e.to_string()))?;
 
-    // 2) 并行解码
+    // 2) Parallel decoding
     let raw: Vec<RawBlob> = blobs.par_iter().map(decode_blob).collect::<Result<Vec<_>, _>>()?;
 
-    // 3) 顺序装配（Node → Way → Relation）
+    // 3) Sequential assembly (Node → Way → Relation)
     let mut dataset = DataSet::new();
     let mut report = ImportReport {
         input_bytes,

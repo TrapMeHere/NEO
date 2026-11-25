@@ -1,15 +1,15 @@
-//! # neo-geo — 空间与几何层
+//! # neo-geo — spatial and geometry layer
 //!
-//! 职责：
+//! Responsibilities:
 //!
-//! * [`world`]：WebMercator 世界坐标（f64 米）与包围盒；
-//! * [`camera`]：世界坐标 ↔ 屏幕像素，缩放/平移/适配；
-//! * [`spatial`]：rstar R-tree 对象索引（节点点 + way 的 AABB），支持增量更新；
-//! * [`geometry`]：折线/多边形三角化/描边生成/简化/距离；
-//! * [`picking`]：屏幕像素容差的命中测试（不遍历全部对象）。
+//! * [`world`]: WebMercator world coordinates (f64 meters) and bounding boxes;
+//! * [`camera`]: world coordinates ↔ screen pixels, zoom/pan/fit;
+//! * [`spatial`]: rstar R-tree object index (node points + way AABBs), with incremental updates;
+//! * [`geometry`]: polylines/polygon triangulation/stroke generation/simplification/distance;
+//! * [`picking`]: hit testing with a screen-pixel tolerance (without iterating all objects).
 //!
-//! 依赖方向：`neo-core`、`neo-osm`、`neo-store`（只读数据集）→ 本 crate → `neo-scene`。
-//! 本 crate 不依赖 GPU/UI/IO。
+//! Dependency direction: `neo-core`, `neo-osm`, `neo-store` (read-only dataset) → this crate → `neo-scene`.
+//! This crate does not depend on GPU/UI/IO.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

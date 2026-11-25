@@ -1,4 +1,4 @@
-//! NEO 命令行。桌面安装包之外的冷启动、导入和插件演示入口。
+//! NEO command line. Cold-start, import, and plugin demo entry point outside the desktop installer.
 
 use std::env;
 use std::path::PathBuf;

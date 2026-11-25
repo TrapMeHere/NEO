@@ -1,161 +1,166 @@
-# 02 · Workspace 与依赖规则（Workspace & Dependency Rules）
+# 02 · Workspace & Dependency Rules
 
-NEO 是 17 个 crate + 3 个 app 的单 workspace 模块化单体：分层不靠约定，靠 crate 边界、sealed trait、脚本断言三道闸强制。本文是依赖方向、feature 组合与版本一致性的**唯一事实来源**，也是 `scripts/check-deps.py` 白名单的出处。八层职责与线程模型见 [系统架构](./01-system-architecture.md)，版本冲突的证据链见 `.research/crate-api-cheatsheet.md`。
+NEO is a single-workspace modular monolith of 18 crates + 6 apps: layering is not enforced by convention but by three gates — crate boundaries, sealed traits, and script assertions. This document is the **single source of truth** for dependency direction, feature combinations, and version coherence, and it is also the origin of the `scripts/check-deps.py` allowlist. The eight-layer responsibilities and thread model are in [System Architecture](./01-system-architecture.md), and the evidence chain for version conflicts is in `.research/crate-api-cheatsheet.md`.
 
-## 摘要
+## Summary
 
-单 workspace 多 crate 的价值不在"整齐"，而在于**分层可以被机器拒绝**：任何"UI 直接改数据"或"渲染层依赖 store"的越界都在编译期或 CI 阶段失败，而不是三个月后以死锁的形式出现。因此本文把依赖白名单、深度表与版本钉死策略写成可执行规则，而不是风格建议。
+The value of a single workspace with many crates is not "tidiness" but the fact that **layering can be rejected by machines**: any out-of-bounds move such as "the UI mutates data directly" or "the render layer depends on store" fails at compile time or in CI, instead of surfacing three months later as a deadlock. This document therefore writes the dependency allowlist, depth table, and version pinning strategy as executable rules rather than stylistic suggestions.
 
-## 1 目标与范围
+## 1 Goals and Scope
 
-**在范围内**：目录布局；每个 crate 允许 / 禁止的内部依赖；DAG 深度表；强制手段（编译器 + 脚本 + CI）；check-deps 脚本设计与失败样例；GUI 栈锁 0.36.2 的原因与升级演练；feature 组合与默认最小集；公共 API 稳定性；semver 与 MSRV。
+**In scope**: directory layout; allowed / prohibited internal dependencies for each crate; the DAG depth table; enforcement mechanisms (compiler + scripts + CI); check-deps script design and failure examples; the reason the GUI stack is pinned to 0.36.2 and the upgrade drill; feature combinations and the minimal default set; public API stability; semver and MSRV.
 
-**不在范围内**：各 crate 的内部设计与算法（见 04–12）；外部依赖的功能选型理由（见专题文档与 ADR）；发布流程与签名（见 17）。
+**Out of scope**: the internal design and algorithms of each crate (see 04–12); functional selection rationale for external dependencies (see the topic documents and ADRs); release process and signing (see 17).
 
-## 2 设计
+## 2 Design
 
-### 2.1 目录树
+### 2.1 Directory Tree
 
 ```
 neo/
-├─ Cargo.toml                 # [workspace] members = ["crates/*","apps/*"]；[workspace.dependencies] 版本唯一来源
-├─ Cargo.lock                 # 入库；CI 用 --locked
-├─ rust-toolchain.toml        # channel = "stable"（本机 1.100.0）；MSRV = rust-version 1.95
+├─ Cargo.toml                 # [workspace] members = ["crates/*","apps/*"]; [workspace.dependencies] is the single version source
+├─ Cargo.lock                 # checked in; CI uses --locked
+├─ rust-toolchain.toml        # channel = "stable" (local 1.100.0); MSRV = rust-version 1.97
 ├─ crates/
-│  ├─ neo-core/               # L1 叶子：ObjectId / Handle+generation / Sym 驻留 / 定点 Coord / 错误
-│  ├─ neo-osm/                # L1 DTO：Tags / Node / Way / Relation / ChangeState（不碰存储）
-│  ├─ neo-store/              # L2 SoA Node|Way|RelationStore、TagStore arena、IdIndex、
-│  │                          #    CSR Referrers、ChangeTrack、BitSet 脏位图、DataSet
-│  ├─ neo-query/              # L4 只读出口：MapQuery + MapSnapshot + SnapshotCell（arc-swap）
-│  ├─ neo-geo/                # L3 WebMercator f64 米 / Camera / rstar 0.14 / 几何 / 拾取（只读 store）
+│  ├─ neo-core/               # L1 leaf: ObjectId / Handle+generation / Sym interning / fixed-point Coord / errors
+│  ├─ neo-osm/                # L1 DTO: Tags / Node / Way / Relation / ChangeState (does not touch storage)
+│  ├─ neo-store/              # L2 SoA Node|Way|RelationStore, TagStore arena, IdIndex,
+│  │                          #    CSR Referrers, ChangeTrack, BitSet dirty maps, DataSet
+│  ├─ neo-query/              # L4 read-only exit: MapQuery + MapSnapshot + SnapshotCell (arc-swap)
+│  ├─ neo-geo/                # L3 WebMercator f64 meters / Camera / rstar 0.14 / geometry / picking (read-only store)
 │  ├─ neo-style/              # L4 MapCSS / Presets
-│  ├─ neo-io/                 # L2 PBF / XML / osmChange 0.6（osmpbf 只读；写侧自研 encoder）
-│  ├─ neo-persist/            # L2 SQLite WAL / command journal / autosave / 崩溃恢复
-│  ├─ neo-scene/              # L5 可见集 / LOD / SceneFrame / MapVertex（无 GPU 句柄）
-│  ├─ neo-render/             # L5 wgpu 30：设备装配 / 管线 / BufferPool / 离屏 / GPU 拾取
-│  ├─ neo-editor/             # L6 Command / Transaction / Undo / Journal / Selection / 冲突
-│  ├─ neo-tools/              # L6 选择 / 绘制 / 移动 / 分割 / 合并 / 简化（只产出 EditCommand）
-│  ├─ neo-api/                # L1 API 0.6：changeset PUT、单请求 diff 上传、409、下载、notes
-│  ├─ neo-validate/           # L4 拓扑 / tag / 几何规则（rayon 并行增量）
-│  ├─ neo-plugin/             # L1 WASM 宿主（wasmtime 50）：只读 query、只返回 Command
-│  └─ neo-ui/                 # L7 egui 面板 / 对话框 / 菜单 / 快捷键（不依赖 io/api/persist）
-├─ apps/neo-desktop/ · neo-prototype/   # L8 eframe 入口+装配+CLI；性能原型（不含 ui/editor）
-├─ benches/  tests/  docs/    # criterion 0.8 基准；跨 crate 集成测试；本文件集
-├─ scripts/  assets/          # check-deps.py / check-write-api.py / i18n / UI 冒烟；图标·预设·样式
+│  ├─ neo-io/                 # L2 PBF / XML / osmChange 0.6 (osmpbf read-only; in-house encoder on the write side)
+│  ├─ neo-persist/            # L2 SQLite WAL / command journal / autosave / crash recovery
+│  ├─ neo-scene/              # L5 visible set / LOD / SceneFrame / MapVertex (no GPU handles)
+│  ├─ neo-render/             # L5 wgpu 30: device setup / pipelines / BufferPool / offscreen / GPU picking
+│  ├─ neo-editor/             # L6 Command / Transaction / Undo / Journal / Selection / conflicts
+│  ├─ neo-tools/              # L6 select / draw / move / split / merge / simplify (produces EditCommand only)
+│  ├─ neo-api/                # L1 API 0.6: changeset PUT, single-request diff upload, 409, download, notes
+│  ├─ neo-validate/           # L4 topology / tag / geometry rules (rayon parallel incremental)
+│  ├─ neo-plugin/             # L1 WASM host (wasmtime 50): read-only query, returns Command only
+│  ├─ neo-ipc/                # L1 line-protocol IPC for the sidecar apps (imagery/sync/launcher)
+│  └─ neo-ui/                 # L7 egui panels / dialogs / menus / shortcuts (does not depend on io/api/persist)
+├─ apps/neo-desktop/ · neo-cli/ · neo-prototype/ · neo-imagery/ · neo-sync/ · neo-launcher/  # L8 entries, CLI, sidecars and launcher; prototype is performance-only (no ui/editor)
+├─ benches/  tests/  docs/    # criterion 0.8 benchmarks; cross-crate integration tests; this document set
+├─ scripts/  assets/          # check-deps.py / check-write-api.py / i18n checks; icons·presets·styles
 ```
 
-### 2.2 依赖白名单（唯一事实来源）
+### 2.2 Dependency Allowlist (Single Source of Truth)
 
-表中每一行就是 `scripts/check-deps.py` 的 `ALLOW`。**新增任何内部边 = 同时改本文表格与脚本白名单 + 一个 ADR 或双人评审**，否则 CI 拒绝合并。
+Each row in the table is exactly one `RULES` entry in `scripts/check-deps.py`. **Adding any internal edge = changing both the table in this document and the script allowlist + an ADR or two-person review**, otherwise CI refuses the merge. The four newest workspace members (`neo-ipc`, `neo-imagery`, `neo-launcher`, `neo-sync`) are already enforced by the script but their rows are not yet in this table; see the note after the table.
 
-| crate | 允许的内部依赖 | 硬性禁止 | feature 门控 |
+| crate | Allowed internal dependencies | Hard prohibitions | Feature gating |
 |---|---|---|---|
-| `neo-core` | —（叶子） | 任何内部 crate；GUI/GPU/IO 类型 | `serde`（可选） |
+| `neo-core` | — (leaf) | Any internal crate; GUI/GPU/IO types | `serde` (optional) |
 | `neo-osm` | core | store / geo / render / ui | `serde` |
-| `neo-store` | core, osm | 任何上层；GUI/GPU | — |
-| `neo-geo` | core, osm, store | 可变 DataSet；GPU/UI | — |
+| `neo-store` | core, osm | Any upper layer; GUI/GPU | — |
+| `neo-geo` | core, osm, store | Mutable DataSet; GPU/UI | — |
 | `neo-style` | core | store / osm / GPU | — |
 | `neo-io` | core, osm, store | editor / ui / render | — |
-| `neo-persist` | —（当前无内部 crate） | editor / ui / render | — |
-| `neo-api` | core | store / osm / editor / ui | `http`（默认关） |
-| `neo-query` | core, osm, store, geo | editor（避免读写循环）；render/ui | — |
+| `neo-persist` | — (currently no internal crates) | editor / ui / render | — |
+| `neo-api` | core | store / osm / editor / ui | `http` (off by default) |
+| `neo-query` | core, osm, store, geo | editor (avoid read/write cycles); render/ui | — |
 | `neo-validate` | core, osm, store | editor / geo / ui / render | — |
 | `neo-scene` | core, osm, store, geo, style | render / editor / ui / query | — |
 | `neo-render` | core, geo, scene | **store / editor / ui** | `pick-readback` |
 | `neo-editor` | core, osm, store, geo | **render / ui / io** | — |
-| `neo-tools` | core, osm, store, geo, editor | store 写 API（只经 Command） | — |
-| `neo-plugin` | core, query, editor | store（间接也不允许） | `wasm-plugins` |
-| `neo-i18n` | （无内部依赖） | store / editor / render | — |
+| `neo-tools` | core, osm, store, geo, editor | store write API (must go through Command) | — |
+| `neo-plugin` | core, query, editor | store (not even indirectly) | `wasm-plugins` |
+| `neo-i18n` | (no internal dependencies) | store / editor / render | — |
 | `neo-ui` | core, osm, store, style, i18n | **io / api / persist / render / editor** | — |
-| `neo-desktop` | core, osm, store, io, geo, scene, render, editor, persist, tools, validate, api, plugin, ui, style, i18n | **query**（快照还没接到界面） | `api`/`persist`/`wasm-plugins`/`profile` |
+| `neo-desktop` | core, osm, store, io, geo, scene, render, editor, persist, tools, validate, api, plugin, ui, style, i18n | **query** (the snapshot is not yet wired to the UI) | `api`/`persist`/`wasm-plugins`/`profile` |
 | `neo-prototype` | core, osm, store, io, geo, scene, render | ui / editor / api / persist | `profile` |
 | `neo-cli` | core, store, io, geo, scene, style, plugin | editor / ui / api / persist | `plugins` |
 
-两处**已记录并只允许如此**的跨层边：① `neo-validate → store`（只读规则需要引用集视图）；② `neo-plugin → query + editor`（插件只读快照、只返回命令）。`neo-query` 目前只被插件使用，界面和桌面都不依赖它。白名单等于当前 `Cargo.toml` 的直接依赖，不是预留配额。
+Two cross-layer edges are **documented and permitted only as such**: ① `neo-validate → store` (read-only rules need the reference-set view); ② `neo-plugin → query + editor` (plugins read snapshots only and return commands only). `neo-query` is currently used only by plugins; neither the UI nor desktop depends on it.
 
-### 2.3 DAG 与深度
+The four newest members are not yet listed in the table above; their allowed internal dependencies are exactly what `scripts/check-deps.py` encodes: `neo-ipc` (leaf), `neo-imagery` (ipc), `neo-sync` (core, api, io, ipc), and the launcher app `neo` (leaf). They will be folded into this table in the next revision; until then the script remains the executable source of truth for them.
 
-`depth(c) = 0`（没有内部依赖）否则 `1 + max(depth(dep))`，按实际声明的边计算；概念层（01 §2.1）与编译深度不同序，评审以本表为准。
+### 2.3 DAG and Depth
 
-| depth | crates | 关键含义 |
+`depth(c) = 0` (no internal dependencies), otherwise `1 + max(depth(dep))`, computed from actually declared edges; the conceptual layers (01 §2.1) and compile depth are ordered differently, and reviews follow this table.
+
+| depth | crates | Key meaning |
 |---|---|---|
-| 0 | core, i18n, persist | 无内部依赖。persist 目前只做会话文件，不链接 store |
-| 1 | osm, api, style | osm 是 DTO；api 只依赖 core；style 只解析样式 |
-| 2 | store | 数据真值层 |
-| 3 | geo, io, validate, ui | geo/io 读 store；validate 不读 geo；ui 只到 store 和 style |
-| 4 | scene, editor, query | scene 依赖 geo+style；editor 依赖 geo；query 是插件的只读出口 |
-| 5 | render, tools, plugin | render 只依赖 core+geo+scene；tools 经 editor 产出命令；plugin 读 query |
-| 6 | prototype, cli, desktop | prototype 不含 ui/editor；desktop 不依赖 query |
+| 0 | core, i18n, persist | No internal dependencies. persist currently only handles session files and does not link store |
+| 1 | osm, api, style | osm is DTOs; api depends only on core; style only parses styles |
+| 2 | store | The data truth layer |
+| 3 | geo, io, validate, ui | geo/io read store; validate does not read geo; ui reaches only store and style |
+| 4 | scene, editor, query | scene depends on geo+style; editor depends on geo; query is the plugin's read-only exit |
+| 5 | render, tools, plugin | render depends only on core+geo+scene; tools produce commands through editor; plugin reads query |
+| 6 | prototype, cli, desktop | prototype has no ui/editor; desktop does not depend on query |
 
-深度按**实际声明的边**计算，必须等于本表。给 `neo-scene` 加一条 `neo-editor` 依赖不会形成环，但深度会从 4 变成至少 5，R3 拒绝，直到本表和 §2.2 一起改。
+Depth is computed from **actually declared edges** and must equal this table. Adding a `neo-editor` dependency to `neo-scene` would not create a cycle, but the depth would go from 4 to at least 5, and R3 rejects it until this table and §2.2 are changed together.
 
-### 2.4 强制实现手段
+The four newest members are not in the table above yet; the depth values recorded in `scripts/check-deps.py` are: `neo-ipc` 0, `neo-imagery` 1, `neo-sync` 4, and the launcher app `neo` 6.
 
-| 闸门 | 手段 | 能抓出 | 抓不出 |
+### 2.4 Enforcement Mechanisms
+
+| Gate | Mechanism | Catches | Does not catch |
 |---|---|---|---|
-| G1 编译期 | crate 边界（未声明依赖不可用） | 直接越界引用 | 通过 public 重导出的间接使用 |
-| G2 类型封印 | sealed trait、写 API `pub(crate)`、写权 `!Send` | "UI 拿到写权限"这类语义越界 | 全部绕过路径（需 G3 兜底） |
-| G3 脚本 | `check-deps.py`：R1 白名单、R2 环、R3 深度、R6 `publish=false` | 依赖方向与深度漂移 | R4/R5 与运行时行为 |
-| G4 CI 断言 | `cargo tree -p X` 不含禁用包、`Instance::new` 计数为 1、写入口调用点 grep、`--locked` | 依赖树与源码级违规 | 逻辑错误（由测试承担） |
+| G1 Compile time | crate boundaries (undeclared dependencies are unavailable) | Direct out-of-bounds references | Indirect use through public re-exports |
+| G2 Type sealing | sealed trait, write APIs `pub(crate)`, write capability `!Send` | Semantic overreach such as "the UI got write permission" | All bypass paths (needs G3 as a backstop) |
+| G3 Script | `check-deps.py`: R1 allowlist, R2 cycles, R3 depth, R6 `publish=false` | Dependency direction and depth drift | R4/R5 and runtime behavior |
+| G4 CI assertions | `cargo tree -p X` free of banned packages, `Instance::new` count is 1, grep for write-entry call sites, `--locked` | Dependency tree and source-level violations | Logic errors (covered by tests) |
 
-G2 的最小实现（签名公开，但外部 crate 无法构造写许可，因此只有 editor 能发起写）：
+Minimal implementation of G2 (the signature is public, but external crates cannot construct write permits, so only editor can initiate writes):
 
 ```rust
 mod private { pub struct Seal; }
-pub struct WriteSeal(private::Seal);                              // 外部无法构造
-pub trait WriteSealSource { fn seal(&self) -> WriteSeal; }        // impl 只在 editor 内部
+pub struct WriteSeal(private::Seal);                              // cannot be constructed externally
+pub trait WriteSealSource { fn seal(&self) -> WriteSeal; }        // impl only inside editor
 ```
 
-### 2.5 `scripts/check-deps.py` 设计
+### 2.5 `scripts/check-deps.py` Design
 
-**输入**：`cargo metadata --format-version 1 --no-deps`（不拉远端索引，可离线）。**输出**：违规行带 `R1`/`R2`/`R3`/`R6`；通过时 `OK: N packages, DAG + depth + publish rules hold`。**退出码**：`0` 通过 / `2` 违规。脚本当前执行 R1、R2、R3、R6；下表里的 R4、R5 仍是设计，还没有进脚本。
+**Input**: `cargo metadata --format-version 1 --no-deps` (no remote index fetch, works offline). **Output**: violation lines tagged `R1`/`R2`/`R3`/`R6`; on success `OK: N packages, DAG + depth + publish rules hold`. **Exit code**: `0` pass / `2` violation. The script currently enforces R1, R2, R3, and R6; R4 and R5 in the table below are still design and not yet in the script.
 
-| 规则 | 内容 | 失败示例 |
+| Rule | Content | Failure example |
 |---|---|---|
-| R1 | 每条内部边必须出现在 §2.2 白名单 | `EDGE neo-ui -> neo-persist (R1: not in allowlist)` |
-| R2 | 白名单图必须无环（三色 DFS） | `CYCLE neo-store -> neo-geo -> neo-store (R2)` |
-| R3 | 深度必须等于 §2.3 表；漂移需同 PR 改表 | `DEPTH neo-scene expected 4 got 6 (R3)` |
-| R4 | `dev-dependencies` 只允许同深度或更浅 | `EDGE neo-geo -> neo-editor (dev, R4: points upward)` |
-| R5 | `[features]` 名必须与 §2.7 表一致 | `FEATURE neo-store/api-cache not declared (R5)` |
-| R6 | 每个内部 crate 必须 `publish = false` | `PUBLISH neo-query is publishable (R6)` |
+| R1 | Every internal edge must appear in the §2.2 allowlist | `EDGE neo-ui -> neo-persist (R1: not in allowlist)` |
+| R2 | The allowlist graph must be acyclic (three-color DFS) | `CYCLE neo-store -> neo-geo -> neo-store (R2)` |
+| R3 | Depth must equal the §2.3 table; drift requires changing the table in the same PR | `DEPTH neo-scene expected 4 got 6 (R3)` |
+| R4 | `dev-dependencies` may only be at the same depth or shallower | `EDGE neo-geo -> neo-editor (dev, R4: points upward)` |
+| R5 | `[features]` names must match the §2.7 table | `FEATURE neo-store/api-cache not declared (R5)` |
+| R6 | Every internal crate must have `publish = false` | `PUBLISH neo-query is publishable (R6)` |
 
 ```python
 #!/usr/bin/env python3
-"""校验 workspace 内部依赖边。白名单 = docs/02 §2.2 表格，逐行对应（唯一事实来源）。"""
+"""Validate internal workspace dependency edges. The allowlist = the docs/02 §2.2 table, one row each (single source of truth)."""
 import json, subprocess, sys
 from collections import defaultdict
 
-ALLOW = {   # 18 个 crate 的允许边：逐行照抄 §2.2 表格（新增边必须同 PR 改两处）
-    ...     # 内容从略；实现时按表填入，含 ui->query、plugin->query 两条已记录边
+RULES = {   # allowed edges for the workspace members: copied row by row from the §2.2 table (new edges must change both places in the same PR)
+    ...     # omitted here; fill in from the table when implementing, including the two recorded edges ui->query and plugin->query
 }
-DEPTH = {...}   # 见 §2.3 表：18 个 crate 的期望深度，逐行照抄
+DEPTH = {...}   # see the §2.3 table: expected depth for each workspace member, copied row by row
 
 def main() -> int:
     meta = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--format-version", "1", "--no-deps"], text=True))
     pkg = {p["name"]: p for p in meta["packages"]}
     errs, edges, devs = [], defaultdict(list), defaultdict(list)
-    for name, allowed in ALLOW.items():
+    for name, allowed in RULES.items():
         if name not in pkg:
             errs.append(f"MISSING {name}"); continue
         if pkg[name].get("publish") != []:
             errs.append(f"PUBLISH {name} is publishable (R6)")
         for dep in pkg[name]["dependencies"]:
             d = dep["name"]
-            if d not in DEPTH:                 # 外部依赖不在本规则范围
+            if d not in DEPTH:                 # external dependencies are outside these rules
                 continue
             (devs if dep["kind"] == "dev" else edges[name]).append(d)
             if d not in allowed:
                 errs.append(f"EDGE {name} -> {d} (R1: not in allowlist)")
 
-    color = defaultdict(int)                   # 0 白 / 1 灰 / 2 黑；递归找环
+    color = defaultdict(int)                   # 0 white / 1 gray / 2 black; recursive cycle detection
     def visit(n, path):
         color[n] = 1
         for d in edges[n]:
             if color[d] == 1: errs.append("CYCLE " + " -> ".join(path + [d]) + " (R2)")
             elif color[d] == 0: visit(d, path + [d])
         color[n] = 2
-    for n in ALLOW:
+    for n in RULES:
         if color[n] == 0: visit(n, [n])
 
     def depth(n): return 0 if not edges[n] else 1 + max(depth(d) for d in edges[n])
@@ -173,7 +178,7 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-**失败形态**（CI 把原文贴在 PR 里）：
+**Failure form** (CI pastes the raw output into the PR):
 
 ```
 $ python scripts/check-deps.py
@@ -182,73 +187,73 @@ DEPTH neo-scene expected 4 got 6 (R3)
 exit code 2
 ```
 
-**负例自测**（CI job `rules-selftest`）：a) 给 `neo-ui` 加 `neo-io` 边；b) 造三元环；c) 删一个已声明 feature——断言分别以 `2` 退出且消息含 `R1`/`R2`/`R5`。不允许在没有负例的情况下合并白名单。**落地状态**：`scripts/check-deps.py` 已入库并由 CI 执行 R1（白名单）、R2（环）、R6（publish=false）；R3（深度表）、R4（dev 边）、R5（feature 表）仍需补齐。`cargo fmt` / `cargo clippy -- -D warnings` / `cargo test` 已在 CI 门禁中。
+**Negative self-tests** (run them locally before changing the allowlist; there is no dedicated CI job for this yet): a) add a `neo-io` edge to `neo-ui`; b) construct a three-node cycle; c) delete an already-declared feature — assert that each exits with `2` and that the message contains `R1`/`R2`/`R5`. Merging an allowlist without negative examples is not allowed. **Implementation status**: `scripts/check-deps.py` is checked in and executed by CI for R1 (allowlist), R2 (cycles), R3 (depth table), and R6 (publish=false); R4 (dev edges) and R5 (feature table) still need to be added. `cargo fmt` / `cargo clippy -- -D warnings` / `cargo test` are already CI gates.
 
-### 2.6 版本一致性策略（为何 GUI 栈锁 0.36.2）
+### 2.6 Version Coherence Strategy (Why the GUI Stack Is Pinned to 0.36.2)
 
-| 事实（crates.io 依赖 JSON + 源码） | 后果 | 做法 |
+| Fact (crates.io dependency JSON + source) | Consequence | Approach |
 |---|---|---|
-| `egui_dock` 0.21.1（最新）要求 `egui ^0.36`；`egui-phosphor` 0.14.0 同样 `^0.36` | 上 0.37 会同时链接 `egui 0.36` 与 `0.37`：`DockState::show_inside` 的 `Ui` 类型不匹配（编译错），字体装进错误的 `Context`（运行时图标 tofu，静默） | GUI 三点（egui / eframe / egui-wgpu）全部钉 `0.36.2` |
-| `egui-wgpu` 0.36.2 要求 `wgpu ^30.0`、`winit ^0.30.13`、`bytemuck ^1.25` | 降 egui **不会**降 wgpu | wgpu 保持 `30.0.2` |
-| `geo` 0.33.1 经 `geo-types` 的 `rstar_0_12` 绑 `rstar 0.12` | 与 `rstar 0.14` 并存两棵树；`geo::Polygon` 不满足 `rstar 0.14::RTreeObject` | 关闭 geo 的 rstar 互操作，`neo-geo` 自写 newtype `RTreeObject` |
-| `osmpbf` 0.3.8 的 `rust-zlib`/`zlib`/`zlib-ng` 互斥（源码 `compile_error!`） | 同时开两个直接编译失败，错误不直观 | 只允许默认 `rust-zlib`；切换需在 PR 与本表同时记录 |
+| `egui_dock` 0.21.1 (latest) requires `egui ^0.36`; `egui-phosphor` 0.14.0 likewise `^0.36` | Moving to 0.37 would link both `egui 0.36` and `0.37`: the `Ui` type in `DockState::show_inside` mismatches (compile error), and fonts are installed into the wrong `Context` (runtime icon tofu, silent) | All three GUI crates (egui / eframe / egui-wgpu) pinned to `0.36.2` |
+| `egui-wgpu` 0.36.2 requires `wgpu ^30.0`, `winit ^0.30.13`, `bytemuck ^1.25` | Downgrading egui does **not** downgrade wgpu | wgpu stays at `30.0.2` |
+| `geo` 0.33.1 binds `rstar 0.12` through the `rstar_0_12` feature of `geo-types` | Two trees coexist with `rstar 0.14`; `geo::Polygon` does not satisfy `rstar 0.14::RTreeObject` | Disable geo's rstar interop; `neo-geo` writes its own newtype `RTreeObject` |
+| `osmpbf` 0.3.8's `rust-zlib`/`zlib`/`zlib-ng` are mutually exclusive (source `compile_error!`) | Enabling two at once fails compilation directly, with an unintuitive error | Only the default `rust-zlib` is allowed; switching must be recorded in the PR and in this table at the same time |
 
-**做法**：版本只在 `[workspace.dependencies]` 声明一次，crate 内一律 `{ workspace = true }`；`Cargo.lock` 入库、CI 用 `--locked`；**禁止** `cargo tree -d` 出现两份 egui/wgpu/winit/rstar 大版本；`rust-version` 统一为 **1.97**（由 `wasmtime 50` 决定），`rust-toolchain.toml` 固定到 1.100.0；CI 跑默认集与 `--all-features` 两种组合。
+**Approach**: versions are declared only once in `[workspace.dependencies]`, and crates always use `{ workspace = true }`; `Cargo.lock` is checked in and CI uses `--locked`; `cargo tree -d` is **forbidden** from showing two major versions of egui/wgpu/winit/rstar; `rust-version` is unified to **1.97** (determined by `wasmtime 50`), with `rust-toolchain.toml` fixed at 1.100.0; CI runs both the default set and `--all-features`.
 
-**升级演练**（升级点收敛在 `apps/neo-desktop` 与 `neo-render`）：① 读两边 CHANGELOG 的破坏性变更；② spike 只动 GUI 三点（必要时连 wgpu）；③ `cargo tree -d` 断言无重复大版本；④ 修入口层（`eframe::App` 形态、`RenderState` 字段、`Surface` 呈现）；⑤ golden 图 + 拾取一致率回归；⑥ 回填本节、[ADR-0005](./adr/0005-wgpu-egui-shared-device.md) 与 [16 风险 R1](./16-roadmap-and-risks.md)。锁文件变更需在 PR 贴 `git diff Cargo.lock` 摘要。
+**Upgrade drill** (upgrade points are concentrated in `apps/neo-desktop` and `neo-render`): ① read the breaking changes in both CHANGELOGs; ② the spike touches only the three GUI crates (plus wgpu if necessary); ③ assert with `cargo tree -d` that there are no duplicate major versions; ④ fix the entry layer (`eframe::App` shape, `RenderState` fields, `Surface` presentation); ⑤ regress golden images + picking consistency; ⑥ write back to this section, [ADR-0005](./adr/0005-wgpu-egui-shared-device.md), and [16 Risk R1](./16-roadmap-and-risks.md). Lockfile changes require pasting a `git diff Cargo.lock` summary in the PR.
 
-### 2.7 Feature 策略
+### 2.7 Feature Strategy
 
-默认构建是**最小可玩集**：能开文件、能编辑、能渲染、能保存，不含网络、数据库持久化与 WASM。理由：默认构建必须三平台零 C 依赖（`rusqlite bundled` 与 `wasmtime` 都带 C/CMake 负担），且 CI 要快。
+The default build is the **minimal playable set**: it can open files, edit, render, and save, without networking, database persistence, or WASM. Rationale: the default build must have zero C dependencies on all three platforms (`rusqlite bundled` and `wasmtime` both carry C/CMake burdens), and CI must be fast.
 
-| feature | 归属 crate | 默认 | 拉入 | 关闭后的行为 |
+| feature | Owning crate | Default | Pulls in | Behavior when disabled |
 |---|---|---|---|---|
-| `default` | 各 crate 组合 | on | core/osm/store/query/geo/style/scene/render/editor/tools/ui/desktop | — |
-| `api` | `neo-api` + desktop | off | tokio 1.54、reqwest | 菜单灰化，Upload 返回 `Unsuitable` |
-| `persist` | `neo-persist` + desktop | off | rusqlite 0.42（bundled）、rkyv | 仅内存 journal，禁用 autosave |
-| `wasm-plugins` | `neo-plugin`；`neo-cli` 的 `plugins` 转发 | off | wasmtime 50 | 桌面不链接 wasmtime。CLI 的 `plugins` 子命令直接拒绝 |
-| `validate` | `neo-validate` + ui | **on** | — | 校验面板空，上传前不阻塞 |
-| `proj-db` | `neo-geo` | on | `proj` 数据库 | 仅 EPSG:3857/4326 |
-| `pick-readback` | `neo-render` | on | — | 拾取退回 CPU（`neo-geo`） |
-| `profile` | `neo-scene`、`neo-render` | off | puffin 0.20 | 场景构建与上传不打点 |
+| `default` | combination of crates | on | core/osm/store/query/geo/style/scene/render/editor/tools/ui/desktop | — |
+| `api` | `neo-api` + desktop | off | tokio 1.54, reqwest | Menu items grayed out; Upload returns `Unsuitable` |
+| `persist` | `neo-persist` + desktop | off | rusqlite 0.42 (bundled), rkyv | In-memory journal only; autosave disabled |
+| `wasm-plugins` | `neo-plugin`; forwarded by `neo-cli`'s `plugins` | off | wasmtime 50 | Desktop does not link wasmtime. The CLI's `plugins` subcommand is rejected outright |
+| `validate` | `neo-validate` + ui | **on** | — | Validation panel empty; upload is not blocked beforehand |
+| `proj-db` | `neo-geo` | on | `proj` database | Only EPSG:3857/4326 |
+| `pick-readback` | `neo-render` | on | — | Picking falls back to CPU (`neo-geo`) |
+| `profile` | `neo-scene`, `neo-render` | off | puffin 0.20 | Scene build and upload are not instrumented |
 
-**约束**：feature 只能"加能力"，不得改变默认语义；增删必须同 PR 更新本表与 R5；resolver 固定 `"3"`；**禁止用 feature 表达权限**（权限靠 sealed trait + 调用点断言，见 §2.4）。
+**Constraints**: features may only "add capability" and must not change default semantics; additions/removals must update this table and R5 in the same PR; the resolver is fixed at `"3"`; **features must not express permissions** (permissions rely on sealed traits + call-site assertions, see §2.4).
 
-### 2.8 公共 API 稳定性
+### 2.8 Public API Stability
 
-内部 crate 一律 `publish = false`，版本号由 workspace 统一继承（`0.1.x`），**不对外承诺 semver**；但跨 crate API 仍被 16 个消费者使用，等价于内部 semver：
+Internal crates are all `publish = false`, with versions inherited uniformly from the workspace (`0.1.x`), and **no semver promise is made externally**; however, cross-crate APIs are still used by 16 consumers, which is equivalent to an internal semver:
 
-| 规则 | 做法 | 反例 |
+| Rule | Approach | Counter-example |
 |---|---|---|
-| 不漂漏实现细节 | 公开字段私有 + 构造函数；`#[non_exhaustive]` 用于枚举与配置结构 | `pub struct Snapshot { pub nodes: Vec<Node> }` |
-| 枚举演进 | `ObjectKind`、`NeoError`、`EditError`、`EditorIntent`、`HostCall` 全部 `#[non_exhaustive]` | 下游 `match` 穷尽 → 加变体即破坏 |
-| 可扩展点 | sealed trait（`WriteSealSource`、`GeometrySink`、`ElementSink`） | 让第三方实现 `EditCommand`（插件走 WASM ABI） |
-| 类型化 ID | `ObjectId` / `Handle<T>` newtype，禁止暴露裸 `i64`/`u32` | 用 `i64` 传 way id，静默互换 node/way |
-| 错误收敛 | 每 crate 一个 `thiserror` 枚举，跨层 `From` 收敛到 `NeoError`/`EditError` | `anyhow` 出现在库 crate 公开签名 |
-| 版本化 ABI / 布局 | 插件 ABI 与 journal 各带 `u32` 版本号；禁止在公共 API 暴露 SoA 字段布局 | 无版本号静默误读；下游按偏移索引，重构即全仓编译失败 |
+| Do not leak implementation details | Public fields private + constructors; `#[non_exhaustive]` for enums and config structs | `pub struct Snapshot { pub nodes: Vec<Node> }` |
+| Enum evolution | `ObjectKind`, `NeoError`, `EditError`, `EditorIntent`, `HostCall` are all `#[non_exhaustive]` | Downstream exhaustive `match` → adding a variant breaks it |
+| Extension points | sealed trait (`WriteSealSource`, `GeometrySink`, `ElementSink`) | Letting third parties implement `EditCommand` (plugins go through the WASM ABI) |
+| Typed IDs | `ObjectId` / `Handle<T>` newtypes; exposing bare `i64`/`u32` is forbidden | Passing a way id as `i64`, silently swapping node/way |
+| Error convergence | One `thiserror` enum per crate; cross-layer `From` converges to `NeoError`/`EditError` | `anyhow` appearing in a library crate's public signature |
+| Versioned ABI / layout | Plugin ABI and journal each carry a `u32` version number; SoA field layout must not be exposed in public APIs | Silent misreads without a version number; downstream indexing by offset, so refactors break the whole build |
 
-## 3 关键接口
+## 3 Key Interfaces
 
 ```rust
-// crates/neo-store/src/seal.rs —— 写许可封印（§2.4 G2）
+// crates/neo-store/src/seal.rs —— write permit sealing (§2.4 G2)
 pub struct WriteSeal(/* private */);
 pub trait WriteSealSource { fn seal(&self) -> WriteSeal; }
 
-// crates/neo-query/src/lib.rs —— 跨层只读查询（插件 / 验证器 / 后台任务 / UI 共用）
-pub trait MapQuery { /* 签名见 01 §3 */ }
+// crates/neo-query/src/lib.rs —— cross-layer read-only queries (shared by plugins / validators / background tasks / UI)
+pub trait MapQuery { /* signatures in 01 §3 */ }
 pub struct SnapshotCell { /* ArcSwap<MapSnapshot> */ }
 impl SnapshotCell {
-    pub fn load(&self) -> arc_swap::Guard<Arc<MapSnapshot>>;  // 单帧有效
-    pub fn store(&self, snapshot: MapSnapshot);               // 唯一发布点
+    pub fn load(&self) -> arc_swap::Guard<Arc<MapSnapshot>>;  // valid for one frame
+    pub fn store(&self, snapshot: MapSnapshot);               // the only publication point
 }
 
-// crates/neo-ui/src/lib.rs —— UI 只依赖这些，不依赖 DataSet 写接口
+// crates/neo-ui/src/lib.rs —— the UI depends only on these, not on the DataSet write interface
 pub struct UiContext<'a> {
-    pub snapshot: arc_swap::Guard<Arc<MapSnapshot>>,  // 不得存入结构体字段
+    pub snapshot: arc_swap::Guard<Arc<MapSnapshot>>,  // must not be stored in struct fields
     pub intents: &'a dyn IntentSink,
 }
 
-// crates/neo-core/src/error.rs —— 跨层错误收敛点（#[non_exhaustive]）
+// crates/neo-core/src/error.rs —— cross-layer error convergence point (#[non_exhaustive])
 pub enum NeoError {
     InvalidCoordinate(String), StaleHandle { kind: ObjectKind, index: u32 },
     DanglingReference { kind: ObjectKind, id: ObjectId, referrer_kind: ObjectKind, referrer: ObjectId },
@@ -257,65 +262,65 @@ pub enum NeoError {
 ```
 
 ```toml
-[workspace.dependencies]           # 版本只在此处出现一次；crate 内一律 { workspace = true }
+[workspace.dependencies]           # versions appear only here; crates always use { workspace = true }
 neo-query = { path = "crates/neo-query" }
-egui      = "0.36.2"               # GUI 三点同版本（§2.6）
-wgpu      = "30.0"                 # egui-wgpu 0.36.2 要求 ^30
-# neo-render 的内部边只允许三条：neo-core / neo-geo / neo-scene
+egui      = "0.36.2"               # all three GUI crates on the same version (§2.6)
+wgpu      = "30.0"                 # egui-wgpu 0.36.2 requires ^30
+# neo-render's internal edges are restricted to three: neo-core / neo-geo / neo-scene
 ```
 
-## 4 数据流
+## 4 Data Flow
 
 ```
-改 Cargo.toml -> cargo build（crate 边界 / 类型防火墙失败即发现）
-   -> pre-commit: python scripts/check-deps.py（R1..R6）
-         ├─ 违规：打印 EDGE/CYCLE/DEPTH/FEATURE 行，exit 2
-         └─ 通过：exit 0
-   -> CI `deps` + `rules-selftest`：白名单只允许与 docs/02 §2.2 同 PR 修改后放行
-   -> CI `check`/`test-min`/`test-full`/`msrv`：feature 组合可构建、MSRV 不漂移
-   -> merge：表格与脚本白名单必须同一次 PR 变更（§7）
+Change Cargo.toml -> cargo build (crate boundary / type firewall fails immediately)
+   -> pre-commit: python scripts/check-deps.py (R1..R6)
+         ├─ violation: print EDGE/CYCLE/DEPTH/FEATURE lines, exit 2
+         └─ pass: exit 0
+   -> CI `test` job runs `scripts/check-deps.py` along with fmt/clippy/check/test: allowlist changes are only allowed in the same PR as docs/02 §2.2
+   -> CI `test` job also checks the default build and `--all-features` (wasmtime requires Rust >= 1.97); the `docs` job builds the mdBook
+   -> merge: the table and the script allowlist must change in the same PR (§7)
 ```
 
-## 5 权衡与替代方案
+## 5 Tradeoffs and Alternatives
 
-| 选择 | 替代方案 | 为什么选它 | 代价 |
+| Choice | Alternative | Why this one | Cost |
 |---|---|---|---|
-| 单 workspace（多 crate） | 单 crate + `mod`；或多 repo | crate 边界是编译器强制的；重构原子、CI 一次跑全图 | 改边要动多处 `Cargo.toml`；`pub` 蔓延风险 |
-| 白名单脚本 | 只用 `cargo` 的环检测 | Cargo 只防环，不防"合法但错误"的方向（`ui→io` 无环但违反分层） | 需人工维护白名单（用负例自测压住腐化） |
-| 权限靠类型 + CI | 权限靠 feature | feature 全局合并，不能按调用方区分 | 写入口仍是 `pub`，需要 `check-write-api.py` 兜底 |
-| 版本集中在 `[workspace.dependencies]` | 各 crate 自行声明 | 一次升级全线生效，避免同一 crate 两个版本 | 某 crate 需要旧版本时冲突显性化（正是想要的效果） |
+| Single workspace (many crates) | Single crate + `mod`; or multiple repos | Crate boundaries are compiler-enforced; refactors are atomic, CI covers the whole graph at once | Changing an edge touches several `Cargo.toml` files; risk of `pub` sprawl |
+| Allowlist script | Rely only on cargo's cycle detection | Cargo only prevents cycles, not "legal but wrong" directions (`ui→io` has no cycle but violates layering) | The allowlist must be maintained by hand (negative self-tests hold back rot) |
+| Permissions via types + CI | Permissions via features | Features are merged globally and cannot distinguish callers | The write entry is still `pub`, so `check-write-api.py` is needed as a backstop |
+| Versions centralized in `[workspace.dependencies]` | Each crate declares its own | One upgrade applies across the line, avoiding two versions of the same crate | When one crate needs an old version, the conflict becomes explicit (exactly the desired effect) |
 
-## 6 风险
+## 6 Risks
 
-| # | 风险 | 触发信号 | 缓解 |
+| # | Risk | Trigger signal | Mitigation |
 |---|---|---|---|
-| B1 | `egui`/`egui_dock`（或 `geo`/`rstar`）解析冲突拖住里程碑 | 首次 `cargo build` 报两份 egui | §2.6 的结论与证据；决策点在原型 Gate（16 §2.8） |
-| B2 | 白名单被"顺手加一行"绕过 | PR 同时改脚本与文档但无 ADR | 白名单变更需 ADR 或双人评审；负例自测不可删 |
-| B3 | 清单外依赖（bytemuck / HTTP / CLI / 字形）无治理 | 新 `[dependencies]` 无人审 | 走"依赖准入"小 ADR；登记在 16 风险 R1 |
-| B4 | 全 feature CI 时长失控导致被跳过 | `test-full` 经常超时或被禁用 | 全量只跑 Windows+Linux 每日一次，PR 走最小集 |
-| B5 | `no_std` 目标腐化（`neo-core` 引入 `std`） | `no_std` job 失败 | core 的 CI 单独加 `--no-default-features` 编译 |
+| B1 | A resolution conflict in `egui`/`egui_dock` (or `geo`/`rstar`) stalls the milestone | First `cargo build` reports two egui versions | The conclusions and evidence in §2.6; decision point at the prototype Gate (16 §2.8) |
+| B2 | The allowlist is bypassed by "just adding a line" | A PR changes both the script and the docs without an ADR | Allowlist changes require an ADR or two-person review; negative self-tests may not be deleted |
+| B3 | Dependencies outside the checklist (bytemuck / HTTP / CLI / glyphs) are ungoverned | New `[dependencies]` with no review | A small "dependency admission" ADR; registered as risk R1 in 16 |
+| B4 | Full-feature CI runtime balloons and gets skipped | The `--all-features` check frequently times out or is disabled | Run the full set only on Windows+Linux once a day; PRs use the minimal set |
+| B5 | The `no_std` target rots (`neo-core` pulling in `std`) | The `no_std` job fails | Add a separate `--no-default-features` compile for core in CI |
 
-## 7 验收标准
+## 7 Acceptance Criteria
 
-1. `python scripts/check-deps.py` 对当前树退出 `0`；违规时退出 `2` 并给出含 `R1`/`R2`/`R6` 的消息。
-2. `cargo tree -p neo-render` 不含 `neo-store`/`neo-editor`/`neo-ui`；`cargo tree -p neo-ui` 不含 `neo-io`/`neo-api`/`neo-persist`。
-3. `cargo build --workspace --no-default-features --features desktop` 在 Windows/Linux/macOS 均成功。
-4. `cargo build --workspace --all-features` 成功，且 `wasmtime`/`rusqlite` 不进入默认构建产物（对比二进制体积与 `cargo tree`）。
-5. `scripts/check-write-api.py` 对写许可的构造点只命中 `neo-editor`。
-6. 依赖图深度与 §2.3 表零偏差（R3 通过）；新增边同 PR 更新本表，PR 描述含 `git diff Cargo.lock` 摘要。
+1. `python scripts/check-deps.py` exits `0` against the current tree; on violation it exits `2` with messages containing `R1`/`R2`/`R6`.
+2. `cargo tree -p neo-render` does not contain `neo-store`/`neo-editor`/`neo-ui`; `cargo tree -p neo-ui` does not contain `neo-io`/`neo-api`/`neo-persist`.
+3. `cargo build --workspace --no-default-features --features desktop` succeeds on Windows/Linux/macOS.
+4. `cargo build --workspace --all-features` succeeds, and `wasmtime`/`rusqlite` do not enter the default build artifacts (compare binary size and `cargo tree`).
+5. `scripts/check-write-api.py` only matches `neo-editor` as a construction site for write permits.
+6. The dependency graph depth deviates from the §2.3 table by zero (R3 passes); new edges update this table in the same PR, and the PR description includes a `git diff Cargo.lock` summary.
 
-## 8 参考
+## 8 References
 
-- Cargo workspaces 与 `[workspace.dependencies]`：https://doc.rust-lang.org/cargo/reference/workspaces.html
-- Cargo feature 解析与合并（resolver v3）：https://doc.rust-lang.org/cargo/reference/features.html
-- `cargo metadata` JSON 格式（脚本输入契约）：https://doc.rust-lang.org/cargo/commands/cargo-metadata.html
-- Rust API Guidelines（`#[non_exhaustive]`、sealed trait）：https://rust-lang.github.io/api-guidelines/
-- semver 与 0.x 兼容规则：https://semver.org/
-- `egui_dock` 0.21.1 的依赖声明（要求 `egui ^0.36`）：https://crates.io/api/v1/crates/egui_dock/0.21.1/dependencies
-- `egui-phosphor` 0.14.0：https://crates.io/crates/egui-phosphor/0.14.0
-- `egui-wgpu` 0.36.2（要求 `wgpu ^30.0`）：https://crates.io/crates/egui-wgpu/0.36.2
-- `geo` 0.33.1 的 rstar 依赖：https://crates.io/crates/geo/0.33.1
-- `osmpbf` 0.3.8（zlib feature 互斥）：https://docs.rs/osmpbf/0.3.8/osmpbf/
-- 版本核对记录（含源码与依赖 JSON 证据）：`.research/crate-api-cheatsheet.md`
+- Cargo workspaces and `[workspace.dependencies]`: https://doc.rust-lang.org/cargo/reference/workspaces.html
+- Cargo feature resolution and merging (resolver v3): https://doc.rust-lang.org/cargo/reference/features.html
+- `cargo metadata` JSON format (script input contract): https://doc.rust-lang.org/cargo/commands/cargo-metadata.html
+- Rust API Guidelines (`#[non_exhaustive]`, sealed traits): https://rust-lang.github.io/api-guidelines/
+- semver and 0.x compatibility rules: https://semver.org/
+- Dependency declaration of `egui_dock` 0.21.1 (requires `egui ^0.36`): https://crates.io/api/v1/crates/egui_dock/0.21.1/dependencies
+- `egui-phosphor` 0.14.0: https://crates.io/crates/egui-phosphor/0.14.0
+- `egui-wgpu` 0.36.2 (requires `wgpu ^30.0`): https://crates.io/crates/egui-wgpu/0.36.2
+- rstar dependency of `geo` 0.33.1: https://crates.io/crates/geo/0.33.1
+- `osmpbf` 0.3.8 (mutually exclusive zlib features): https://docs.rs/osmpbf/0.3.8/osmpbf/
+- Version verification records (including source and dependency JSON evidence): `.research/crate-api-cheatsheet.md`
 
-> 待验证：当前树是否已做到 `cargo tree -d` 零重复（需一次完整 `cargo build` 后确认），结论回填本节与 [16](./16-roadmap-and-risks.md) 风险 R1。
+> To be verified: whether the current tree achieves zero duplicates in `cargo tree -d` (requires confirmation after a full `cargo build`); fill the conclusion back into this section and into [16](./16-roadmap-and-risks.md) risk R1.

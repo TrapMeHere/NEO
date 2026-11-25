@@ -1,7 +1,8 @@
-//! 上传面板（原“同步”窗口）：只负责把本地修改上传到 OSM。
+//! Upload panel (formerly the "Sync" window): only responsible for uploading local changes to OSM.
 //!
-//! 下载是独立功能（`download.rs` 的下载窗口），这里不再提供任何 bbox 下载入口，
-//! 避免“同步”既下又上、语义混杂。冲突处理只保留上传 409 的解决动作。
+//! Download is a separate feature (the download window in `download.rs`); this panel no longer offers any bbox
+//! download entry, avoiding the mixed semantics of "Sync" doing both download and upload. Conflict handling keeps
+//! only the actions that resolve upload 409s.
 
 use egui::{Color32, RichText};
 use egui_phosphor::regular as ph;
@@ -10,18 +11,18 @@ use neo_i18n::{t, tf};
 
 use super::UiActions;
 
-/// 同步冲突（来自 409）。
+/// Sync conflict (from a 409).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncConflict {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 对象 id。
+    /// Object id.
     pub id: ObjectId,
-    /// 服务端版本。
+    /// Server version.
     pub version: Option<i32>,
 }
 
-/// 上传窗口。
+/// Upload window.
 #[allow(clippy::too_many_arguments)]
 pub fn sync_window(
     ctx: &egui::Context,

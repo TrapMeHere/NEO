@@ -1,12 +1,12 @@
-//! 三个 JOSM 插件语义的 WASM 文本，外加沙箱探针。
+//! WASM text for three JOSM plugin semantics, plus a sandbox probe.
 //!
-//! * `todo`：JOSM todo 的任务面板。加载时注册面板，选择变化时写状态。
-//! * `utilsplugin`：utilsplugin2 的「加节点」。只在 `utils.add-node` 上提交 `add-node`。
-//! * `buildings_tools`：矩形建筑。在 `buildings.rect` 上提交带 `building=yes` 的 `add-way`。
+//! * `todo`: JOSM todo's task panel. Registers a panel on load and writes state when the selection changes.
+//! * `utilsplugin`: utilsplugin2's "add node". Only submits `add-node` on `utils.add-node`.
+//! * `buildings_tools`: rectangular buildings. Submits `add-way` with `building=yes` on `buildings.rect`.
 //!
-//! 这些模块只导入 `neo` 命名空间，不链接 WASI。
+//! These modules only import the `neo` namespace and do not link WASI.
 
-/// Todo 插件（JOSM todo：选择变化 → 面板状态）。
+/// Todo plugin (JOSM todo: selection changes → panel state).
 pub fn todo_wat() -> String {
     base_module(
         r#"
@@ -25,12 +25,12 @@ pub fn todo_wat() -> String {
     )
 }
 
-/// utilsplugin2 的加节点。
+/// utilsplugin2's add node.
 pub fn utils_wat() -> String {
     command_module("utils.add-node", "add-node", r#"{"lat":0,"lon":0}"#)
 }
 
-/// buildings_tools 的矩形建筑。
+/// buildings_tools' rectangular building.
 pub fn buildings_wat() -> String {
     command_module(
         "buildings.rect",
@@ -98,7 +98,7 @@ fn wat_escape(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// 三个真实插件的清单与 WAT。
+/// Manifests and WAT for the three real plugins.
 pub fn builtin_plugins() -> Vec<(&'static str, String, String)> {
     vec![
         (

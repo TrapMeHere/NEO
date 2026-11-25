@@ -1,4 +1,4 @@
-//! presets 面板。
+//! presets panel.
 
 use egui::{Color32, RichText, Ui};
 use egui_phosphor::regular as ph;
@@ -9,10 +9,10 @@ use neo_store::DataSet;
 use super::TagsEditor;
 
 // ---------------------------------------------------------------------------
-// 帮助窗口
+// Help window
 // ---------------------------------------------------------------------------
 
-/// 阶段 5 生态窗口：三个插件语义、影像 URL、预设缺口。
+/// Phase 5 ecosystem window: the three plugin semantics, imagery URLs, and preset gaps.
 pub fn ecosystem_window(ctx: &egui::Context, open: &mut bool) {
     egui::Window::new(format!("{} {}", ph::MAP_TRIFOLD, t("ecosystem.title")))
         .open(open)
@@ -39,7 +39,7 @@ pub fn ecosystem_window(ctx: &egui::Context, open: &mut bool) {
         });
 }
 
-/// 快捷键/关于窗口。
+/// Shortcuts/about window.
 pub fn help_window(ctx: &egui::Context, open: &mut bool) {
     egui::Window::new(format!("{} {}", ph::QUESTION, t("help.title")))
         .open(open)
@@ -63,12 +63,12 @@ pub fn help_window(ctx: &egui::Context, open: &mut bool) {
 }
 
 // ---------------------------------------------------------------------------
-// 标签编辑器
+// Tag editor
 // ---------------------------------------------------------------------------
 
-/// 预设菜单：一行下拉选分组；匹配预设时默认打开其分组并置顶。
+/// Preset menu: a single row dropdown to choose a group; when a preset matches, open its group by default and pin it to the top.
 ///
-/// 几何或搜索过滤后没有预设的分组不显示。
+/// Groups with no presets after geometry or search filtering are hidden.
 pub(super) fn preset_combo(
     ui: &mut Ui,
     tags_editor: &mut TagsEditor,
@@ -346,7 +346,7 @@ fn preset_geometry_filter(data: &DataSet, kind: ObjectKind, id: ObjectId) -> neo
             if !view.is_closed() {
                 return neo_style::PresetGeometryFilter::OpenWay;
             }
-            // 闭合不等于面：有线预设可匹配时仍按线（如闭合 highway=service）。
+            // Closed does not mean area: when a line preset matches, keep it a line (e.g. closed highway=service).
             let tags: Vec<(String, String)> = view
                 .tag_pairs
                 .iter()

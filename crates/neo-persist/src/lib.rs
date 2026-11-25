@@ -1,6 +1,6 @@
 //! NEO persistence: SQLite WAL workspace, command journal, autosave, crash recovery.
 //!
-//! 骨架占位：实现随里程碑推进，见 docs/ 与 docs/16-roadmap-and-risks.md。
+//! Skeleton placeholder: implementation lands with the milestones; see docs/ and docs/16-roadmap-and-risks.md.
 
 pub mod session;
 pub mod snapshot;

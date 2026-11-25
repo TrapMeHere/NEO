@@ -1,4 +1,4 @@
-//! NeoApp::layers 方法。行为与拆分前的 app.rs 相同。
+//! NeoApp::layers methods. Same behavior as before the app.rs split.
 
 use neo_editor::Editor;
 use neo_i18n::t;
@@ -87,7 +87,7 @@ impl NeoApp {
         }
     }
 
-    /// 视图下标对应的停靠数据层。复制进活动层时用。
+    /// The parked data layer at the given view index. Used when copying into the active layer.
     pub(super) fn parked_slot(&self, index: usize) -> Option<usize> {
         match self.layer_slot(index) {
             Some(LayerSlot::Parked(position)) => Some(position),
@@ -203,7 +203,7 @@ impl NeoApp {
         self.reopen_journal();
     }
 
-    /// 把当前活动数据层停到 `parked_layers`，活动槽位留给随后装入的新数据。
+    /// Parks the active data layer into `parked_layers`, leaving the active slot for the data loaded next.
     pub(super) fn park_active_layer(&mut self) {
         let mut editor = Editor::new(DataSet::new());
         let builder = super::scene_builder(&mut editor);
@@ -225,7 +225,7 @@ impl NeoApp {
         self.save_parked_layer(self.parked_layers.len() - 1);
     }
 
-    /// 任一数据层是否有未保存编辑。
+    /// Whether any data layer has unsaved edits.
     pub(super) fn any_unsaved_edits(&self) -> bool {
         if self.data_listed && self.editor.history().is_dirty() {
             return true;
@@ -235,7 +235,7 @@ impl NeoApp {
             .any(|layer| layer.editor.history().is_dirty())
     }
 
-    /// 图层列表项是否有未保存编辑（仅数据层）。
+    /// Whether a layer list item has unsaved edits (data layers only).
     pub(super) fn layer_has_unsaved(&self, index: usize) -> bool {
         match self.layer_slot(index) {
             Some(LayerSlot::Data) => self.editor.history().is_dirty(),
@@ -274,8 +274,8 @@ impl NeoApp {
         }
     }
 
-    /// 关掉当前正在编辑的数据层。还有其他数据层时改用其中一层，否则回到空数据，
-    /// 并忘掉文件路径，避免下次启动把这份下载再打开。
+    /// Closes the data layer currently being edited. If other data layers exist, switch to one of them; otherwise go back to empty data
+    /// and forget the file path, so this download is not reopened on the next start.
     fn close_active_layer(&mut self) {
         if self.parked_layers.is_empty() {
             self.data_path = None;
@@ -305,7 +305,7 @@ impl NeoApp {
     }
 }
 
-/// 停靠图层的快照在 `layers/` 里。升成活动图层后必须挪走，否则下次启动会再加载一份。
+/// Snapshots of parked layers live in `layers/`. They must be moved once promoted to the active layer, otherwise another copy is loaded on the next start.
 fn adopt_layer_path(
     path: Option<std::path::PathBuf>,
     persist: Option<std::path::PathBuf>,

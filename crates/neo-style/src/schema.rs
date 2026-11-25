@@ -1,77 +1,77 @@
-//! 预设来自 iD 使用的两个 npm 包，**外置二进制**，运行时加载，不编进二进制。
+//! Presets come from the two npm packages used by iD, **external binaries**, loaded at runtime, not compiled into the binary.
 //!
-//! * `@openstreetmap/id-tagging-schema` 的 presets 与中英文翻译（ISC）
-//! * `name-suggestion-index` 的 `buildIDPresets`（BSD-3-Clause）
+//! * presets and Chinese/English translations from `@openstreetmap/id-tagging-schema` (ISC)
+//! * `buildIDPresets` from `name-suggestion-index` (BSD-3-Clause)
 //!
-//! 生成脚本 `scripts/build-presets.mjs` 写出 `assets/presets/schema.neo` 与
-//! `suggestions.neo`。schema 在第一次查询预设时加载；品牌建议留到第一次搜索。
-//! 查找路径见 [`crate::assets`]。
+//! The generation script `scripts/build-presets.mjs` writes `assets/presets/schema.neo` and
+//! `suggestions.neo`. The schema is loaded on the first preset query; brand suggestions wait until the first search.
+//! See [`crate::assets`] for lookup paths.
 //!
-//! 文件布局（小端，与生成脚本一致）：
-//! `NEOP`、`u16` 版本 1、`u16` 种类（1 schema / 2 suggestions）、
-//! 版本号在字符串表中的下标、字符串表、然后每条预设的下标记录。
-//! 几何是位标记：point=1、vertex=2、line=4、area=8、relation=16。
-//! 中文名下标为 `u32::MAX` 时与英文名相同。
+//! File layout (little-endian, matching the generation script):
+//! `NEOP`, `u16` version 1, `u16` kind (1 schema / 2 suggestions),
+//! index of the version number in the string table, the string table, then an index record for each preset.
+//! Geometry is a bit flag: point=1, vertex=2, line=4, area=8, relation=16.
+//! A Chinese-name index of `u32::MAX` means the same as the English name.
 //!
-//! 分类按预设 id 的首段路径（如 `highway` / `amenity`）分组；
-//! 几何过滤与标签匹配对齐 iD（`tags` + `matchScore`）。
+//! Categories are grouped by the first path segment of the preset id (e.g. `highway` / `amenity`);
+//! geometry filtering and tag matching are aligned with iD (`tags` + `matchScore`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::assets;
 
-/// 一条可应用到对象上的预设。
+/// A preset that can be applied to an object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SchemaPreset {
-    /// 预设 id（例如 `amenity/bench` 或 `amenity/cafe/starbucks-xxxxx`）。
+    /// Preset id (e.g. `amenity/bench` or `amenity/cafe/starbucks-xxxxx`).
     pub id: String,
-    /// 中文名。品牌名没有译文时与英文相同。
+    /// Chinese name. Same as the English name when a brand name has no translation.
     pub name_zh: String,
-    /// 英文名。
+    /// English name.
     pub name_en: String,
-    /// 选中预设时写入的标签（来自 `addTags`，不含 `*`）。
+    /// Tags written when the preset is selected (from `addTags`, excluding `*`).
     pub tags: Vec<(String, String)>,
-    /// 用于匹配已有要素的标签（来自 `tags`，可含 `*`）。
+    /// Tags used to match existing features (from `tags`, may contain `*`).
     pub match_tags: Vec<(String, String)>,
-    /// iD `matchScore`，默认 1.0。
+    /// iD `matchScore`, default 1.0.
     pub match_score: f32,
-    /// 写入前先删掉的 key。iD 用来清掉过期的 `*:wikipedia`。
+    /// Keys removed before writing. iD uses this to clear stale `*:wikipedia`.
     pub remove_keys: Vec<String>,
-    /// 适用几何（`point` / `vertex` / `line` / `area` / `relation`）。空表示不限。
+    /// Applicable geometry (`point` / `vertex` / `line` / `area` / `relation`). Empty means unrestricted.
     pub geometry: Vec<String>,
-    /// 来自 name-suggestion-index。搜索时才出现，不进默认列表。
+    /// From name-suggestion-index. Appears only during search, not in the default list.
     pub suggestion: bool,
 }
 
-/// 预设分类（按 id 路径首段，例如 `highway`）。
+/// Preset category (first path segment of the id, e.g. `highway`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PresetCategory {
-    /// 分类 id，例如 `highway`。
+    /// Category id, e.g. `highway`.
     pub id: String,
-    /// 中文名。
+    /// Chinese name.
     pub name_zh: String,
-    /// 英文名。
+    /// English name.
     pub name_en: String,
-    /// 该分类下的 schema 预设数量（不含品牌建议）。
+    /// Number of schema presets in this category (excluding brand suggestions).
     pub count: usize,
 }
 
-/// 当前选中对象对应的 iD 几何过滤。
+/// iD geometry filter for the currently selected object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PresetGeometryFilter {
-    /// 节点：`point` 或 `vertex`。
+    /// Node: `point` or `vertex`.
     Node,
-    /// 未闭合 way：`line`。
+    /// Unclosed way: `line`.
     OpenWay,
-    /// 闭合 way：`line` 或 `area`。
+    /// Closed way: `line` or `area`.
     ClosedWay,
-    /// relation：`relation` 或 `area`（multipolygon 等）。
+    /// relation: `relation` or `area` (multipolygon etc.).
     Relation,
 }
 
 impl PresetGeometryFilter {
-    /// 该预设是否适用于当前过滤。
+    /// Whether the preset applies to the current filter.
     pub fn allows(self, preset: &SchemaPreset) -> bool {
         if preset.geometry.is_empty() {
             return true;
@@ -99,9 +99,9 @@ struct Catalog {
     nsi_version: String,
     schema: Vec<SchemaPreset>,
     categories: Vec<PresetCategory>,
-    /// 预设 id → 所属分类 id。
+    /// Preset id → its category id.
     membership: HashMap<String, String>,
-    /// `(key, value)` → schema 预设下标；`value` 为 `*` 时单独一条。
+    /// `(key, value)` → schema preset index; a `value` of `*` has its own entry.
     match_index: HashMap<(String, String), Vec<usize>>,
 }
 
@@ -411,9 +411,9 @@ enum Hit {
     Suggestion(usize),
 }
 
-/// 预设与要素标签的匹配分；不匹配返回 `None`。
+/// Match score between a preset and feature tags; returns `None` when they do not match.
 ///
-/// 分越高越具体：匹配 key 数优先，其次 `matchScore`，再次 id 路径深度。
+/// Higher is more specific: matched key count first, then `matchScore`, then id path depth.
 pub fn preset_match_score(preset: &SchemaPreset, entity_tags: &[(String, String)]) -> Option<i64> {
     if preset.match_tags.is_empty() {
         return Some(0);
@@ -477,9 +477,9 @@ fn hit_preset(hit: Hit) -> &'static SchemaPreset {
     }
 }
 
-/// 按当前标签与几何，找出最匹配的预设。
+/// Find the best-matching preset from the current tags and geometry.
 ///
-/// 品牌建议只有在已经因搜索加载之后才会参与匹配。
+/// Brand suggestions participate in matching only after they have been loaded by a search.
 pub fn best_preset_for_tags(
     entity_tags: &[(String, String)],
     geometry: PresetGeometryFilter,
@@ -507,22 +507,22 @@ pub fn best_preset_for_tags(
     best.map(|(preset, _)| preset)
 }
 
-/// schema 预设（不含品牌建议）。
+/// schema presets (excluding brand suggestions).
 pub fn schema_presets() -> &'static [SchemaPreset] {
     &catalog().schema
 }
 
-/// name-suggestion-index 生成的品牌建议。第一次调用才读 `suggestions.neo`。
+/// Brand suggestions generated by name-suggestion-index. `suggestions.neo` is read on first call only.
 pub fn suggestion_presets() -> &'static [SchemaPreset] {
     &ensure_suggestions().rows
 }
 
-/// 预设分类列表（路径首段）。
+/// List of preset categories (first path segment).
 pub fn preset_categories() -> &'static [PresetCategory] {
     &catalog().categories
 }
 
-/// 按 id 查 schema；schema 里没有时再加载品牌建议。
+/// Look up a schema preset by id; if absent from the schema, load brand suggestions too.
 pub fn schema_preset(id: &str) -> Option<&'static SchemaPreset> {
     if let Some(preset) = schema_presets().iter().find(|preset| preset.id == id) {
         return Some(preset);
@@ -530,7 +530,7 @@ pub fn schema_preset(id: &str) -> Option<&'static SchemaPreset> {
     suggestion_presets().iter().find(|preset| preset.id == id)
 }
 
-/// 预设是否属于某分类（路径首段，品牌建议同样按前缀）。
+/// Whether a preset belongs to a category (first path segment; brand suggestions use the same prefix rule).
 pub fn preset_in_category(preset_id: &str, category_id: &str) -> bool {
     if category_id.is_empty() {
         return true;
@@ -541,7 +541,7 @@ pub fn preset_in_category(preset_id: &str, category_id: &str) -> bool {
     group_id_of(preset_id) == category_id
 }
 
-/// 预设所属分类 id（0 或 1 个）。
+/// Category id the preset belongs to (0 or 1).
 pub fn categories_for_preset(preset_id: &str) -> Vec<&'static str> {
     if let Some(group) = catalog().membership.get(preset_id) {
         return vec![group.as_str()];
@@ -558,12 +558,12 @@ pub fn categories_for_preset(preset_id: &str) -> Vec<&'static str> {
     }
 }
 
-/// 已加载的 schema 包版本。
+/// Loaded schema package version.
 pub fn schema_package_version() -> &'static str {
     catalog().schema_version.as_str()
 }
 
-/// 已加载的 name-suggestion-index 包版本。
+/// Loaded name-suggestion-index package version.
 pub fn nsi_package_version() -> &'static str {
     catalog().nsi_version.as_str()
 }

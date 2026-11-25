@@ -1,14 +1,14 @@
-//! 索引层：外部 ID → 句柄、反向引用（referrers）、变更跟踪。
+//! Index layer: external ID → handle, reverse references (referrers), change tracking.
 //!
-//! 三类索引解决三个不同问题：
+//! Three kinds of indexes solve three different problems:
 //!
-//! 1. [`IdIndex`]：`ObjectId -> Handle`。下载/上传/搜索/跳转都靠它。
-//! 2. [`Referrers`]：反向引用（node→ways、node→relations、way→relations）。
-//!    "移动一个节点要让关联 way 失效" 依赖它，见 ADR-0009。
-//! 3. [`ChangeTrack`]：只记录**被编辑过**的对象状态，稀疏存储。
+//! 1. [`IdIndex`]: `ObjectId -> Handle`. Download/upload/search/jump all rely on it.
+//! 2. [`Referrers`]: reverse references (node→ways, node→relations, way→relations).
+//!    "Moving a node must invalidate associated ways" depends on it, see ADR-0009.
+//! 3. [`ChangeTrack`]: records the state of **edited** objects only, stored sparsely.
 //!
-//! `Referrers` 用 CSR（compressed sparse row）结构：一次 O(N+E) 构建后，
-//! 查询是零分配的切片访问。
+//! `Referrers` uses a CSR (compressed sparse row) layout: after one O(N+E) build,
+//! queries are zero-allocation slice accesses.
 
 use hashbrown::HashMap;
 use neo_core::{ByteSize, Handle, ObjectId, ObjectKind};
@@ -20,7 +20,7 @@ use crate::node_store::NodeSlot;
 use crate::relation_store::{AnyHandle, RelationSlot};
 use crate::way_store::WaySlot;
 
-/// 外部 ID 到句柄的映射。
+/// Mapping from external ID to handle.
 #[derive(Debug, Default)]
 pub struct IdIndex {
     nodes: HashMap<ObjectId, Handle<NodeSlot>, FxBuildHasher>,
@@ -29,22 +29,22 @@ pub struct IdIndex {
 }
 
 impl IdIndex {
-    /// 空索引。
+    /// Empty index.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 插入 node 映射。
+    /// Insert a node mapping.
     pub fn insert_node(&mut self, id: ObjectId, handle: Handle<NodeSlot>) -> Option<Handle<NodeSlot>> {
         self.nodes.insert(id, handle)
     }
 
-    /// 插入 way 映射。
+    /// Insert a way mapping.
     pub fn insert_way(&mut self, id: ObjectId, handle: Handle<WaySlot>) -> Option<Handle<WaySlot>> {
         self.ways.insert(id, handle)
     }
 
-    /// 插入 relation 映射。
+    /// Insert a relation mapping.
     pub fn insert_relation(
         &mut self,
         id: ObjectId,
@@ -53,54 +53,54 @@ impl IdIndex {
         self.relations.insert(id, handle)
     }
 
-    /// 查 node。
+    /// Look up a node.
     #[inline]
     pub fn node(&self, id: ObjectId) -> Option<Handle<NodeSlot>> {
         self.nodes.get(&id).copied()
     }
 
-    /// 查 way。
+    /// Look up a way.
     #[inline]
     pub fn way(&self, id: ObjectId) -> Option<Handle<WaySlot>> {
         self.ways.get(&id).copied()
     }
 
-    /// 查 relation。
+    /// Look up a relation.
     #[inline]
     pub fn relation(&self, id: ObjectId) -> Option<Handle<RelationSlot>> {
         self.relations.get(&id).copied()
     }
 
-    /// 删除 node 映射。
+    /// Remove a node mapping.
     pub fn remove_node(&mut self, id: ObjectId) -> Option<Handle<NodeSlot>> {
         self.nodes.remove(&id)
     }
 
-    /// 删除 way 映射。
+    /// Remove a way mapping.
     pub fn remove_way(&mut self, id: ObjectId) -> Option<Handle<WaySlot>> {
         self.ways.remove(&id)
     }
 
-    /// 删除 relation 映射。
+    /// Remove a relation mapping.
     pub fn remove_relation(&mut self, id: ObjectId) -> Option<Handle<RelationSlot>> {
         self.relations.remove(&id)
     }
 
-    /// 各类对象数量。
+    /// Number of objects of each kind.
     pub fn counts(&self) -> (usize, usize, usize) {
         (self.nodes.len(), self.ways.len(), self.relations.len())
     }
 
-    /// 估算内存。
+    /// Estimate memory.
     pub fn mem_bytes(&self) -> ByteSize {
-        // FxHashMap：key(8) + value(8) + 控制字节(1)，按 1.2 倍装载余量。
+        // FxHashMap: key(8) + value(8) + control byte(1), with a 1.2x load-factor margin.
         let entry = (core::mem::size_of::<ObjectId>() + 8 + 1) as f64 * 1.2;
         let total = self.nodes.len() + self.ways.len() + self.relations.len();
         ByteSize((total as f64 * entry) as usize)
     }
 }
 
-/// CSR（压缩稀疏行）反向索引。
+/// CSR (compressed sparse row) reverse index.
 #[derive(Debug)]
 struct Csr<T> {
     offsets: Vec<u32>,
@@ -151,10 +151,10 @@ impl<T: Copy> Csr<T> {
     }
 }
 
-/// 反向引用索引。
+/// Reverse-reference index.
 ///
-/// 只包含**可见**对象之间的引用：已逻辑删除的 way/relation 不应再阻止节点删除，
-/// 否则"先删 way 再删其孤儿节点"的标准流程会永久失败。
+/// Only references between **visible** objects are included: a logically deleted way/relation must no longer
+/// block node deletion, otherwise the standard flow "delete the way first, then its orphan nodes" would fail forever.
 #[derive(Debug)]
 pub struct Referrers {
     node_ways: Csr<Handle<WaySlot>>,
@@ -163,7 +163,7 @@ pub struct Referrers {
     relation_relations: Csr<Handle<RelationSlot>>,
 }
 
-/// Way 的可见引用（跳过相邻/闭合重复点与失效句柄）。
+/// Visible references of a Way (skipping adjacent/closing duplicate nodes and stale handles).
 fn for_each_way_ref(data: &DataSet, mut f: impl FnMut(usize, Handle<WaySlot>, Handle<NodeSlot>)) {
     for way in data.ways.iter() {
         if !way.meta.visible {
@@ -179,7 +179,7 @@ fn for_each_way_ref(data: &DataSet, mut f: impl FnMut(usize, Handle<WaySlot>, Ha
             if i > 0 && refs[i - 1] == *h {
                 continue;
             }
-            // 闭合 way 的首尾是同一个节点：同一 way 只计一次引用。
+            // The first and last node of a closed way are the same node: count the reference only once per way.
             if i + 1 == refs.len() && refs.len() > 2 && refs.first() == Some(h) {
                 continue;
             }
@@ -188,7 +188,7 @@ fn for_each_way_ref(data: &DataSet, mut f: impl FnMut(usize, Handle<WaySlot>, Ha
     }
 }
 
-/// Relation 的可见成员（跳过失效目标）。
+/// Visible members of a Relation (skipping stale targets).
 fn for_each_relation_member(data: &DataSet, mut f: impl FnMut(Handle<RelationSlot>, ObjectKind, AnyHandle)) {
     for rel in data.relations.iter() {
         if !rel.meta.visible {
@@ -218,7 +218,7 @@ fn for_each_relation_member(data: &DataSet, mut f: impl FnMut(Handle<RelationSlo
 }
 
 impl Referrers {
-    /// 从数据集全量构建，O(N + E)。
+    /// Build fully from the data set, O(N + E).
     pub fn build(data: &DataSet) -> Self {
         let node_slots = data.nodes.slot_len();
         let way_slots = data.ways.slot_len();
@@ -290,31 +290,31 @@ impl Referrers {
         }
     }
 
-    /// 引用某节点的 way。
+    /// Ways that reference a node.
     #[inline]
     pub fn ways_of_node(&self, node: Handle<NodeSlot>) -> &[Handle<WaySlot>] {
         self.node_ways.get(node.index() as usize)
     }
 
-    /// 引用某节点的 relation。
+    /// Relations that reference a node.
     #[inline]
     pub fn relations_of_node(&self, node: Handle<NodeSlot>) -> &[Handle<RelationSlot>] {
         self.node_relations.get(node.index() as usize)
     }
 
-    /// 引用某 way 的 relation。
+    /// Relations that reference a way.
     #[inline]
     pub fn relations_of_way(&self, way: Handle<WaySlot>) -> &[Handle<RelationSlot>] {
         self.way_relations.get(way.index() as usize)
     }
 
-    /// 引用某 relation 的父 relation（删除检查必需）。
+    /// Parent relations that reference a relation (required for deletion checks).
     #[inline]
     pub fn relations_of_relation(&self, relation: Handle<RelationSlot>) -> &[Handle<RelationSlot>] {
         self.relation_relations.get(relation.index() as usize)
     }
 
-    /// 估算内存。
+    /// Estimate memory.
     pub fn mem_bytes(&self) -> ByteSize {
         ByteSize(
             self.node_ways.mem_bytes()
@@ -325,7 +325,7 @@ impl Referrers {
     }
 }
 
-/// 变更跟踪：只记录被编辑过的对象。
+/// Change tracking: records only edited objects.
 #[derive(Debug, Default, Clone)]
 pub struct ChangeTrack {
     nodes: HashMap<ObjectId, ChangeState, FxBuildHasher>,
@@ -334,14 +334,14 @@ pub struct ChangeTrack {
 }
 
 impl ChangeTrack {
-    /// 清空（上传成功后调用）。
+    /// Clear (called after a successful upload).
     pub fn clear(&mut self) {
         self.nodes.clear();
         self.ways.clear();
         self.relations.clear();
     }
 
-    /// 记录状态；`Unchanged` 表示移除记录。
+    /// Record a state; `Unchanged` removes the record.
     pub fn mark(&mut self, kind: ObjectKind, id: ObjectId, state: ChangeState) {
         let map = match kind {
             ObjectKind::Node => &mut self.nodes,
@@ -356,7 +356,7 @@ impl ChangeTrack {
         }
     }
 
-    /// 读取状态。
+    /// Read a state.
     pub fn state(&self, kind: ObjectKind, id: ObjectId) -> ChangeState {
         let map = match kind {
             ObjectKind::Node => &self.nodes,
@@ -367,17 +367,17 @@ impl ChangeTrack {
         map.get(&id).copied().unwrap_or_default()
     }
 
-    /// 是否有待上传修改。
+    /// Whether there are pending changes to upload.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.ways.is_empty() && self.relations.is_empty()
     }
 
-    /// 待上传对象总数。
+    /// Total number of objects to upload.
     pub fn len(&self) -> usize {
         self.nodes.len() + self.ways.len() + self.relations.len()
     }
 
-    /// 迭代某类脏对象（按 `ObjectId` 升序，保证 OSC 导出可复现）。
+    /// Iterate dirty objects of one kind (ascending by `ObjectId`, so OSC export is reproducible).
     pub fn iter(&self, kind: ObjectKind) -> Vec<(ObjectId, ChangeState)> {
         let mut out: Vec<(ObjectId, ChangeState)> = match kind {
             ObjectKind::Node => self.nodes.iter().map(|(k, v)| (*k, *v)).collect(),
@@ -389,7 +389,7 @@ impl ChangeTrack {
         out
     }
 
-    /// 估算内存。
+    /// Estimate memory.
     pub fn mem_bytes(&self) -> ByteSize {
         let n = self.nodes.len() + self.ways.len() + self.relations.len();
         ByteSize(n * (core::mem::size_of::<ObjectId>() + 1 + 16))

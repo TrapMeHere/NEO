@@ -1,11 +1,11 @@
-//! OAuth 2.0（PKCE）与 OSM 账户信息。
+//! OAuth 2.0 (PKCE) and OSM account information.
 //!
-//! NEO 使用 OSM 的 OAuth2（授权码 + PKCE，公开客户端，无 client_secret）：
-//! 1. `authorize_url` 生成浏览器授权地址；
-//! 2. 回调拿到 `code` 后 `exchange_code` 换 access/refresh token；
-//! 3. `fetch_user` 读取 `/api/0.6/user/details` 得到用户名。
+//! NEO uses OSM's OAuth2 (authorization code + PKCE, public client, no client_secret):
+//! 1. `authorize_url` builds the browser authorization URL;
+//! 2. after the callback returns `code`, `exchange_code` swaps it for access/refresh tokens;
+//! 3. `fetch_user` reads `/api/0.6/user/details` to get the user name.
 //!
-//! 网络传输仍走 [`crate::Transport`]，因此测试无需真实浏览器/网络。
+//! Network transport still goes through [`crate::Transport`], so tests need no real browser/network.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -13,25 +13,25 @@ use sha2::{Digest, Sha256};
 
 use crate::{ApiError, HttpRequest, Transport};
 
-/// OAuth 配置。
+/// OAuth configuration.
 #[derive(Clone, Debug)]
 pub struct OAuthConfig {
-    /// 授权页。
+    /// Authorization page.
     pub authorize_url: String,
-    /// token 端点。
+    /// Token endpoint.
     pub token_url: String,
-    /// API 根（用于读取用户信息）。
+    /// API root (used to read user info).
     pub api_base: String,
-    /// 注册的 client_id。
+    /// Registered client_id.
     pub client_id: String,
-    /// 回调地址（必须与 OSM OAuth 应用登记一致）。
+    /// Callback URI (must match the OSM OAuth application registration).
     pub redirect_uri: String,
-    /// 权限范围。
+    /// Permission scope.
     pub scopes: String,
 }
 
 impl OAuthConfig {
-    /// OSM 官方默认配置。
+    /// OSM official default configuration.
     pub fn openstreetmap(client_id: impl Into<String>, redirect_uri: impl Into<String>) -> Self {
         Self {
             authorize_url: "https://www.openstreetmap.org/oauth2/authorize".to_owned(),
@@ -44,12 +44,12 @@ impl OAuthConfig {
     }
 }
 
-/// PKCE verifier/challenge。
+/// PKCE verifier/challenge.
 #[derive(Clone)]
 pub struct Pkce {
-    /// 高熵随机串。
+    /// High-entropy random string.
     pub verifier: String,
-    /// S256(verifier) 的 base64url。
+    /// base64url of S256(verifier).
     pub challenge: String,
 }
 
@@ -63,7 +63,7 @@ impl core::fmt::Debug for Pkce {
 }
 
 impl Pkce {
-    /// 生成新的 PKCE。
+    /// Generates a new PKCE.
     pub fn generate() -> Self {
         use rand::RngCore;
         let mut bytes = [0u8; 32];
@@ -75,7 +75,7 @@ impl Pkce {
     }
 }
 
-/// 生成授权 URL（含 state）。
+/// Builds the authorization URL (including state).
 pub fn authorize_url(config: &OAuthConfig, state: &str, pkce: &Pkce) -> String {
     let mut url = url::Url::parse(&config.authorize_url).expect("valid authorize url");
     url.query_pairs_mut()
@@ -89,18 +89,18 @@ pub fn authorize_url(config: &OAuthConfig, state: &str, pkce: &Pkce) -> String {
     url.into()
 }
 
-/// token 集合。
+/// Token set.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenSet {
-    /// access token。
+    /// Access token.
     pub access_token: String,
-    /// refresh token（可选）。
+    /// Refresh token (optional).
     #[serde(default)]
     pub refresh_token: Option<String>,
-    /// 有效期（秒）。
+    /// Validity period (seconds).
     #[serde(default)]
     pub expires_in: Option<i64>,
-    /// 权限范围。
+    /// Permission scope.
     #[serde(default)]
     pub scope: Option<String>,
 }
@@ -162,7 +162,7 @@ fn send<T: Transport>(transport: &T, request: HttpRequest) -> Result<String, Api
     }
 }
 
-/// 用授权码换 token。
+/// Exchanges the authorization code for tokens.
 pub fn exchange_code<T: Transport>(
     transport: &T,
     config: &OAuthConfig,
@@ -180,7 +180,7 @@ pub fn exchange_code<T: Transport>(
     serde_json::from_str(&body).map_err(|err| ApiError::Protocol(format!("token response: {err}: {body}")))
 }
 
-/// 刷新 access token。
+/// Refreshes the access token.
 pub fn refresh_token<T: Transport>(
     transport: &T,
     config: &OAuthConfig,
@@ -195,16 +195,16 @@ pub fn refresh_token<T: Transport>(
     serde_json::from_str(&body).map_err(|err| ApiError::Protocol(format!("refresh response: {err}: {body}")))
 }
 
-/// 当前用户。
+/// Current user.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserInfo {
-    /// 数字 id。
+    /// Numeric id.
     pub id: i64,
-    /// 显示名。
+    /// Display name.
     pub display_name: String,
 }
 
-/// 读取当前登录用户。
+/// Reads the currently logged-in user.
 pub fn fetch_user<T: Transport>(
     transport: &T,
     api_base: &str,

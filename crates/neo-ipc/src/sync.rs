@@ -1,314 +1,314 @@
-//! 同步旁路消息。
+//! Sync sidecar messages.
 
 use serde::{Deserialize, Serialize};
 
-/// 同步旁路协议版本。
+/// Sync sidecar protocol version.
 pub const PROTOCOL_VERSION: u32 = super::PROTOCOL_VERSION;
 
-/// 账户摘要（不含令牌）。
+/// Account summary (without tokens).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AccountSummary {
-    /// OSM 用户 id。
+    /// OSM user id.
     pub id: String,
-    /// 显示名。
+    /// Display name.
     pub display_name: String,
 }
 
-/// 上传 diff 条目。
+/// Upload diff entry.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiffEntryDto {
-    /// `node` / `way` / `relation`。
+    /// `node` / `way` / `relation`.
     pub kind: String,
-    /// 本地 id。
+    /// Local id.
     pub old_id: i64,
-    /// 服务端 id。
+    /// Server id.
     pub new_id: Option<i64>,
-    /// 新版本。
+    /// New version.
     pub new_version: Option<i32>,
 }
 
-/// 冲突对象。
+/// Conflicting object.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConflictObjectDto {
-    /// `node` / `way` / `relation`。
+    /// `node` / `way` / `relation`.
     pub kind: String,
-    /// 本地 id。
+    /// Local id.
     pub old_id: i64,
-    /// 服务端 id。
+    /// Server id.
     pub new_id: Option<i64>,
-    /// 服务端版本。
+    /// Server version.
     pub version: Option<i32>,
 }
 
-/// 409 冲突。
+/// 409 conflict.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ConflictDto {
-    /// 服务端消息。
+    /// Server message.
     pub message: String,
-    /// 冲突对象。
+    /// Conflicting objects.
     pub objects: Vec<ConflictObjectDto>,
 }
 
-/// Note 评论。
+/// Note comment.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NoteCommentDto {
-    /// 时间。
+    /// Time.
     pub date: String,
-    /// 用户。
+    /// User.
     pub user: String,
-    /// 文本。
+    /// Text.
     pub text: String,
 }
 
-/// Note。
+/// Note.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NoteDto {
-    /// id。
+    /// Id.
     pub id: i64,
-    /// 纬度。
+    /// Latitude.
     pub lat: f64,
-    /// 经度。
+    /// Longitude.
     pub lon: f64,
-    /// 状态。
+    /// Status.
     pub status: String,
-    /// 评论。
+    /// Comments.
     pub comments: Vec<NoteCommentDto>,
 }
 
-/// Notes 动作。
+/// Notes action.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum NotesAction {
-    /// 当前视口列表。
+    /// Refreshes the current viewport list.
     Refresh,
-    /// 新建。
+    /// Creates a new one.
     Create {
-        /// 纬度。
+        /// Latitude.
         lat: f64,
-        /// 经度。
+        /// Longitude.
         lon: f64,
-        /// 文本。
+        /// Text.
         text: String,
     },
-    /// 评论。
+    /// Comments.
     Comment {
-        /// note id。
+        /// Note id.
         id: i64,
-        /// 文本。
+        /// Text.
         text: String,
     },
-    /// 关闭。
+    /// Closes.
     Close {
-        /// note id。
+        /// Note id.
         id: i64,
-        /// 文本。
+        /// Text.
         text: String,
     },
 }
 
-/// 编辑器 → 同步旁路。
+/// Editor → sync sidecar.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum SyncRequest {
-    /// 握手。
+    /// Handshake.
     Hello {
-        /// 编辑器侧协议版本。
+        /// Editor-side protocol version.
         version: u32,
     },
-    /// 列出账户。
+    /// Lists accounts.
     ListAccounts,
-    /// 开始 OAuth。
+    /// Starts OAuth.
     StartOauth {
-        /// 客户端 id（空则用内置）。
+        /// Client id (empty uses the built-in one).
         client_id: String,
-        /// 回调地址（空则用内置）。
+        /// Callback URI (empty uses the built-in one).
         redirect_uri: String,
     },
-    /// 查询 OAuth 进度。
+    /// Polls OAuth progress.
     PollOauth,
-    /// 选择当前账户。
+    /// Selects the current account.
     SelectAccount {
-        /// 账户 id。
+        /// Account id.
         id: String,
     },
-    /// 删除账户。
+    /// Removes an account.
     RemoveAccount {
-        /// 账户 id。
+        /// Account id.
         id: String,
     },
-    /// 退出当前账户。
+    /// Logs out of the current account.
     ClearCurrent,
-    /// 写回 OAuth 设置字段。
+    /// Writes back the OAuth settings fields.
     SaveSettings {
-        /// 客户端 id。
+        /// Client id.
         client_id: String,
-        /// 回调地址。
+        /// Callback URI.
         redirect_uri: String,
     },
-    /// 下载地图 XML。
+    /// Downloads map XML.
     Download {
-        /// API 根地址。
+        /// API root URL.
         api_base: String,
-        /// `(min_lon, min_lat, max_lon, max_lat)`。
+        /// `(min_lon, min_lat, max_lon, max_lat)`.
         bbox: [f64; 4],
     },
-    /// 通过 Overpass QL 下载 OSM XML。
+    /// Downloads OSM XML through an Overpass QL query.
     OverpassDownload {
-        /// Overpass interpreter 端点。
+        /// Overpass interpreter endpoint.
         endpoint: String,
-        /// Overpass QL 查询正文。
+        /// Overpass QL query body.
         query: String,
     },
-    /// 上传 osmChange 分片。
+    /// Uploads osmChange chunks.
     Upload {
-        /// API 根地址。
+        /// API root URL.
         api_base: String,
-        /// changeset 注释。
+        /// Changeset comment.
         comment: String,
-        /// 已写好的 osc 文本。
+        /// Already-serialized osc text.
         oscs: Vec<String>,
     },
-    /// Notes。
+    /// Notes.
     Notes {
-        /// API 根地址。
+        /// API root URL.
         api_base: String,
-        /// `(min_lon, min_lat, max_lon, max_lat)`。
+        /// `(min_lon, min_lat, max_lon, max_lat)`.
         bbox: [f64; 4],
-        /// 动作。
+        /// Action.
         action: NotesAction,
     },
-    /// 读取 changeset 元数据。
+    /// Reads changeset metadata.
     Changeset {
-        /// API 根地址。
+        /// API root URL.
         api_base: String,
-        /// changeset id。
+        /// Changeset id.
         id: i64,
     },
-    /// 下载单个对象 XML。
+    /// Downloads a single object's XML.
     DownloadObject {
-        /// API 根地址。
+        /// API root URL.
         api_base: String,
-        /// `node` / `way` / `relation`。
+        /// `node` / `way` / `relation`.
         kind: String,
-        /// 对象 id。
+        /// Object id.
         id: i64,
     },
 }
 
-/// 同步旁路 → 编辑器。
+/// Sync sidecar → editor.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum SyncResponse {
-    /// 握手结果。
+    /// Handshake result.
     Hello {
-        /// 旁路协议版本。
+        /// Sidecar protocol version.
         version: u32,
-        /// 是否兼容。
+        /// Whether compatible.
         ok: bool,
     },
-    /// 账户列表。
+    /// Account list.
     Accounts {
-        /// 当前账户 id。
+        /// Current account id.
         current: Option<String>,
-        /// 账户摘要。
+        /// Account summaries.
         accounts: Vec<AccountSummary>,
-        /// 客户端 id。
+        /// Client id.
         client_id: String,
-        /// 回调地址。
+        /// Callback URI.
         redirect_uri: String,
     },
-    /// OAuth 已启动。
+    /// OAuth has started.
     OauthStarted,
-    /// OAuth 仍在等回调。
+    /// OAuth is still waiting for the callback.
     OauthPending,
-    /// OAuth 成功。
+    /// OAuth succeeded.
     OauthDone {
-        /// 新登录账户。
+        /// Newly logged-in account.
         account: AccountSummary,
     },
-    /// OAuth 失败。
+    /// OAuth failed.
     OauthFailed {
-        /// 错误。
+        /// Error.
         error: String,
     },
-    /// 下载成功。
+    /// Download succeeded.
     Downloaded {
-        /// OSM XML。
+        /// OSM XML.
         xml: String,
     },
-    /// 上传成功。
+    /// Upload succeeded.
     Uploaded {
-        /// diff 条目。
+        /// Diff entries.
         entries: Vec<DiffEntryDto>,
     },
-    /// 部分上传成功。
+    /// Partial upload succeeded.
     UploadedPartial {
-        /// 已成功条目。
+        /// Succeeded entries.
         entries: Vec<DiffEntryDto>,
-        /// 后续错误。
+        /// Subsequent error.
         error: String,
     },
-    /// 409 冲突。
+    /// 409 conflict.
     Conflict {
-        /// 冲突报告。
+        /// Conflict report.
         report: ConflictDto,
     },
-    /// Notes 列表。
+    /// Notes list.
     NotesList {
-        /// notes。
+        /// Notes.
         notes: Vec<NoteDto>,
     },
-    /// 单条 note。
+    /// A single note.
     NoteOne {
-        /// note。
+        /// Note.
         note: NoteDto,
     },
-    /// Changeset 元数据。
+    /// Changeset metadata.
     ChangesetInfo {
-        /// id。
+        /// Id.
         id: i64,
-        /// 用户。
+        /// User.
         user: String,
-        /// 创建时间。
+        /// Creation time.
         created_at: String,
-        /// 关闭时间。
+        /// Closing time.
         closed_at: String,
-        /// 是否仍打开。
+        /// Whether it is still open.
         open: bool,
-        /// 注释。
+        /// Comment.
         comment: String,
-        /// 修改计数（文本）。
+        /// Change count (text).
         changes: String,
-        /// 标签。
+        /// Tags.
         tags: Vec<(String, String)>,
     },
-    /// 通用成功。
+    /// Generic success.
     Ok,
-    /// 错误。
+    /// Error.
     Error {
-        /// 消息。
+        /// Message.
         message: String,
     },
 }
 
-/// 同步信封。
+/// Sync envelope.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SyncEnvelope<T> {
-    /// 协议版本。
+    /// Protocol version.
     pub v: u32,
-    /// 载荷。
+    /// Payload.
     #[serde(flatten)]
     pub body: T,
 }
 
-/// 同步会话：一行请求、一行应答。
+/// Sync session: one request line, one reply line.
 pub struct SyncSession {
     inner: super::client::SidecarProcess,
     ready: bool,
 }
 
 impl SyncSession {
-    /// 启动并握手。
+    /// Starts and performs the handshake.
     pub fn open() -> Result<Self, super::client::SidecarError> {
         let inner = super::client::SidecarProcess::spawn("neo-sync")?;
         let mut session = Self { inner, ready: false };
@@ -334,12 +334,12 @@ impl SyncSession {
         }
     }
 
-    /// 是否可用。
+    /// Whether usable.
     pub fn ready(&self) -> bool {
         self.ready
     }
 
-    /// 发请求并读应答。
+    /// Sends a request and reads the reply.
     pub fn call(&mut self, request: SyncRequest) -> Result<SyncResponse, super::client::SidecarError> {
         let envelope = SyncEnvelope {
             v: PROTOCOL_VERSION,

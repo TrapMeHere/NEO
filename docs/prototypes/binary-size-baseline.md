@@ -1,31 +1,31 @@
-﻿# 二进制体积基线（外置字体 + 外置 presets）
+# Binary size baseline (external fonts + external presets)
 
-- **日期**：2026-11-21
-- **命令**：`cargo bloat --release -p neo-desktop --crates --n 40`
-- **复现**：`powershell -File scripts/bloat-baseline.ps1`
-- **profile**：`[profile.release]` opt-level=3, lto=thin, codegen-units=1, strip=true
+- **Date**: 2026-11-21
+- **Command**: `cargo bloat --release -p neo-desktop --crates --n 40`
+- **Reproduce**: `powershell -File scripts/bloat-baseline.ps1`
+- **profile**: `[profile.release]` opt-level=3, lto=thin, codegen-units=1, strip=true
 
-## 对比
+## Comparison
 
-| 项 | 外置前（约） | 外置后 |
+| Item | Before externalization (approx.) | After externalization |
 |---|---:|---:|
 | `neo-desktop.exe` | ~65 MB | **23.4 MB** |
-| 字体 | 编进 exe（~26 MB） | `assets/fonts/` 旁路 26.4 MB |
-| 预设 | 编进 exe（~15 MB） | `schema.neo` 0.19 MB + `suggestions.neo` 6.70 MB |
+| Fonts | compiled into the exe (~26 MB) | 26.4 MB side-by-side in `assets/fonts/` |
+| Presets | compiled into the exe (~15 MB) | `schema.neo` 0.19 MB + `suggestions.neo` 6.70 MB |
 
-安装包仍需带上 `assets/`；主程序本身小了约 **40 MB**。
+Installers still need to ship `assets/`; the main program itself is about **40 MB** smaller.
 
-## 发行物体积
+## Release artifact sizes
 
-| 项 | 大小 |
+| Item | Size |
 |---|---:|
 | `out/cargo/release/neo-desktop.exe` | 23.44 MB |
-| `assets/presets/schema.neo` + `suggestions.neo`（外置） | 0.19 + 6.70 MB |
-| `assets/fonts/*`（外置，合计） | 26.36 MB |
+| `assets/presets/schema.neo` + `suggestions.neo` (external) | 0.19 + 6.70 MB |
+| `assets/fonts/*` (external, total) | 26.36 MB |
 
-## `.text` 前几名（cargo-bloat）
+## Top `.text` entries (cargo-bloat)
 
-| Crate | 约占用 |
+| Crate | Approximate size |
 |---|---:|
 | std | 2.6 MiB |
 | naga | 1.7 MiB |
@@ -35,6 +35,6 @@
 | rustls | 0.4 MiB |
 | neo_desktop | 0.3 MiB |
 
-完整表：[binary-size-bloat-crates.txt](./binary-size-bloat-crates.txt)。
+Full table: [binary-size-bloat-crates.txt](./binary-size-bloat-crates.txt).
 
-下一步若要再瘦：可选 feature 关掉 `neo-api`/http（rustls、reqwest、aws_lc）或 `neo-persist`（rusqlite）；图形栈（naga/wgpu/egui）难拆。
+To slim it down further, optional features could disable `neo-api`/http (rustls, reqwest, aws_lc) or `neo-persist` (rusqlite); the graphics stack (naga/wgpu/egui) is hard to split out.

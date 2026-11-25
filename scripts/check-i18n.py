@@ -1,12 +1,12 @@
-"""校验 i18n：代码里 t()/tf() 用到的 key 都存在，语言表之间 key 集合一致。
+"""Validate i18n tables.
 
-- `zh-CN.json` 是基准表（也是 `zh` 的回退表），必须覆盖所有代码 key；
-- `en-US.json` 必须与基准表 key 集合完全一致；
-- `zh-TW.json` 是繁體覆盖表：允许缺 key（运行时回退到 `zh`/简体），但不允许出现
-  基准表里没有的 key；
-- 任何语言表里的 key 都必须被代码引用（避免死 key）。
+`i18n/en-US.json` is the source/base language: every key used by the code must exist
+there, and every key in it must be referenced by code. `zh-CN.json` and `zh-TW.json` are
+translations: they may temporarily miss keys (the runtime falls back to English and to
+Simplified Chinese respectively), but they must never contain keys that are absent from
+the English base. Placeholders (`{name}`) must match the base for every translated key.
 
-用法：python scripts/check-i18n.py
+Usage: python scripts/check-i18n.py
 """
 
 import json
@@ -23,10 +23,12 @@ SOURCE_ROOTS = [
 SOURCE_FILES = [ROOT / "apps" / "neo-desktop" / "src" / "main.rs"]
 I18N = ROOT / "i18n"
 
-BASE_LOCALE = "zh-CN"
-# 完整对照语言（必须与基准表一致）与允许回退的覆盖语言。
-FULL_LOCALES = {"zh-CN": "zh-CN.json", "en-US": "en-US.json"}
-OVERLAY_LOCALES = {"zh-TW": "zh-TW.json"}
+BASE_LOCALE = "en-US"
+BASE_FILE = "en-US.json"
+# Translations; missing keys are allowed because the runtime falls back.
+OVERLAY_LOCALES = {"zh-CN": "zh-CN.json", "zh-TW": "zh-TW.json"}
+
+PLACEHOLDER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 
 def source_files() -> list[pathlib.Path]:
@@ -36,7 +38,7 @@ def source_files() -> list[pathlib.Path]:
     return files
 
 
-# 这些前缀下的字符串字面量会交给 t()，即使没有写成 t("...")。
+# String literals under these prefixes are passed to t(), even without a literal t("...").
 DYNAMIC_PREFIXES = (
     "app.",
     "menu.",
@@ -56,7 +58,6 @@ DYNAMIC_PREFIXES = (
     "history.",
     "tags.",
     "members.",
-    "filter.",
     "changeset.",
     "ecosystem.",
     "tool.",
@@ -82,15 +83,19 @@ def quoted_keys() -> set[str]:
 
 def load_locales() -> dict[str, dict[str, str]]:
     tables: dict[str, dict[str, str]] = {}
-    for locale, file_name in {**FULL_LOCALES, **OVERLAY_LOCALES}.items():
+    for locale, file_name in {BASE_LOCALE: BASE_FILE, **OVERLAY_LOCALES}.items():
         path = I18N / file_name
         if not path.exists():
-            raise SystemExit(f"缺少语言表：{path}")
+            raise SystemExit(f"missing locale file: {path}")
         table = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(table, dict) or not table:
-            raise SystemExit(f"语言表为空或格式错误：{path}")
+            raise SystemExit(f"locale file is empty or invalid: {path}")
         tables[locale] = table
     return tables
+
+
+def placeholders(text: str) -> set[str]:
+    return set(PLACEHOLDER.findall(text))
 
 
 def main() -> int:
@@ -111,23 +116,24 @@ def main() -> int:
     ok = True
     problems: list[tuple[str, list[str]]] = []
 
-    for locale, file_name in FULL_LOCALES.items():
-        missing = sorted(k for k in keys if k not in tables[locale])
-        problems.append((f"缺少 {locale} key（{file_name}）", missing))
+    missing_base = sorted(k for k in keys if k not in base)
+    problems.append((f"missing {BASE_LOCALE} keys", missing_base))
 
     base_keys = set(base)
     for locale, file_name in OVERLAY_LOCALES.items():
         extra = sorted(set(tables[locale]) - base_keys)
-        problems.append((f"{locale} 有基准表之外的 key（{file_name}）", extra))
+        problems.append((f"{locale} has keys absent from {BASE_FILE} ({file_name})", extra))
 
-    en = tables["en-US"]
-    problems.append(("仅 zh-CN 有（en-US 缺）", sorted(base_keys - set(en))))
-    problems.append(("仅 en-US 有（zh-CN 缺）", sorted(set(en) - base_keys)))
+    problems.append(
+        ("keys in JSON but not referenced by code", sorted(k for k in base_keys if k not in quoted))
+    )
 
-    all_keys = set()
-    for table in tables.values():
-        all_keys |= set(table)
-    problems.append(("JSON 中未被代码引用", sorted(k for k in all_keys if k not in quoted)))
+    for locale in OVERLAY_LOCALES:
+        mismatched = []
+        for key, value in tables[locale].items():
+            if key in base and placeholders(base[key]) != placeholders(value):
+                mismatched.append(key)
+        problems.append((f"{locale} placeholder mismatch vs {BASE_LOCALE}", sorted(mismatched)))
 
     for label, items in problems:
         if items:
@@ -138,11 +144,11 @@ def main() -> int:
         covered = len(set(tables[locale]) & base_keys)
         total = len(base_keys)
         percent = 100.0 * covered / total if total else 100.0
-        print(f"{locale} 覆盖 {covered}/{total}（{percent:.1f}%，缺省回退 zh）")
+        print(f"{locale} coverage: {covered}/{total} ({percent:.1f}%; missing keys fall back)")
 
     if ok:
         parts = "、".join(f"{locale} {len(table)}" for locale, table in tables.items())
-        print(f"i18n OK：{len(keys)} 个代码 key；{parts}")
+        print(f"i18n OK: {len(keys)} code keys; {parts}")
     return 0 if ok else 1
 
 

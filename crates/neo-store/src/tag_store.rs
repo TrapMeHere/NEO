@@ -1,35 +1,35 @@
-//! Tag 竞技场：所有 TagSet 的存储。
+//! Tag arena: storage for all TagSets.
 //!
-//! 设计要点：
+//! Design points:
 //!
-//! * 所有 `(key, value)` 对连续存放在一个 `Vec` 里；
-//! * 每个 TagSet 只记录 `(offset, len)`，因此 TagSetId 是 4 字节；
-//! * 空集合固定为 `TagSetId::EMPTY`（索引 0）；
-//! * 写路径是**追加式**（append-only）：编辑一个对象的 tag 会写入一条新集合，
-//!   旧区间在 `compact` 时回收。这让 tag 修改无引用计数、无失效风险。
+//! * all `(key, value)` pairs are stored contiguously in one `Vec`;
+//! * each TagSet records only `(offset, len)`, so a TagSetId is 4 bytes;
+//! * the empty set is always `TagSetId::EMPTY` (index 0);
+//! * the write path is **append-only**: editing an object's tags writes a new set,
+//!   and the old range is reclaimed on `compact`. This makes tag edits free of reference counting and invalidation risk.
 
 use neo_core::{ByteSize, Sym};
 
-/// Tag 集合在 [`TagStore`] 中的句柄。
+/// Handle to a tag set in [`TagStore`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Debug)]
 pub struct TagSetId(pub u32);
 
 impl TagSetId {
-    /// 空 tag 集合。
+    /// Empty tag set.
     pub const EMPTY: Self = Self(0);
 
-    /// 原始索引。
+    /// Raw index.
     #[inline]
     pub const fn raw(self) -> u32 {
         self.0
     }
 }
 
-/// Tag 存储：扁平 arena + 每集合的 range。
+/// Tag storage: flat arena + a range per set.
 #[derive(Debug)]
 pub struct TagStore {
     pairs: Vec<(Sym, Sym)>,
-    /// `spans[i]..spans[i + 1]` 是第 i 个 tag set 在 `pairs` 中的范围。
+    /// `spans[i]..spans[i + 1]` is the range of the i-th tag set within `pairs`.
     spans: Vec<u32>,
 }
 
@@ -40,34 +40,34 @@ impl Default for TagStore {
 }
 
 impl TagStore {
-    /// 新建，包含空集合。
+    /// Create a new store containing the empty set.
     pub fn new() -> Self {
         Self {
             pairs: Vec::new(),
-            // 索引 0 是空集合，范围 [0, 0)。
+            // Index 0 is the empty set, range [0, 0).
             spans: vec![0, 0],
         }
     }
 
-    /// 已存储的 tag set 数量（含空集合）。
+    /// Number of stored tag sets (including the empty set).
     #[inline]
     pub fn len(&self) -> usize {
         self.spans.len() - 1
     }
 
-    /// 是否只有空集合。
+    /// Whether only the empty set exists.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() <= 1
     }
 
-    /// 全部 tag 个数。
+    /// Total number of tags.
     #[inline]
     pub fn tag_count(&self) -> usize {
         self.pairs.len()
     }
 
-    /// 新增一个 tag set，返回句柄。
+    /// Add a tag set and return its handle.
     pub fn add(&mut self, pairs: &[(Sym, Sym)]) -> TagSetId {
         if pairs.is_empty() {
             return TagSetId::EMPTY;
@@ -78,10 +78,10 @@ impl TagStore {
         TagSetId((self.spans.len() - 2) as u32)
     }
 
-    /// 取集合内容；非法 `TagSetId`（越界索引）返回空切片而不是 panic。
+    /// Get the set contents; an invalid `TagSetId` (out-of-range index) returns an empty slice instead of panicking.
     ///
-    /// `TagSetId` 的字段是公开的，任何安全代码都能构造越界值；项目
-    /// `forbid(unsafe_code)` 的前提是安全 API 不应 panic。
+    /// `TagSetId`'s field is public, so any safe code can construct an out-of-range value; the project's
+    /// `forbid(unsafe_code)` premise is that safe APIs must not panic.
     #[inline]
     pub fn get(&self, id: TagSetId) -> &[(Sym, Sym)] {
         let idx = id.0 as usize;
@@ -92,19 +92,19 @@ impl TagStore {
         self.pairs.get(*start as usize..*end as usize).unwrap_or(&[])
     }
 
-    /// 按 key 查 value。
+    /// Look up a value by key.
     #[inline]
     pub fn tag(&self, id: TagSetId, key: Sym) -> Option<Sym> {
         self.get(id).iter().find_map(|&(k, v)| (k == key).then_some(v))
     }
 
-    /// 迭代集合内容。
+    /// Iterate the set contents.
     #[inline]
     pub fn iter(&self, id: TagSetId) -> impl Iterator<Item = (Sym, Sym)> + '_ {
         self.get(id).iter().copied()
     }
 
-    /// 估算堆内存。
+    /// Estimate heap memory.
     pub fn mem_bytes(&self) -> ByteSize {
         ByteSize(
             self.pairs.capacity() * core::mem::size_of::<(Sym, Sym)>()

@@ -1,4 +1,4 @@
-//! 合并 / 分割对 relation 成员的级联修正（JOSM 语义）。
+//! Cascade fixes for relation members on merge / split (JOSM semantics).
 
 use neo_core::{LatLon, ObjectId, ObjectKind};
 use neo_editor::{
@@ -65,12 +65,12 @@ fn merge_moves_relation_membership_from_b_to_a() {
         vec![("way", 10, "forward"), ("way", 11, "forward")],
     );
 
-    // 修复前：MergeWay 会以 "way 11 is still referenced by relations" 直接失败。
+    // Before the fix: MergeWay would fail outright with "way 11 is still referenced by relations".
     editor
         .execute(Box::new(MergeWay::new(ObjectId(10), ObjectId(11))))
         .unwrap();
 
-    // b 的成员被就地换成 a，角色保留；重复的 (way 10, forward) 合并掉。
+    // b's member is replaced in place with a, the role is kept; duplicate (way 10, forward) members are merged away.
     assert_eq!(
         member_ids(&editor, 20),
         vec![(ObjectKind::Way, 10, "forward".to_owned())]
@@ -126,7 +126,11 @@ fn split_appends_new_way_to_relations_with_same_role() {
     editor.execute(Box::new(SplitWay::new(ObjectId(10), 1))).unwrap();
 
     let members = member_ids(&editor, 20);
-    assert_eq!(members.len(), 2, "新 way 必须进入原 way 所在的 relation");
+    assert_eq!(
+        members.len(),
+        2,
+        "the new way must join the relation of the original way"
+    );
     assert_eq!(members[0], (ObjectKind::Way, 10, "outer".to_owned()));
     assert_eq!(members[1].0, ObjectKind::Way);
     assert_eq!(members[1].2, "outer");
@@ -147,7 +151,7 @@ fn relation_membership_cycle_is_rejected() {
     add_relation(&mut editor, 20, vec![]);
     add_relation(&mut editor, 21, vec![("rel", 20, "")]);
 
-    // 21 已包含 20；再让 20 包含 21 就成环（服务端会 412）。
+    // 21 already contains 20; making 20 contain 21 again would create a cycle (the server returns 412).
     let err = editor
         .execute(Box::new(SetRelationMembers::new(
             ObjectId(20),

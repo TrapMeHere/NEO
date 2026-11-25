@@ -1,79 +1,79 @@
-//! OSM 图元 DTO。
+//! OSM primitive DTOs.
 //!
-//! 这些结构是 IO / API / 剪贴板 / 命令边界上的**值对象**，不是存储格式。
-//! 存储层（`neo-store`）用 SoA 保存同样的信息，二者可以互相转换。
+//! These structs are **value objects** at IO / API / clipboard / command boundaries, not the storage format.
+//! The storage layer (`neo-store`) keeps the same information in SoA form; the two can convert into each other.
 
 use neo_core::{LatLon, Meta, ObjectId, ObjectKind, Sym};
 use smallvec::SmallVec;
 
 use crate::tags::Tags;
 
-/// 一个 Node。
+/// A Node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
-    /// OSM ID（负数为本地新建）。
+    /// OSM ID (negative for local creations).
     pub id: ObjectId,
-    /// 经纬度（定点 1e-7 度）。
+    /// Latitude/longitude (fixed point, 1e-7 degree).
     pub pos: LatLon,
-    /// 标签。
+    /// Tags.
     pub tags: Tags,
-    /// 元数据。
+    /// Metadata.
     pub meta: Meta,
 }
 
-/// 一个 Way，`nodes` 顺序即几何顺序。
+/// A Way; the order of `nodes` is the geometric order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Way {
-    /// OSM ID。
+    /// OSM ID.
     pub id: ObjectId,
-    /// 节点序列（顺序敏感；重复节点是合法但通常无效的数据，由 validator 报错）。
+    /// Node sequence (order-sensitive; duplicate nodes are legal but usually invalid data, reported by the validator).
     pub nodes: SmallVec<[ObjectId; 8]>,
-    /// 标签。
+    /// Tags.
     pub tags: Tags,
-    /// 元数据。
+    /// Metadata.
     pub meta: Meta,
 }
 
-/// Relation 成员。
+/// Relation member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RelationMember {
-    /// 目标对象种类。
+    /// Target object kind.
     pub kind: ObjectKind,
-    /// 目标对象 ID。
+    /// Target object ID.
     pub id: ObjectId,
-    /// 成员角色（驻留符号，可能是空串）。
+    /// Member role (interned symbol, may be empty).
     pub role: Sym,
 }
 
-/// 一个 Relation。
+/// A Relation.
 ///
-/// 成员顺序是**数据的一部分**（route / multipolygon 的顺序有语义），编辑与上传
-/// 都必须保序，见 docs/13 的"易漏行为"。
+/// Member order is **part of the data** (order is semantic for route / multipolygon); editing and uploading
+/// must both preserve it; see the "easy-to-miss behaviors" in docs/13.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Relation {
-    /// OSM ID。
+    /// OSM ID.
     pub id: ObjectId,
-    /// 成员列表。
+    /// Member list.
     pub members: SmallVec<[RelationMember; 4]>,
-    /// 标签。
+    /// Tags.
     pub tags: Tags,
-    /// 元数据。
+    /// Metadata.
     pub meta: Meta,
 }
 
-/// 任意 OSM 图元。
+/// Any OSM primitive.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Element {
-    /// 点。
+    /// Point.
     Node(Node),
-    /// 线 / 面。
+    /// Line / area.
     Way(Way),
-    /// 关系。
+    /// Relation.
     Relation(Relation),
 }
 
 impl Element {
-    /// 对象 ID。
+    /// Object ID.
     #[inline]
     pub fn id(&self) -> ObjectId {
         match self {
@@ -83,7 +83,7 @@ impl Element {
         }
     }
 
-    /// 对象种类。
+    /// Object kind.
     #[inline]
     pub fn kind(&self) -> ObjectKind {
         match self {
@@ -93,7 +93,7 @@ impl Element {
         }
     }
 
-    /// 标签。
+    /// Tags.
     #[inline]
     pub fn tags(&self) -> &Tags {
         match self {
@@ -103,7 +103,7 @@ impl Element {
         }
     }
 
-    /// 元数据。
+    /// Metadata.
     #[inline]
     pub fn meta(&self) -> &Meta {
         match self {

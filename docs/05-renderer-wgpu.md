@@ -1,265 +1,265 @@
-# 05 渲染器（wgpu 30.0.2 + egui-wgpu 0.36.2）
+# 05 Renderer (wgpu 30.0.2 + egui-wgpu 0.36.2)
 
-> 状态：草案 v0.1 ｜ 日期：2026-11-15 ｜ 归属 crate：`neo-render`（消费 `neo-scene` 的 `SceneFrame`/`MapVertex`）
-> 版本基准：**wgpu 30.0.2**、**egui / eframe / egui-wgpu 0.36.2**、winit 0.30.13、bytemuck 1.25
-> 相关：[01-system-architecture.md](01-system-architecture.md) ｜ [02-workspace-and-dependency-rules.md](02-workspace-and-dependency-rules.md) ｜ [04-spatial-index-and-geometry.md](04-spatial-index-and-geometry.md) ｜ [11-style-presets-mapcss.md](11-style-presets-mapcss.md) ｜ [ADR-0005](adr/0005-wgpu-egui-shared-device.md) ｜ [14-performance-and-verification.md](14-performance-and-verification.md)
+> Status: draft v0.1 | Date: 2026-11-15 | Owning crate: `neo-render` (consumes `SceneFrame`/`MapVertex` from `neo-scene`)
+> Version baseline: **wgpu 30.0.2**, **egui / eframe / egui-wgpu 0.36.2**, winit 0.30.13, bytemuck 1.25
+> Related: [01-system-architecture.md](01-system-architecture.md) | [02-workspace-and-dependency-rules.md](02-workspace-and-dependency-rules.md) | [04-spatial-index-and-geometry.md](04-spatial-index-and-geometry.md) | [11-style-presets-mapcss.md](11-style-presets-mapcss.md) | [ADR-0005](adr/0005-wgpu-egui-shared-device.md) | [14-performance-and-verification.md](14-performance-and-verification.md)
 
-## 摘要
+## Summary
 
-- NEO 不自建 winit 事件循环、不建第二个 `wgpu::Instance`：`eframe` 建 surface 与设备，`neo-render` 通过 `egui_wgpu::RenderState`（`adapter/instance/device/queue/target_format/renderer`）拿到**同一个** `Device`/`Queue`，用一个 `CallbackTrait` 绘制地图。
-- 管线四类：**A 线段/stroke**、**B 面/fill**、**C 点/图标 instancing**、**D 文本与选中叠加**。四者共用 56 字节的 `MapVertex` 与同一组 bind group。
-- 每帧只写 32 字节 camera uniform；几何 buffer 只在 `SceneFrame.version` 变化时按脏区间上传。稳定态的 GPU 侧写入量接近 0。
-- 排序用画家算法（`(layer, z, kind)` 稳定序），**Phase 1 不开深度缓冲**：egui 的渲染通道把深度 `store` 设为 `Discard`（见 §2.7），任何跨 callback 的深度复用都不可靠。
-- 颜色空间在启动时一次性决定：`target_format` 是 `*Srgb` 还是 gamma 空间（典型 `Bgra8Unorm`），直接决定顶点颜色与着色器输出；混用会双 gamma。
-- 拾取默认走 CPU（[04](04-spatial-index-and-geometry.md) §2.10）；GPU ID buffer（`R32Uint` + 1×1 回读）只在候选 > 32 或需要「像素级精确」时启用，且**默认异步、1 帧延迟**。
-- 地图文字最终走专用 glyph atlas；Phase 1 用 egui overlay 兑现同一接口（`LabelItem` 已在 `SceneFrame` 里，切换不动上层）。
-- 能力探测优先：`Limits::downlevel_defaults()` 作为地板，间接绘制/timestamp/MSAA 全部运行时探测后降级。
-- 所有帧时间数字【待实测，见 docs/14-performance-and-verification.md】。
+- NEO does not build its own winit event loop or a second `wgpu::Instance`: `eframe` creates the surface and device, and `neo-render` obtains the **same** `Device`/`Queue` through `egui_wgpu::RenderState` (`adapter/instance/device/queue/target_format/renderer`), drawing the map with one `CallbackTrait`.
+- Four pipeline classes: **A line segments/stroke**, **B areas/fill**, **C points/icon instancing**, **D text and selection overlays**. All four share the 56-byte `MapVertex` and the same set of bind groups.
+- Each frame writes only the 32-byte camera uniform; geometry buffers are uploaded by dirty ranges only when `SceneFrame.version` changes. In steady state, GPU-side writes are close to zero.
+- Sorting uses the painter's algorithm (stable order by `(layer, z, kind)`), and **Phase 1 does not enable a depth buffer**: egui's render pass sets depth `store` to `Discard` (see §2.7), so any depth reuse across callbacks is unreliable.
+- Color space is decided once at startup: whether `target_format` is `*Srgb` or in gamma space (typically `Bgra8Unorm`) directly determines vertex colors and shader output; mixing them causes double gamma.
+- Picking uses the CPU by default ([04](04-spatial-index-and-geometry.md) §2.10); the GPU ID buffer (`R32Uint` + 1×1 readback) is enabled only when candidates > 32 or "pixel-exact" precision is required, and it is **asynchronous by default with 1 frame of latency**.
+- Map text ultimately goes through a dedicated glyph atlas; Phase 1 delivers the same interface via an egui overlay (`LabelItem` is already in `SceneFrame`, so switching does not touch upper layers).
+- Capability probing comes first: `Limits::downlevel_defaults()` is the floor, and indirect drawing/timestamps/MSAA are all runtime-probed with graceful degradation.
+- All frame-time numbers are [pending measurement, see docs/14-performance-and-verification.md].
 
-## 1 目标与范围
+## 1 Goals and Scope
 
-### 1.1 目标
+### 1.1 Goals
 
-1. 单帧 16.6 ms（60 Hz）内稳定绘制 1M–10M 对象的可见子集，稳态无每帧重建。
-2. 绘制量与「视口内对象数」成正比，与数据层总量无关（LOD 与裁剪在 `neo-scene` 完成，渲染器只做 GPU 侧合批）。
-3. 与 egui 共存无撕裂、无双重 gamma、无逐帧丢设备；DPI 1.25/1.5/1.75 下无 1 px 接缝。
-4. Windows(DX12)/Linux(Vulkan)/macOS(Metal) 三后端行为一致；软件适配器（WARP/llvmpipe）能降级启动而不是崩溃。
-5. 顶点/批次是 POD（`bytemuck`），渲染层零 `neo-store` 依赖。
+1. Stably draw the visible subset of 1M–10M objects within 16.6 ms per frame (60 Hz), with no per-frame rebuild in steady state.
+2. Draw volume is proportional to "the number of objects within the viewport" and independent of the total data size (LOD and culling happen in `neo-scene`; the renderer only batches on the GPU side).
+3. Coexistence with egui without tearing, double gamma, or per-frame device loss; no 1 px seams at DPI 1.25/1.5/1.75.
+4. Consistent behavior across Windows(DX12)/Linux(Vulkan)/macOS(Metal); software adapters (WARP/llvmpipe) can start in a degraded mode instead of crashing.
+5. Vertices/batches are POD (`bytemuck`), and the render layer has zero `neo-store` dependency.
 
-### 1.2 非目标
+### 1.2 Non-goals
 
-- 不做 3D 建筑挤出、地形、阴影（Phase 2；届时才需要深度附件与自己的 prepass）。
-- 不做影像瓦片解码（`neo-io`）、不做样式求值（`neo-style`）、不做拾取的语义判定（`neo-geo`）。
-- 不实现自研 UI 框架：面板、菜单、对话框全部 egui。
+- No 3D building extrusion, terrain, or shadows (Phase 2; only then are a depth attachment and our own prepass needed).
+- No imagery tile decoding (`neo-io`), no style evaluation (`neo-style`), no semantic hit decisions (`neo-geo`).
+- No home-grown UI framework: panels, menus, and dialogs are all egui.
 
-### 1.3 所有权边界
+### 1.3 Ownership Boundaries
 
-| 资源 | 所有者 | `neo-render` 的取得方式 | 说明 |
+| Resource | Owner | How `neo-render` obtains it | Notes |
 |---|---|---|---|
-| `wgpu::Instance` / `Adapter` | `eframe` | `RenderState.instance` / `.adapter` | 不重复创建（重复实例=两块显存/两套队列） |
-| `wgpu::Device` / `Queue` | `eframe` | `RenderState.device` / `.queue` | 只在 `prepare`/资源创建时用，`paint` 里禁止 `submit` |
-| swapchain | `eframe` | 不直接访问 | 颜色格式只通过 `RenderState.target_format` 感知 |
-| 管线、buffer、纹理、atlas | `neo-render` | 存 `Renderer::callback_resources`（`type_map`） | 见 [ADR-0005](adr/0005-wgpu-egui-shared-device.md) |
-| `RendererOptions`（MSAA/深度） | 应用启动参数 | 构造 `egui_wgpu::Renderer` 时传入 | 必须与我们的管线匹配 |
+| `wgpu::Instance` / `Adapter` | `eframe` | `RenderState.instance` / `.adapter` | Never created twice (duplicate instances = two blocks of VRAM/two queues) |
+| `wgpu::Device` / `Queue` | `eframe` | `RenderState.device` / `.queue` | Used only in `prepare`/resource creation; `submit` is forbidden in `paint` |
+| swapchain | `eframe` | Not accessed directly | Color format is observed only via `RenderState.target_format` |
+| Pipeline, buffers, textures, atlas | `neo-render` | Stored in `Renderer::callback_resources` (`type_map`) | See [ADR-0005](adr/0005-wgpu-egui-shared-device.md) |
+| `RendererOptions` (MSAA/depth) | App startup arguments | Passed when constructing `egui_wgpu::Renderer` | Must match our pipelines |
 
-## 2 设计
+## 2 Design
 
-### 2.1 总管线
+### 2.1 Overall Pipeline
 
 ```
-neo-scene::SceneFrame（POD：MapVertex[] / 索引 / RenderBatch[] / LabelItem[]）
-   │  prepare（CallbackTrait::prepare，本帧 egui pass 之前）
-   │  1) pools.begin_frame(version)  2) 脏区间合并 → write_buffer / staging
-   │  3) camera uniform 32 B          4) 可选：编码拾取 pass（独立 encoder）
-   ▼  eframe 开 egui_render 通道（color = target_format，无深度，MSAA 由 egui 定）
-paint（CallbackTrait::paint）：set_viewport(viewport_in_pixels)
-   ├─ B fill    draw_indexed（earcut 三角形，预乘 alpha）
-   ├─ A stroke  draw_indexed（每段 4 顶点；casing 先宽后窄）
+neo-scene::SceneFrame (POD: MapVertex[] / indices / RenderBatch[] / LabelItem[])
+   │  prepare (CallbackTrait::prepare, before this frame's egui pass)
+   │  1) pools.begin_frame(version)  2) merge dirty ranges → write_buffer / staging
+   │  3) camera uniform 32 B         4) optional: encode pick pass (separate encoder)
+   ▼  eframe opens the egui_render pass (color = target_format, no depth, MSAA decided by egui)
+paint (CallbackTrait::paint): set_viewport(viewport_in_pixels)
+   ├─ B fill    draw_indexed (earcut triangles, premultiplied alpha)
+   ├─ A stroke  draw_indexed (4 vertices per segment; casing wide first, then narrow)
    ├─ C point   draw_indexed(0..6, 0, 0..instances)
-   ├─ D glyph   draw_indexed（atlas 四边形）
-   └─ D overlay 交给 egui 自己的 mesh（不抢 painter）
-   ▼  eframe：egui UI mesh → present
+   ├─ D glyph   draw_indexed (atlas quads)
+   └─ D overlay delegated to egui's own mesh (does not hijack the painter)
+   ▼  eframe: egui UI mesh → present
 ```
 
-`prepare` 与 `paint` 的分工是硬约束：`paint` 拿到的是 `&CallbackResources`（不可变）且已经在一个 `RenderPass<'static>` 里，**不能创建新 pass、不能 submit**；任何需要 encoder 的工作必须放进 `prepare` 并把 `CommandBuffer` 返回给 egui（egui 会在自己的命令之后提交）。
+The division of labor between `prepare` and `paint` is a hard constraint: `paint` receives `&CallbackResources` (immutable) and is already inside a `RenderPass<'static>`, so it **must not create new passes or submit**; any work needing an encoder must go into `prepare` and return the `CommandBuffer` to egui (egui submits it after its own commands).
 
-> 命名说明：[01](01-system-architecture.md) 与 [07](07-concurrency-and-tasks.md) 里该方法是 `MapRenderer::encode`，与本文的 `render` 是同一个方法——为对齐 `CallbackTrait::paint` 的语义统一改名为 `render`，三处以本文为准。
+> Naming note: in [01](01-system-architecture.md) and [07](07-concurrency-and-tasks.md) this method is named `MapRenderer::encode`, which is the same method as `render` here — it was renamed to align with the semantics of `CallbackTrait::paint`, and this document is authoritative in all three places.
 
-### 2.2 顶点格式与批次
+### 2.2 Vertex Format and Batches
 
 ```rust
-// crates/neo-scene/src/frame.rs —— 无 GPU 依赖，渲染层只消费
+// crates/neo-scene/src/frame.rs —— no GPU dependency; the render layer only consumes it
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MapVertex {
-    pub pos: [f32; 2],     // L2：投影平面米，已按 rebase_origin 重定基
-    pub normal: [f32; 2],  // 单位法线（stroke 用；fill/point 为 0）
-    pub across: f32,       // 四边形侧 -1.0/+1.0；fill/point 为 0
-    pub half_width: f32,   // 屏幕像素（与 zoom 无关）
-    pub color: [f32; 4],   // 预乘 alpha，sRGB 编码（见 §2.7）
-    pub uv: [f32; 2],      // 图标/图集；fill 为 (0,0)
+    pub pos: [f32; 2],     // L2: projection-plane meters, already rebased by rebase_origin
+    pub normal: [f32; 2],  // unit normal (used by stroke; 0 for fill/point)
+    pub across: f32,       // quad side -1.0/+1.0; 0 for fill/point
+    pub half_width: f32,   // screen pixels (independent of zoom)
+    pub color: [f32; 4],   // premultiplied alpha, sRGB-encoded (see §2.7)
+    pub uv: [f32; 2],      // icon/atlas; (0,0) for fill
     pub flags: u32,        // bit0 dash, bit1 casing, bit2 textured, bit3 aa_off
-    pub z: f32,            // 排序校验用（不参与深度测试）
+    pub z: f32,            // for sort validation (not part of depth testing)
 }
 const _: () = assert!(core::mem::size_of::<MapVertex>() == 56);
 ```
 
-`MapVertex` 的顶点属性布局（`VertexBufferLayout` 单缓冲，步长 56）：
+Vertex attribute layout for `MapVertex` (`VertexBufferLayout`, single buffer, stride 56):
 
-顶点属性布局（单缓冲，步长 56 B）：`pos` Float32x2 @0、`normal` Float32x2 @8、`across` Float32 @16、`half_width` Float32 @20、`color` Float32x4 @24、`uv` Float32x2 @40、`flags` Uint32 @48、`z` Float32 @52。
+Vertex attribute layout (single buffer, stride 56 B): `pos` Float32x2 @0, `normal` Float32x2 @8, `across` Float32 @16, `half_width` Float32 @20, `color` Float32x4 @24, `uv` Float32x2 @40, `flags` Uint32 @48, `z` Float32 @52.
 
 ```rust
 pub enum BatchKind { Fill, Stroke, Point, Glyph }
 pub struct RenderBatch {
     pub kind: BatchKind,
     pub layer: LayerId,          // MapCSS ::layer
-    pub z: i16,                  // z-index 合成键
-    pub texture: Option<TexId>,  // 图标/图集
+    pub z: i16,                  // z-index compositing key
+    pub texture: Option<TexId>,  // icon/atlas
     pub blend: BlendMode,        // Premul | Alpha | Additive
-    pub vr: Range<u32>,          // 顶点区间（同一 FrameSlot）
-    pub ir: Range<u32>,          // 索引区间（Fill/A 用；Point 为空）
-    pub inst: Range<u32>,        // Point/Glyph 实例区间
-    pub pick_base: u32,          // 拾取 ID 基准（与 vr 平行）
+    pub vr: Range<u32>,          // vertex range (within the same FrameSlot)
+    pub ir: Range<u32>,          // index range (used by Fill/A; empty for Point)
+    pub inst: Range<u32>,        // Point/Glyph instance range
+    pub pick_base: u32,          // pick ID base (parallel to vr)
     pub flags: BatchFlags,       // casing_of / overlay / dash_reset / no_pick
 }
 
 pub struct SceneFrame {
-    pub version: u64,            // 几何+样式版本；变化才上传
-    pub camera: CameraUniform,   // 每帧
+    pub version: u64,            // geometry+style version; upload only when it changes
+    pub camera: CameraUniform,   // per frame
     pub batches: Vec<RenderBatch>,
-    pub labels: Vec<LabelItem>,  // 世界坐标 + 文本 + 样式（D 类消费者）
-    pub stats: SceneStats,       // 顶点数/批次数/被剔除数（验收用）
+    pub labels: Vec<LabelItem>,  // world coordinates + text + style (class D consumer)
+    pub stats: SceneStats,       // vertex count/batch count/culled count (for acceptance)
 }
 
 #[repr(C)]
-pub struct CameraUniform {       // 32 B，16 B 对齐
-    pub scale: f32,              // 世界米 → 物理像素
-    pub offset: [f32; 2],        // rebase 后的平移（像素）
-    pub viewport: [f32; 2],      // 物理像素
+pub struct CameraUniform {       // 32 B, 16 B aligned
+    pub scale: f32,              // world meters → physical pixels
+    pub offset: [f32; 2],        // post-rebase translation (pixels)
+    pub viewport: [f32; 2],      // physical pixels
     pub _pad: [f32; 3],
 }
 ```
 
-### 2.3 管线 A：线 / 道路 stroke
+### 2.3 Pipeline A: Lines / Road Stroke
 
-- 拓扑 `TriangleList`，**每段 4 顶点 + 6 索引**（`[0,1,2, 0,2,3]`）。顶点着色器：`p_px = affine(pos) + normal * half_width * across`，坐标与线宽都在像素空间，故线宽天然与 zoom 无关。
-- 连接处（miter/bevel/round）由 `neo-geo` 生成的额外四边形补齐；round join 不生成扇面，用端点圆片 + 解析 AA。
-- 抗锯齿：片元用 `cov = saturate(1.0 - (abs(across) - 1.0 + 1.0/px))` 做 1 px 覆盖带，**不依赖 MSAA**。
-- 虚线：`flags.dash` + `uv.x = 累计弧长 / dash_period`，片元按 fract 取舍；`dash_reset` 表示新对象起点重置相位。
-- casing：**先**画宽 casing 批次、**后**画窄 fill 批次；由 `BatchFlags::casing_of` 保证相邻，任何 z-index 变化都必须整体移动这一对（`neo-scene` 负责，渲染层只校验顺序，违序则记一条 `debug!`）。当前实现（[11](11-style-presets-mapcss.md) §0）：每层一个独立 `BatchKind::Casing` 批次，提交顺序 `fill → casing → stroke → point`，桥梁外框/隧道虚线外框/过水路面水面都走这条通道。
-- 不走 `POLYGON_MODE_LINE`：它的线宽在所有后端都不可靠（多数实现固定 1 px），只作为调试开关。
+- Topology `TriangleList`, **4 vertices + 6 indices per segment** (`[0,1,2, 0,2,3]`). Vertex shader: `p_px = affine(pos) + normal * half_width * across`; both coordinates and line width are in pixel space, so line width is naturally independent of zoom.
+- Joins (miter/bevel/round) are filled in by extra quads generated by `neo-geo`; round joins do not generate fans but use endpoint discs + analytic AA.
+- Anti-aliasing: the fragment computes a 1 px coverage band with `cov = saturate(1.0 - (abs(across) - 1.0 + 1.0/px))`, **without relying on MSAA**.
+- Dashes: `flags.dash` + `uv.x = cumulative arc length / dash_period`, with the fragment discarding by fract; `dash_reset` means the phase resets at a new object's start.
+- Casing: draw the wide casing batch **first** and the narrow fill batch **after**; `BatchFlags::casing_of` guarantees adjacency, and any z-index change must move the whole pair together (`neo-scene` handles this; the render layer only validates order and logs a `debug!` on violation). Current implementation ([11](11-style-presets-mapcss.md) §0): one independent `BatchKind::Casing` batch per layer, with submission order `fill → casing → stroke → point`; bridge outlines, tunnel dashed outlines, and water surfaces on fords all go through this channel.
+- `POLYGON_MODE_LINE` is not used: its line width is unreliable on all backends (most implementations fix it at 1 px), so it remains a debug toggle only.
 
-### 2.4 管线 B：面 / 建筑 fill
+### 2.4 Pipeline B: Areas / Building Fill
 
-- 输入是 earcutr 产出的 `verts + tris`（[04](04-spatial-index-and-geometry.md) §2.6），索引 `Uint32`；一个批次内可合并多个面（相邻且同一样式），减少 draw call。
-- 混合用**预乘 alpha**（`wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING`）；样式里的直通 alpha 颜色在 `neo-scene` 打包时预乘一次，避免了「面叠面发黑」。
-- 边缘处理两档：`msaa_samples > 1` 时靠 MSAA；`msaa_samples == 1` 时接受硬边并把该事实记进 `GpuCaps`（不做超采样后处理，代价太大）。
-- 空洞/退化三角形：`AreaGeom.ok == false` 的面**不进 fill 管线**（已被 `neo-scene` 剔除并转成 stroke），渲染层不做几何修补。
+- Input is the `verts + tris` produced by earcutr ([04](04-spatial-index-and-geometry.md) §2.6), with `Uint32` indices; multiple areas (adjacent, same style) can be merged within one batch to reduce draw calls.
+- Blending uses **premultiplied alpha** (`wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING`); straight alpha colors in styles are premultiplied once when `neo-scene` packs them, avoiding "areas darken where they overlap".
+- Two edge-handling tiers: with `msaa_samples > 1`, rely on MSAA; with `msaa_samples == 1`, accept hard edges and record that fact in `GpuCaps` (no supersampling post-process; the cost is too high).
+- Holes/degenerate triangles: areas with `AreaGeom.ok == false` **do not enter the fill pipeline** (already culled by `neo-scene` and converted to stroke); the render layer performs no geometry repair.
 
-### 2.5 管线 C：点 / 图标 instancing
+### 2.5 Pipeline C: Points / Icon Instancing
 
-- 6 顶点 quad 由 `vertex_index` 生成，实例缓冲步长 48 B：
+- A 6-vertex quad is generated from `vertex_index`, with an instance buffer stride of 48 B:
 
 ```rust
 #[repr(C)]
 pub struct PointInstance {
-    pub pos: [f32; 2],     // L2 世界
-    pub size_px: [f32; 2], // 图标宽高（像素）
-    pub rot: f32,          // 弧度
-    pub tint: [f32; 4],    // 预乘
-    pub uv_rect: [f32; 4], // atlas 子矩形
+    pub pos: [f32; 2],     // L2 world
+    pub size_px: [f32; 2], // icon width/height (pixels)
+    pub rot: f32,          // radians
+    pub tint: [f32; 4],    // premultiplied
+    pub uv_rect: [f32; 4], // atlas sub-rectangle
 }
 ```
 
-- 一次 `draw_indexed(0..6, 0, 0..n)` 画完一个图层的所有点；不同 atlas 页 = 不同批次。
-- 节点手柄、选中框**不进** C：它们是 UI 语义（可 hover、可拖拽），走 D 类 overlay，避免每一帧为手柄重传实例缓冲。
+- One `draw_indexed(0..6, 0, 0..n)` draws all points of a layer; different atlas pages = different batches.
+- Node handles and selection boxes **do not** enter C: they are UI semantics (hoverable, draggable) and go through class D overlays, avoiding per-frame re-upload of the instance buffer for handles.
 
-### 2.6 管线 D：文本与选中叠加（含决策）
+### 2.6 Pipeline D: Text and Selection Overlays (with Decision)
 
-| 方案 | 实现 | 优点 | 代价 | 结论 |
+| Option | Implementation | Pros | Cons | Conclusion |
 |---|---|---|---|---|
-| D1 egui overlay | `egui::Painter::text` 逐标签 | 零新基础设施、i18n/字体/缩放直接复用 egui | 每个标签一次 layout（egui 的 galley 缓存能缓解但不消除）；10k+ 标签不可行 | **Phase 1 出货**，标签数上限 ≤ 2k/帧 |
-| D2 专用 glyph atlas | `cosmic-text` 做整形 → 自建 atlas → instanced glyph quads | 单次 draw、无 layout 抖动、可做 SDF | 需要字形缓存、换行/避让、RTL、CJK fallback 全套 | **Phase 2 目标**，`LabelItem` 接口已预留 |
-| D3 混合 | 地图名走 D2，选中/量测/提示走 D1 | 各用所长 | 两套坐标系要对齐（都用 `PaintCallbackInfo` 的像素） | **最终形态** |
+| D1 egui overlay | `egui::Painter::text` per label | No new infrastructure; i18n/fonts/scaling reuse egui directly | One layout per label (egui's galley cache mitigates but does not eliminate); 10k+ labels are infeasible | **Phase 1 ship**, label count capped at ≤ 2k/frame |
+| D2 dedicated glyph atlas | Shape with `cosmic-text` → own atlas → instanced glyph quads | Single draw, no layout jitter, SDF possible | Needs a full set of glyph caching, line breaking/collision avoidance, RTL, and CJK fallback | **Phase 2 target**; the `LabelItem` interface is already reserved |
+| D3 hybrid | Map names via D2; selection/measurement/tooltips via D1 | Each used where it is strong | Two coordinate systems must align (both use `PaintCallbackInfo` pixels) | **Final form** |
 
-决策：**D3**，但按 D1 → D2 的顺序交付；`SceneFrame.labels` 的形状不随实现变化，切换只改 `LabelRenderer` 内部。
+Decision: **D3**, delivered in the order D1 → D2; the shape of `SceneFrame.labels` does not change with the implementation, and switching only changes the internals of `LabelRenderer`.
 
-### 2.7 深度、混合、MSAA、sRGB
+### 2.7 Depth, Blending, MSAA, sRGB
 
-| 项 | 决策 | 依据 / 注意 |
+| Item | Decision | Rationale / caveats |
 |---|---|---|
-| 深度 | Phase 1 **关闭**（`RendererOptions.depth_stencil_format = None`），画家算法排序 | egui 的通道里深度 `load = Clear(1.0)`、`store = Discard`；跨 callback 复用深度不可靠 |
-| 深度（Phase 2） | `Some(Depth32Float)`，管线 `DepthStencilState { depth_write_enabled: Some(true), depth_compare: Some(Less) }` | 两个字段在 wgpu 30 是 `Option`；prepass 必须放 `prepare` 并自建纹理 |
-| 混合 | 预乘 alpha（fill/point/glyph）；`Additive` 仅用于高亮辉光 | `BlendState::PREMULTIPLIED_ALPHA_BLENDING` 与 egui 自身一致，避免 UI/地图重叠发黑 |
-| MSAA | 启动时探测 `get_texture_format_features(fmt).flags` 是否含 `MULTISAMPLE_X4`，优先 4x，否则 1 | 管线的 `MultisampleState.count` 必须 **等于** `RendererOptions.msaa_samples.max(1)`，否则是运行时校验错误（不是编译错误） |
-| sRGB | 读 `target_format.is_srgb()` 一次性分流（`GpuCaps.srgb`） | egui 建议 swapchain 用 gamma 空间（`Bgra8Unorm`）；若平台强制 `*Srgb`，我们的片元必须输出线性值，否则双 gamma 发白 |
-| 颜色通路 | 样式颜色（sRGB）→ 预乘 → 顶点；着色器**不做** gamma 变换，只做 `srgb` 分支的 `linear = pow(color, 2.2)` | 只在 `GpuCaps.srgb == true` 时启用该分支；两条路径用同一份 golden 图验收 |
-| DPI | `viewport_in_pixels()` 取整做 `set_viewport`，`pixels_per_point` 只用于 UI 尺寸 | 分数 DPI（1.25/1.5/1.75）不得进投影矩阵，否则 1 px 接缝 |
+| Depth | Phase 1 **off** (`RendererOptions.depth_stencil_format = None`), painter's-algorithm sorting | In egui's pass, depth is `load = Clear(1.0)`, `store = Discard`; reusing depth across callbacks is unreliable |
+| Depth (Phase 2) | `Some(Depth32Float)`, pipeline `DepthStencilState { depth_write_enabled: Some(true), depth_compare: Some(Less) }` | Both fields are `Option`s in wgpu 30; the prepass must live in `prepare` and create its own textures |
+| Blending | Premultiplied alpha (fill/point/glyph); `Additive` only for highlight glows | `BlendState::PREMULTIPLIED_ALPHA_BLENDING` matches egui itself, avoiding darkened overlaps between UI and map |
+| MSAA | Probe at startup whether `get_texture_format_features(fmt).flags` contains `MULTISAMPLE_X4`; prefer 4x, else 1 | The pipeline's `MultisampleState.count` must **equal** `RendererOptions.msaa_samples.max(1)`, otherwise it is a runtime validation error (not a compile error) |
+| sRGB | Read `target_format.is_srgb()` once and branch (`GpuCaps.srgb`) | egui recommends a gamma-space swapchain (`Bgra8Unorm`); if the platform forces `*Srgb`, our fragment must output linear values, otherwise double gamma makes it look washed out |
+| Color path | Style color (sRGB) → premultiply → vertex; the shader does **not** apply gamma transforms, only the `srgb` branch's `linear = pow(color, 2.2)` | Enable that branch only when `GpuCaps.srgb == true`; validate both paths against the same golden images |
+| DPI | `viewport_in_pixels()` rounded for `set_viewport`; `pixels_per_point` used only for UI sizing | Fractional DPI (1.25/1.5/1.75) must not enter the projection matrix, otherwise 1 px seams appear |
 
-### 2.8 BufferPool 与增量更新
+### 2.8 BufferPool and Incremental Updates
 
-- **槽位**：`FRAMES_IN_FLIGHT = 2`。每槽独立持有 vertex/index/instance/uniform buffer，避免「上一帧还在读、这一帧已覆盖」。
-- **逻辑池**：按 `BatchKey { layer, z, kind, texture }` 维护稳定分配，`RenderBatch` 的区间在 `version` 不变时**完全不变**，这是「零每帧重建」的关键。
-- **脏区间上传**：`version` 变化时，把新旧批次的区间做差集 → 合并相邻区间（间隔 < 4 KiB 就并）→ 单段 < 64 KiB 用 `queue.write_buffer`，否则写入 staging buffer 后 `copy_buffer_to_buffer`（大块 `write_buffer` 会隐式分配暂存并可能阻塞）。
-- **增长策略**：容量按 1.5× 增长，永不缩容；单槽超过 512 MiB 才在新槽里做一次整理（不原地搬）。
-- **稳态写入量**：32 B uniform + 少量脏段；`PrepareStats { uploaded_bytes, draw_calls, batches }` 进 puffin 与验收断言。
-- **禁止**：每帧 `create_buffer_init`、每帧 `create_bind_group`、`paint` 里 `queue.submit`。
+- **Slots**: `FRAMES_IN_FLIGHT = 2`. Each slot independently holds vertex/index/instance/uniform buffers, avoiding "the previous frame is still reading while this frame overwrites".
+- **Logical pool**: stable allocation keyed by `BatchKey { layer, z, kind, texture }`; the `RenderBatch` ranges stay **completely unchanged** while `version` is unchanged — this is the key to "zero per-frame rebuild".
+- **Dirty-range upload**: when `version` changes, diff the old and new batch ranges → merge adjacent ranges (merge when the gap is < 4 KiB) → for segments < 64 KiB use `queue.write_buffer`, otherwise write to a staging buffer and `copy_buffer_to_buffer` (large `write_buffer` calls allocate staging implicitly and may block).
+- **Growth**: capacity grows by 1.5× and never shrinks; only when a single slot exceeds 512 MiB is a defragmentation done into a new slot (no in-place moves).
+- **Steady-state write volume**: 32 B uniform + a few dirty segments; `PrepareStats { uploaded_bytes, draw_calls, batches }` feeds puffin and acceptance assertions.
+- **Prohibited**: per-frame `create_buffer_init`, per-frame `create_bind_group`, `queue.submit` inside `paint`.
 
-### 2.9 间接绘制与降级
+### 2.9 Indirect Drawing and Degradation
 
-| 能力 | 探测 | 用途 | 缺失时 |
+| Capability | Probe | Use | When missing |
 |---|---|---|---|
-| `multi_draw_indexed_indirect` | wgpu 30 中**不再是 feature**（已并入核心），直接可用 | 一次提交几十~几百个批次 | — |
-| `MULTI_DRAW_INDIRECT_COUNT` | `adapter.features().contains(..)` | GPU 侧决定绘制数（拾取 pass、动态 LOD） | CPU 端读回计数，退化为固定次数 |
-| `INDIRECT_FIRST_INSTANCE` | 同上 | 合并多个实例化批次到一次调用 | 每批一次 `draw_indexed` |
-| `TIMESTAMP_QUERY`（含 `_INSIDE_ENCODERS`/`_INSIDE_PASSES`） | 同上 | GPU 阶段计时 | 只用 puffin 的 CPU 区间 |
-| `POLYGON_MODE_LINE` | 同上 | 仅调试线框 | 无 |
+| `multi_draw_indexed_indirect` | **no longer a feature** in wgpu 30 (merged into core), available directly | Submit tens to hundreds of batches at once | — |
+| `MULTI_DRAW_INDIRECT_COUNT` | `adapter.features().contains(..)` | Determine draw count on the GPU (pick pass, dynamic LOD) | Read the count back on the CPU, degrading to a fixed count |
+| `INDIRECT_FIRST_INSTANCE` | Same as above | Merge multiple instanced batches into one call | One `draw_indexed` per batch |
+| `TIMESTAMP_QUERY` (including `_INSIDE_ENCODERS`/`_INSIDE_PASSES`) | Same as above | GPU stage timing | Only puffin's CPU spans |
+| `POLYGON_MODE_LINE` | Same as above | Debug wireframe only | None |
 
-策略：**默认走 `draw_indexed` 循环**（批次数量在几十量级，间接绘制收益有限），只有在 `batches > 512`（极端样式/大量图层）或拾取 pass 时才切间接路径；两条路径共用同一 `RenderBatch` 数组，切换是纯编码差异。
+Strategy: **default to the `draw_indexed` loop** (batch counts are on the order of tens, so indirect drawing yields limited benefit); switch to the indirect path only when `batches > 512` (extreme styles/many layers) or for the pick pass; both paths share the same `RenderBatch` array, and switching is purely an encoding difference.
 
-### 2.10 GPU 拾取（ID buffer）
+### 2.10 GPU Picking (ID Buffer)
 
-- 目标：`R32Uint` 颜色附件 + `Depth32Float`；无混合、无 AA；每个可见图元写入 `(obj_index << 8) | kind`。
-- 回读只取**1×1 texel**：`copy_texture_to_buffer` 到 256 B 对齐的缓冲（`bytes_per_row = 256`，这是硬性对齐要求，不能是 4），之后 `map_async`。
-- 同步成本：`device.poll(PollType::wait_indefinitely())` 会阻塞到 GPU 完成当前提交——相当于一次全流水线 flush，**绝不放在 hover 路径**。
-- 异步路径：点击时 `request()` → `prepare` 里编码 → 下一帧 `try_take()`（`PollType::Poll`，非阻塞）→ 命中则更新选中。1 帧延迟对点击可接受；hover 仍用 CPU 拾取。
-- 禁用条件：`neo-render` 的 `pick-readback` feature 关闭、`max_texture_dimension_2d < 视口`、或软件适配器 → 直接返回 `None`，上层自动回落 CPU（[02](02-workspace-and-dependency-rules.md) §3 的 feature 表）。
+- Target: an `R32Uint` color attachment + `Depth32Float`; no blending, no AA; each visible primitive writes `(obj_index << 8) | kind`.
+- Readback copies only **1×1 texel**: `copy_texture_to_buffer` into a 256 B-aligned buffer (`bytes_per_row = 256`, a hard alignment requirement that cannot be 4), then `map_async`.
+- Synchronization cost: `device.poll(PollType::wait_indefinitely())` blocks until the GPU finishes the current submission — equivalent to a full pipeline flush, and it is **never placed on the hover path**.
+- Async path: `request()` on click → encode in `prepare` → `try_take()` on the next frame (`PollType::Poll`, non-blocking) → update selection on a hit. One frame of latency is acceptable for clicks; hover still uses CPU picking.
+- Disabling conditions: `neo-render`'s `pick-readback` feature off, `max_texture_dimension_2d < viewport`, or a software adapter → return `None` directly, and upper layers fall back to CPU automatically (feature table in [02](02-workspace-and-dependency-rules.md) §3).
 
-> 注意：wgpu 30 的 `Surface::get_current_texture()` 返回 `CurrentSurfaceTexture`（`Success/Suboptimal/Timeout/Occluded/Outdated/Lost/Validation`），`Queue::present(t)` 才呈现。NEO 不拥有 surface，仅在自建离屏渲染（导出 PNG、golden 测试）时走这条路径，且必须处理 `Lost`（重建 surface 而非仅 `configure`）。
+> Note: wgpu 30's `Surface::get_current_texture()` returns `CurrentSurfaceTexture` (`Success/Suboptimal/Timeout/Occluded/Outdated/Lost/Validation`), and `Queue::present(t)` performs presentation. NEO does not own the surface; this path is used only for self-managed offscreen rendering (PNG export, golden tests), and `Lost` must be handled (recreate the surface rather than merely `configure`).
 
-### 2.11 文字图集与 CJK 字体资产
+### 2.11 Text Atlas and CJK Font Assets
 
-- atlas：`R8Unorm` 1024×1024、两页起步（拉丁/符号 + CJK），按需扩容到 4 页；字形缓存键 `(font_id, px_size_bucket, glyph_id, subpixel_x)`，`px_size_bucket` 取 1/4 像素桶以避免缓存爆炸。
-- 整形：`cosmic-text`（版本未核实 **> 待验证**）负责换行、双向文本、font fallback；`glyphon` 只在它已支持 wgpu 30 时才考虑，否则自建 atlas 采样路径（atlas 本身不依赖任何 crate）。
-- CJK 资产策略：**不把字体编译进二进制**。启动时按平台枚举系统字体（Windows 的 `msyh`/`simhei`、Linux 的 Noto CJK、macOS 的 `PingFang`），找不到再提示用户选择；可选下载 OFL 授权的 Noto Sans CJK 到用户数据目录（体积与 GPL 隔离双重原因，见 [11](11-style-presets-mapcss.md) §2.13）。
-- 标签避让在 `neo-scene`（屏幕空间网格，[04](04-spatial-index-and-geometry.md) §2.8），渲染层只画「已决定要画」的标签，不做碰撞。
+- Atlas: `R8Unorm` 1024×1024, starting with two pages (Latin/symbols + CJK), growing to 4 pages as needed; glyph cache key `(font_id, px_size_bucket, glyph_id, subpixel_x)`, with `px_size_bucket` quantized to 1/4 pixel to avoid cache explosion.
+- Shaping: `cosmic-text` (version unverified **> To be verified**) handles line breaking, bidirectional text, and font fallback; `glyphon` is considered only if it already supports wgpu 30, otherwise we build our own atlas sampling path (the atlas itself depends on no crate).
+- CJK asset strategy: **do not compile fonts into the binary**. At startup, enumerate platform system fonts (Windows `msyh`/`simhei`, Linux Noto CJK, macOS `PingFang`) and prompt the user to choose if none is found; optionally download OFL-licensed Noto Sans CJK to the user data directory (both due to size and GPL isolation, see [11](11-style-presets-mapcss.md) §2.13).
+- Label collision avoidance happens in `neo-scene` (screen-space grid, [04](04-spatial-index-and-geometry.md) §2.8); the render layer only draws labels that have "already been decided to be drawn" and performs no collision handling.
 
-### 2.12 LOD、裁剪、合批
+### 2.12 LOD, Culling, Batching
 
-- 裁剪：CPU 侧视锥（AABB）裁剪已在可见集完成；GPU 侧不做 per-primitive 裁剪，靠视口裁剪。
-- 合批：排序键 `(layer, z, kind, texture, blend)`；相邻且同键的批次合并。稳定排序保证同 `z` 下按 `ObjId` 有序 → 同一份数据的渲染结果可复现（golden 测试依赖这一点）。
-- LOD 阈值只在 `neo-scene` 判定；渲染层接收到的就是「该画什么」，避免两处阈值打架。
-- 大范围平移（pan）**不触发** `version` 变化（重定基在同一 64 km 网格内），只更新 uniform；缩放跨 LOD 档才重建。
+- Culling: CPU-side frustum (AABB) culling is already done in the visible set; the GPU side does no per-primitive culling, relying on viewport clipping.
+- Batching: sort key `(layer, z, kind, texture, blend)`; adjacent batches with the same key are merged. Stable sorting guarantees `ObjId` order within the same `z` → rendering of the same data is reproducible (golden tests rely on this).
+- LOD thresholds are decided only in `neo-scene`; the render layer receives "what should be drawn", avoiding conflicting thresholds in two places.
+- Large pans **do not** trigger a `version` change (rebasing stays within the same 64 km grid) and only update the uniform; rebuilds happen only when zoom crosses LOD levels.
 
-### 2.13 帧预算（16.6 ms）
+### 2.13 Frame Budget (16.6 ms)
 
-> 下表是**设计预算**（分配目标），不是测量值。真实数字【待实测，见 docs/14-performance-and-verification.md】。
+> The table below is a **design budget** (allocation target), not measured values. Real numbers are [pending measurement, see docs/14-performance-and-verification.md].
 
-| 阶段 | 线程 | 预算 (ms) | 超预算动作 |
+| Stage | Thread | Budget (ms) | Action when over budget |
 |---|---|---|---|
-| 输入 + egui UI 逻辑 | 主 | 3.0 | 折叠面板/延迟布局 |
-| 场景差量 + 合批 | 主 | 1.5 | 复用上一帧 `SceneFrame` |
-| uniform + 脏区间上传 | 主 | 0.8 | 脏区间延后一帧（视觉无感） |
-| egui tessellation + callback 编码 | 主 | 2.7 | 降标签数 |
-| 主线程小计 | 主 | **8.0** | 有 8.6 ms 余量 |
-| 几何重建（可跨帧） | 工作 | 4.0 | 提高 LOD 阈值、减少每帧对象数 |
-| 样式求值（可跨帧） | 工作 | 2.0 | 命中 tag 指纹缓存 |
-| fill / stroke / point / glyph | GPU | 2.5 / 2.5 / 0.6 / 1.2 | 合并批次、降 MSAA |
-| egui composite + present | GPU | 1.5 + 0.5 | 关 dithering |
+| Input + egui UI logic | Main | 3.0 | Collapse panels/defer layout |
+| Scene diff + batching | Main | 1.5 | Reuse the previous frame's `SceneFrame` |
+| uniform + dirty-range upload | Main | 0.8 | Defer dirty ranges by one frame (visually imperceptible) |
+| egui tessellation + callback encoding | Main | 2.7 | Reduce label count |
+| Main-thread subtotal | Main | **8.0** | 8.6 ms of headroom |
+| Geometry rebuild (resumable across frames) | Worker | 4.0 | Raise LOD thresholds, reduce objects per frame |
+| Style evaluation (resumable across frames) | Worker | 2.0 | Hit the tag-fingerprint cache |
+| fill / stroke / point / glyph | GPU | 2.5 / 2.5 / 0.6 / 1.2 | Merge batches, lower MSAA |
+| egui composite + present | GPU | 1.5 + 0.5 | Disable dithering |
 
-### 2.14 GPU 能力矩阵与降级
+### 2.14 GPU Capability Matrix and Degradation
 
-| 能力 | DX12 | Vulkan | Metal | 软件（WARP/llvmpipe） | NEO 用法 | 缺失时 |
+| Capability | DX12 | Vulkan | Metal | Software (WARP/llvmpipe) | NEO usage | When missing |
 |---|---|---|---|---|---|---|
-| `Bgra8Unorm` / `Rgba8Unorm` 呈现 | ✅ | ✅ | ✅ | ✅ | 首选格式 | 回落 `*Srgb` + 线性输出分支 |
-| `Depth32Float` | ✅ | ✅ | ✅ | ✅ | Phase 2 | 无深度（Phase 1 本就不需要） |
-| MSAA 4x | ✅ | ✅ | ✅ | 常见缺失 | 面/图标 | `msaa_samples = 1`，面边缘硬边 |
-| `R32Uint` 颜色附件 | ✅ | ✅ | ✅ | ✅ | GPU 拾取 | 关 GPU 拾取 |
-| `TIMESTAMP_QUERY` | ✅ | ✅ | ✅ | 常缺 | 阶段计时 | puffin CPU 计时 |
-| 间接绘制（核心） | ✅ | ✅ | ✅ | ✅ | 大批次 | 循环 draw |
-| `MULTI_DRAW_INDIRECT_COUNT` | ✅ | ✅(1.2+) | ❌ | ❌ | 拾取 pass | CPU 计数 |
-| `INDIRECT_FIRST_INSTANCE` | ✅ | ✅ | ✅ | ❌ | 实例合批 | 每批一次 draw |
+| `Bgra8Unorm` / `Rgba8Unorm` presentation | ✅ | ✅ | ✅ | ✅ | Preferred format | Fall back to `*Srgb` + linear-output branch |
+| `Depth32Float` | ✅ | ✅ | ✅ | ✅ | Phase 2 | No depth (Phase 1 does not need it anyway) |
+| MSAA 4x | ✅ | ✅ | ✅ | Commonly missing | Areas/icons | `msaa_samples = 1`, hard edges on area borders |
+| `R32Uint` color attachment | ✅ | ✅ | ✅ | ✅ | GPU picking | Disable GPU picking |
+| `TIMESTAMP_QUERY` | ✅ | ✅ | ✅ | Often missing | Stage timing | puffin CPU timing |
+| Indirect drawing (core) | ✅ | ✅ | ✅ | ✅ | Large batches | Loop draw |
+| `MULTI_DRAW_INDIRECT_COUNT` | ✅ | ✅(1.2+) | ❌ | ❌ | Pick pass | CPU count |
+| `INDIRECT_FIRST_INSTANCE` | ✅ | ✅ | ✅ | ❌ | Instance batching | One draw per batch |
 
-**地板**：`Limits` 请求 `Limits::downlevel_defaults()`（`max_texture_dimension_2d = 2048`、`max_uniform_buffer_binding_size = 16 KiB`、`max_vertex_attributes = 16`、`max_inter_stage_shader_variables = 15`、`max_color_attachments = 4`），再与 `adapter.limits()` 取 `min` 后向上争取。`DeviceDescriptor { label, required_features, required_limits, experimental_features, memory_hints, trace }` 一次填全（wgpu 30 的 `request_device` 只收 `&DeviceDescriptor`，没有第二个参数）。
+**Floor**: `Limits` requests `Limits::downlevel_defaults()` (`max_texture_dimension_2d = 2048`, `max_uniform_buffer_binding_size = 16 KiB`, `max_vertex_attributes = 16`, `max_inter_stage_shader_variables = 15`, `max_color_attachments = 4`), then takes `min` with `adapter.limits()` and negotiates upward. `DeviceDescriptor { label, required_features, required_limits, experimental_features, memory_hints, trace }` is filled in one go (wgpu 30's `request_device` takes only `&DeviceDescriptor`, with no second argument).
 
-## 3 关键接口
+## 3 Key Interfaces
 
 ```rust
 // ── neo-render/src/caps.rs ──────────────────────────────────────────────────
 pub struct GpuCaps {
     pub target_format: wgpu::TextureFormat,
     pub srgb: bool,
-    pub msaa_samples: u32,             // 1 或 4
+    pub msaa_samples: u32,             // 1 or 4
     pub limits: wgpu::Limits,
     pub has_multi_draw_count: bool,
     pub has_indirect_first_instance: bool,
@@ -285,10 +285,10 @@ pub struct MapRenderer {
 }
 
 impl MapRenderer {
-    /// 只建管线与静态资源；不持有 Instance/Device 的所有权。
+    /// Creates pipelines and static resources only; does not own the Instance/Device.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, caps: GpuCaps) -> Self;
 
-    /// 每帧一次：上传脏区间 + 写 uniform + 可选编码拾取 pass。
+    /// Once per frame: upload dirty ranges + write the uniform + optionally encode the pick pass.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -298,7 +298,7 @@ impl MapRenderer {
         encoder: &mut wgpu::CommandEncoder,
     ) -> PrepareStats;
 
-    /// 由 `CallbackTrait::paint` 转发；只发 draw，不建 pass、不 submit。
+    /// Forwarded by `CallbackTrait::paint`; only issues draws, never creates passes or submits.
     pub fn render(&self, pass: &mut wgpu::RenderPass<'static>, info: egui_wgpu::PaintCallbackInfo);
 }
 
@@ -312,137 +312,137 @@ pub struct FrameSlot {
 pub struct BufferPool { /* slots: [FrameSlot; 2], cur: usize, keys: HashMap<BatchKey, Range<u32>> */ }
 impl BufferPool {
     pub fn new(device: &wgpu::Device, caps: &GpuCaps) -> Self;
-    pub fn begin_frame(&mut self, version: u64) -> bool;      // true = version 变了
+    pub fn begin_frame(&mut self, version: u64) -> bool;      // true = version changed
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &SceneFrame) -> UploadStats;
     pub fn slot(&self) -> &FrameSlot;
-    pub fn trim(&mut self, budget_bytes: u64) -> bool;        // 只在跨槽整理时调用
+    pub fn trim(&mut self, budget_bytes: u64) -> bool;        // called only during cross-slot defragmentation
 }
 
 // ── neo-render/src/picking.rs ───────────────────────────────────────────────
-pub struct PickingPass { /* R32Uint 目标、Depth32Float、256B 对齐 readback、pending 队列 */ }
+pub struct PickingPass { /* R32Uint target, Depth32Float, 256B-aligned readback, pending queue */ }
 impl PickingPass {
     pub fn new(device: &wgpu::Device, caps: &GpuCaps) -> Self;
     pub fn resize(&mut self, device: &wgpu::Device, size_px: [u32; 2]);
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, frame: &SceneFrame, pool: &BufferPool) -> wgpu::CommandBuffer;
-    pub fn request(&mut self, px: [u32; 2]) -> PickRequestId;                  // 异步
-    pub fn try_take(&mut self, device: &wgpu::Device, id: PickRequestId) -> Option<Option<ObjId>>; // Poll，非阻塞
+    pub fn request(&mut self, px: [u32; 2]) -> PickRequestId;                  // asynchronous
+    pub fn try_take(&mut self, device: &wgpu::Device, id: PickRequestId) -> Option<Option<ObjId>>; // Poll, non-blocking
     pub fn take_blocking(&mut self, device: &wgpu::Device, id: PickRequestId) -> Option<ObjId>;    // PollType::wait_indefinitely()
 }
 
 ```
 
-## 4 时序
+## 4 Sequencing
 
 ```
-帧 N（稳态，version 未变）
+Frame N (steady state, version unchanged)
   egui::Context::run
     │
     ├─ ui.painter().add( MapCallback { frame } )
     │
-    ├─ prepare():  pools.begin_frame(v) → false（不变）
-    │              upload: 仅 uniform 32 B
+    ├─ prepare():  pools.begin_frame(v) → false (unchanged)
+    │              upload: uniform 32 B only
     │
-    ├─ egui tessellate → clipped_primitives（含 MapCallback）
+    ├─ egui tessellate → clipped_primitives (including MapCallback)
     │
     ├─ eframe: begin_render_pass("egui_render")
     │    color: swapchain/msaa view, load = Clear(clear_color)
-    │    depth: 仅当 RendererOptions::depth_stencil_format.is_some()
+    │    depth: only when RendererOptions::depth_stencil_format.is_some()
     │
-    ├─ renderer.render(): egui 自己的 mesh 与我们的 paint 按图元顺序执行
+    ├─ renderer.render(): egui's own mesh and our paint execute in primitive order
     │    └─ MapCallback::paint → fill → stroke → point → glyph
     │
     └─ present
 ```
 
 ```
-click(x,y) ─► PickingPass::request(px)                 // 帧 N，返回 PickRequestId
-prepare(帧 N)  encode: R32Uint pass（仅可见集）→ copy_texture_to_buffer(1×1, bytes_per_row = 256)
-prepare(帧 N+1) try_take()：PollType::Poll（非阻塞）→ ObjId = id >> 8；Pending 再等 1 帧，>3 帧放弃
-hover 路径永远走 CPU（neo-geo::HitTester），不触发 readback
+click(x,y) ─► PickingPass::request(px)                 // frame N, returns PickRequestId
+prepare(frame N)  encode: R32Uint pass (visible set only) → copy_texture_to_buffer(1×1, bytes_per_row = 256)
+prepare(frame N+1) try_take(): PollType::Poll (non-blocking) → ObjId = id >> 8; Pending waits another frame, gives up after >3 frames
+hover path always uses the CPU (neo-geo::HitTester) and never triggers readback
 ```
 
-## 5 权衡与替代
+## 5 Tradeoffs and Alternatives
 
-| 决策 | 备选 | 取此的理由 | 代价 |
+| Decision | Alternative | Why this one | Cost |
 |---|---|---|---|
-| 共享 eframe 的 Device/Queue，用 `CallbackTrait` 绘制 | 自建 `Instance`/`Surface`/事件循环 | 单一队列、单一 present、无第二块显存；DPI/窗口/IME 全由 eframe 处理 | 受 egui 通道约束：不能改 load op、深度必须自备、MSAA 由 `RendererOptions` 决定 |
-| 几何预生成 + 脏区间上传 | 每帧把可见集写进顶点缓冲 | 稳态上传≈0，CPU 与 GPU 解耦 | `version` 边界有一次上传尖峰，需分帧 |
-| 画家算法（无深度） | 深度附件 + 深度测试 | 2D 地图本来就要按样式 z 排序；egui 的 depth `store = Discard` 让跨 callback 深度不可依赖 | Phase 2 若做挤出需自带 prepass |
-| 解析 AA（stroke） | 全靠 MSAA | 线宽/虚线在 1x 下也干净，MSAA 关掉不掉质量 | 片元多几条指令 |
-| 预乘 alpha 全链路 | 直通 alpha + 逐管线 blend state | 与 egui 一致，面叠面不发黑 | 颜色打包时多一次乘法（缓存） |
-| CPU 拾取为主 | 全 GPU ID buffer | 无 flush、无延迟、复用已有索引 | 面积内部精度依赖三角化一致性 |
-| `write_buffer` 小段 + staging 大段 | 全部 `write_buffer` | 避免大块写触发隐式暂存与阻塞 | 两条上传路径要各自测试 |
-| 间接绘制按需启用 | 一律间接 | 几十个批次时循环 draw 更简单、可读性高 | 极端样式下需要两条路径都维护 |
+| Share eframe's Device/Queue and draw via `CallbackTrait` | Build our own `Instance`/`Surface`/event loop | Single queue, single present, no second VRAM allocation; DPI/window/IME all handled by eframe | Constrained by egui's pass: load op cannot be changed, depth must be self-provided, MSAA is decided by `RendererOptions` |
+| Pre-generated geometry + dirty-range upload | Write the visible set into vertex buffers every frame | Steady-state upload ≈ 0, CPU and GPU decoupled | One upload spike at `version` boundaries, needs frame budgeting |
+| Painter's algorithm (no depth) | Depth attachment + depth test | A 2D map already needs style-based z sorting; egui's depth `store = Discard` makes cross-callback depth unreliable | Phase 2 extrusion would need its own prepass |
+| Analytic AA (stroke) | Rely entirely on MSAA | Line width/dashes stay clean at 1x; turning MSAA off loses no quality | A few extra fragment instructions |
+| Premultiplied alpha end to end | Straight alpha + per-pipeline blend state | Consistent with egui; overlapping areas do not darken | One extra multiply when packing colors (cached) |
+| CPU picking as primary | Full GPU ID buffer | No flush, no latency, reuses the existing index | Interior-area precision depends on triangulation consistency |
+| `write_buffer` for small segments + staging for large ones | All `write_buffer` | Avoids implicit staging and blocking on large writes | Two upload paths must be tested separately |
+| Indirect drawing enabled on demand | Always indirect | Loop draws are simpler and more readable for tens of batches | Both paths must be maintained under extreme styles |
 
-## 6 风险
+## 6 Risks
 
-| # | 风险 | 影响 | 缓解 |
+| # | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R1 | 管线与 egui 通道不匹配（format/count/depth） | 运行时校验错误，整帧黑屏 | `GpuCaps` 单一来源生成管线；启动自检 1 帧 |
-| R2 | 双 gamma（`*Srgb` 平台） | 地图发白/发灰，与 UI 不一致 | 启动分流 + 两条路径的 golden 图 |
-| R3 | 每帧重建 buffer 悄悄回归 | 帧时间随对象数线性上升 | `PrepareStats.uploaded_bytes` 断言（稳态 < 4 KiB）+ CI 基准 |
-| R4 | 拾取 readback 阻塞主线程 | 点击时掉帧到 < 20 fps | 强制异步路径；hover 禁 readback；超时回退 |
-| R5 | 软件适配器（WARP）缺 MSAA/timestamp | 启动失败或黑屏 | 能力探测 + 降级表；`Error::Wgpu` 显示可读信息而非 panic |
-| R6 | 字体/atlas 缓存膨胀 | 内存与首次弹出延迟 | 尺寸桶 + LRU 页回收；CJK 延迟加载 |
-| R7 | egui 版本漂移（0.36.x → 0.37） | `RenderState`/面板/回调细节变化（`App::ui` 入口在 0.36 已就位） | 只在 `apps/neo-desktop` 与 `neo-render` 两处收口（见 §8 的版本说明） |
+| R1 | Pipelines do not match egui's pass (format/count/depth) | Runtime validation errors, whole frame black | Single source of truth `GpuCaps` generates pipelines; 1-frame startup self-check |
+| R2 | Double gamma (`*Srgb` platforms) | Map looks washed out/gray, inconsistent with UI | Startup branching + golden images for both paths |
+| R3 | Silent regression to per-frame buffer rebuilds | Frame time rises linearly with object count | `PrepareStats.uploaded_bytes` assertion (steady state < 4 KiB) + CI benchmarks |
+| R4 | Pick readback blocks the main thread | Click drops frames to < 20 fps | Force the async path; hover forbids readback; fallback on timeout |
+| R5 | Software adapter (WARP) lacks MSAA/timestamps | Startup failure or black screen | Capability probing + degradation table; `Error::Wgpu` shows readable information instead of panicking |
+| R6 | Font/atlas cache bloat | Memory and first-popup latency | Size buckets + LRU page reclamation; lazy CJK loading |
+| R7 | egui version drift (0.36.x → 0.37) | `RenderState`/panel/callback details change (the `App::ui` entry point is already in place in 0.36) | Confine changes to `apps/neo-desktop` and `neo-render` only (see the version note in §8) |
 
-## 7 验收标准
+## 7 Acceptance Criteria
 
-1. **稳态零重传**：静置 60 帧、仅平移时 `PrepareStats.uploaded_bytes` 每帧 ≤ 128 B（uniform），`draw_calls` 稳定。
-2. **帧时间**：参考机（i5-12400F / 32 GB / RTX 3070 / Windows，DX12）在 1M 与 10M 对象两档、16 级缩放下，主线程与 GPU 时间【待实测，见 docs/14-performance-and-verification.md】；验收门槛为设计预算表 ±20%。
-3. **视觉一致**：同一数据集与 [11](11-style-presets-mapcss.md) 的样式，在 DX12/Vulkan/Metal 三后端截图 SSIM ≥ 0.99（允许 MSAA/字体差异 1 档）。
-4. **颜色**：`Bgra8Unorm` 与 `Bgra8UnormSrgb` 两种 `target_format` 下，同一张 golden 图的像素差 ≤ 2/255。
-5. **拾取**：GPU 与 CPU 结果在 1000 次随机点上的一致率 ≥ 99%（差异必须能归因到三角化 vs 解析几何）；readback 关闭时功能不缺失。
-6. **健壮性**：WARP 与 `msaa_samples = 1`、无 timestamp 的组合下可启动、可交互、无 panic。
-7. **依赖纪律**：`cargo tree -p neo-render` 不含 `neo-store`/`neo-editor`/`neo-ui`（[02](02-workspace-and-dependency-rules.md) §7 第 2 条）。
+1. **Zero re-upload in steady state**: over 60 idle frames while only panning, `PrepareStats.uploaded_bytes` is ≤ 128 B per frame (uniform), and `draw_calls` is stable.
+2. **Frame time**: on the reference machine (i5-12400F / 32 GB / RTX 3070 / Windows, DX12) at 1M and 10M objects and zoom level 16, main-thread and GPU times are [pending measurement, see docs/14-performance-and-verification.md]; the acceptance threshold is ±20% of the design budget table.
+3. **Visual consistency**: with the same dataset and styles from [11](11-style-presets-mapcss.md), screenshot SSIM across DX12/Vulkan/Metal is ≥ 0.99 (allowing one tier of MSAA/font difference).
+4. **Color**: under both `Bgra8Unorm` and `Bgra8UnormSrgb` `target_format`s, pixel differences on the same golden image are ≤ 2/255.
+5. **Picking**: GPU and CPU results agree on ≥ 99% of 1000 random points (differences must be attributable to triangulation vs analytic geometry); no functionality is missing when readback is disabled.
+6. **Robustness**: with WARP, `msaa_samples = 1`, and no timestamps, the application can start, be interacted with, and never panics.
+7. **Dependency discipline**: `cargo tree -p neo-render` does not contain `neo-store`/`neo-editor`/`neo-ui` ([02](02-workspace-and-dependency-rules.md) §7 item 2).
 
-## 8 参考
+## 8 References
 
-- egui-wgpu `CallbackTrait` / `RenderState` / `RendererOptions`（**0.36.2**，本仓库以该版本为准）：<https://docs.rs/egui-wgpu/0.36.2/egui_wgpu/>
-- `egui_dock` 0.21.1 依赖 `egui ^0.36`（因此不能上 0.37）：<https://crates.io/api/v1/crates/egui_dock/0.21.1/dependencies>
-- wgpu 30 的破坏性变更（`Maintain` 移除、`DeviceDescriptor`、`multiview_mask`）：<https://github.com/gfx-rs/wgpu/blob/trunk/CHANGELOG.md>
-- `Limits::downlevel_defaults` / 特性表：<https://docs.rs/wgpu-types/30.0.2/wgpu_types/struct.Limits.html>
-- WebGPU 规范（`copyTextureToBuffer` 的 256 B `bytesPerRow` 对齐）：<https://www.w3.org/TR/webgpu/#dom-gpucommandencoder-copytexturetobuffer>
-- 以下未核实：`cosmic-text`/`glyphon` 的当前版本与对 wgpu 30 的支持 **> 待验证**；WARP 的具体能力矩阵 **> 待验证**（[01](01-system-architecture.md) §8 同样标注）。
+- egui-wgpu `CallbackTrait` / `RenderState` / `RendererOptions` (**0.36.2**; this repository follows that version): <https://docs.rs/egui-wgpu/0.36.2/egui_wgpu/>
+- `egui_dock` 0.21.1 depends on `egui ^0.36` (hence 0.37 is not possible): <https://crates.io/api/v1/crates/egui_dock/0.21.1/dependencies>
+- Breaking changes in wgpu 30 (`Maintain` removed, `DeviceDescriptor`, `multiview_mask`): <https://github.com/gfx-rs/wgpu/blob/trunk/CHANGELOG.md>
+- `Limits::downlevel_defaults` / feature tables: <https://docs.rs/wgpu-types/30.0.2/wgpu_types/struct.Limits.html>
+- WebGPU spec (`copyTextureToBuffer`'s 256 B `bytesPerRow` alignment): <https://www.w3.org/TR/webgpu/#dom-gpucommandencoder-copytexturetobuffer>
+- Unverified: current versions of `cosmic-text`/`glyphon` and their support for wgpu 30 **> To be verified**; WARP's exact capability matrix **> To be verified** (also noted in [01](01-system-architecture.md) §8).
 
 
-## 节点 LOD（2026-11-15 起）
+## Node LOD (from 2026-11-15)
 
-节点图标不是无条件绘制，而是随 zoom 分三档（`neo-scene::builder::{NODE_MIN_ZOOM, NODE_ALL_ZOOM}`）：
+Node icons are not drawn unconditionally but fall into three tiers with zoom (`neo-scene::builder::{NODE_MIN_ZOOM, NODE_ALL_ZOOM}`):
 
-| zoom | 绘制内容 | 形状 |
+| zoom | What is drawn | Shape |
 |---|---|---|
-| ≤ 16（z16 及以下） | 不绘制节点 | — |
-| 17 ～ 18 | 仅**共享节点**（被 ≥2 条 way 引用，`Referrers::ways_of_node().len() >= 2`） | 小圆点（六边形近似，7 顶点/6 三角） |
-| ≥ 19 | 全部节点 | 共享节点 = 小方框（4 顶点/2 三角）；普通节点 = 小圆点 |
+| ≤ 16 (z16 and below) | No nodes are drawn | — |
+| 17 – 18 | Only **shared nodes** (referenced by ≥2 ways, `Referrers::ways_of_node().len() >= 2`) | Small dot (hexagon approximation, 7 vertices/6 triangles) |
+| ≥ 19 | All nodes | Shared node = small square (4 vertices/2 triangles); ordinary node = small dot |
 
-共享判定依赖 `Referrers`（CSR 反查表），因此 `SceneBuilder::build` 的签名需要传入 `&Referrers`；
-桌面端直接复用 `Editor` 已维护的反查表，无额外预处理成本。工具栏不再有"显示节点"开关，
-行为完全由 zoom 决定，避免用户手动切换造成密集区噪声。
+The shared-node check relies on `Referrers` (the CSR reverse lookup table), so the signature of `SceneBuilder::build` must accept `&Referrers`;
+the desktop reuses the reverse lookup table already maintained by `Editor`, with no extra preprocessing cost. The toolbar no longer has a "show nodes" toggle,
+and behavior is fully determined by zoom, avoiding dense-area noise caused by manual toggling.
 
-**拾取与渲染共用同一规则** `neo_scene::node_visible_at(zoom, way_ref_count)`：
-不可见的节点不能被点击选中、也不能拖动；缩放后应用层会自动清理已变为不可见的节点选择（way 选择保留）。
+**Picking and rendering share the same rule** `neo_scene::node_visible_at(zoom, way_ref_count)`:
+invisible nodes cannot be clicked or dragged; after zooming, the application layer automatically clears selections of nodes that have become invisible (way selections are kept).
 
 
-## 选中/拖动的屏幕外边距
+## Selection/Drag Screen Margins
 
-| 用途 | 节点 | way |
+| Purpose | Node | way |
 |---|---|---|
-| 点击选择（`NODE_PICK_MARGIN_PX` / `WAY_PICK_MARGIN_PX`） | 16 px | 16 px |
-| 选中后拖动（`SELECTION_DRAG_MARGIN_PX`） | 16 px | 16 px（点到折线距离） |
+| Click selection (`NODE_PICK_MARGIN_PX` / `WAY_PICK_MARGIN_PX`) | 16 px | 16 px |
+| Drag after selection (`SELECTION_DRAG_MARGIN_PX`) | 16 px | 16 px (distance to the polyline) |
 
-两种元素的边距**独立计算**（`HitTester::pick_with_margins`）：鼠标在节点边距内选节点（即使节点压在 way 上也不会误选 way）；
-否则在 way 边距内选 way。判定使用鼠标**按下原点**，避免 egui 拖拽阈值触发时指针已移动导致误判。
-对不可见节点（按 zoom LOD）不会进入拾取流程：`pick_with_margins_filtered` 在**拾取阶段**过滤隐藏节点，
-并回退到其下方的 way —— 否则隐藏节点会截胡 way 的点击，出现"点要素本身选不中、点旁边几像素反而能选中"的问题。
+The margins for the two element types are **computed independently** (`HitTester::pick_with_margins`): if the mouse is within the node margin, a node is selected (even if the node lies on a way, the way is not wrongly selected);
+otherwise a way within the way margin is selected. Decisions use the mouse **press origin**, avoiding misjudgment when the pointer has already moved by the time egui's drag threshold triggers.
+Invisible nodes (per zoom LOD) do not enter the picking flow: `pick_with_margins_filtered` filters hidden nodes **at the picking stage**
+and falls back to the way beneath them — otherwise hidden nodes would intercept way clicks, producing the problem that "clicking the feature itself does not select it, but clicking a few pixels beside it does".
 
 
-## 拖动与选中的关系
+## Relationship Between Dragging and Selection
 
-拖动必须以选中为前提，**按下时自动完成选中**：
+Dragging requires a selection as a precondition, and **pressing automatically completes the selection**:
 
-1. 左键按下命中未选中的节点/way → 立即把它设为当前选中（红框出现），随即进入拖动；
-2. 拖动已选中的要素（或其外边距内）→ 一起拖动整个选中集合（多选时）；
-3. 松开后提交 **1 条历史**（批量 `MoveNode`），选中状态保留、红框显示在移动后的位置。
+1. Pressing the left button on an unselected node/way → immediately make it the current selection (red box appears), then begin dragging;
+2. Dragging an already-selected feature (or within its margin) → drag the whole selection set together (when multiple are selected);
+3. On release, commit **1 history entry** (batched `MoveNode`); the selection is retained and the red box is displayed at the moved position.
 
-因此"点击拖动"一步完成"选中 + 移动"，不会出现"拖了但没选中"的状态。
+Thus "click-drag" completes "select + move" in one step, and there is no state where "it was dragged but not selected".

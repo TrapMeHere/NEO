@@ -35,27 +35,27 @@ $fontMb = [math]::Round($fontMb, 2)
 $md = Join-Path $outDir "binary-size-baseline.md"
 $date = Get-Date -Format "yyyy-MM-dd"
 @"
-# 二进制体积基线（外置字体 + 外置 presets）
+# Binary size baseline (external fonts + external presets)
 
-- **日期**：$date
-- **命令**：``cargo bloat --release -p neo-desktop --crates --n 40``
-- **复现**：``pwsh -File scripts/bloat-baseline.ps1``
-- **profile**：``[profile.release]`` opt-level=3, lto=thin, codegen-units=1, strip=true
+- **Date**: $date
+- **Command**: ``cargo bloat --release -p neo-desktop --crates --n 40``
+- **Reproduce**: ``pwsh -File scripts/bloat-baseline.ps1``
+- **profile**: ``[profile.release]`` opt-level=3, lto=thin, codegen-units=1, strip=true
 
-## 发行物体积
+## Artifact sizes
 
-| 项 | 大小 |
+| item | size |
 |---|---:|
 | ``out/cargo/release/neo-desktop.exe`` | $exeMb MB |
-| ``assets/presets/schema.neo``（外置） | $schemaMb MB |
-| ``assets/presets/suggestions.neo``（外置） | $suggestionMb MB |
-| ``assets/fonts/*``（外置，合计） | $fontMb MB |
+| ``assets/presets/schema.neo`` (external) | $schemaMb MB |
+| ``assets/presets/suggestions.neo`` (external) | $suggestionMb MB |
+| ``assets/fonts/*`` (external, total) | $fontMb MB |
 
-exe **不再**嵌入上述字体与预设。安装包 = exe + ``assets/``。
+The exe **no longer** embeds these fonts and presets. Installer = exe + ``assets/``.
 
-## crate 占用（``.text``）
+## crate footprint (``.text``)
 
-原始输出见同目录 [binary-size-bloat-crates.txt](./binary-size-bloat-crates.txt)。
+Raw output: [binary-size-bloat-crates.txt](./binary-size-bloat-crates.txt) in the same directory.
 
 "@ | Set-Content -Path $md -Encoding utf8
 

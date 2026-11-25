@@ -1,13 +1,13 @@
-//! JOSM 风格界面组件（现代化）。
+//! JOSM-style UI components (modernized).
 //!
-//! 布局对齐 JOSM：
-//! * 顶部：菜单栏 + 常用功能工具栏；
-//! * 左侧：竖排**工具栏**（选择/绘制/删除/测距 + 几何操作）；
-//! * 右侧：**图层**（右键 → 信息/缩放到图层）、**标签/成员**、**选择**、**关系**、
-//!   **校验结果**、**冲突** 面板堆叠；
-//! * 底部：**状态栏**（经纬度、比例尺、测距结果、缩放、撤销/重做、操作提示）。
+//! Layout follows JOSM:
+//! * top: menu bar + main toolbar;
+//! * left: vertical **tool palette** (select/draw/delete/measure + geometry operations);
+//! * right: **Layers** (right-click → info/zoom to layer), **Tags/Members**, **Selection**, **Relations**,
+//!   **Validation results**, **Conflicts** panels stacked;
+//! * bottom: **status bar** (lat/lon, scale, measure result, zoom, undo/redo, action hint).
 //!
-//! 图标来自开源 Phosphor Icons（`egui-phosphor`，MIT）。面板均为纯函数。
+//! Icons come from the open-source Phosphor Icons (`egui-phosphor`, MIT). Panels are pure functions.
 
 use egui::{RichText, Ui};
 use egui_phosphor::regular as ph;
@@ -40,421 +40,421 @@ pub use settings::{AccountView, SHORTCUT_ACTIONS, SettingsTab, SettingsUiState, 
 pub use side::{ValidationItem, ValidationView, layer_info_window, right_side_panel, status_bar};
 pub use sync::{SyncConflict, sync_window};
 
-/// UI 侧的工作模式。
+/// UI-side working mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum UiMode {
-    /// 选择/移动（工具栏无单独按钮；点/线/面均未选中时回到此模式）。
+    /// Select/move (no dedicated toolbar button; returns to this mode when no point/line/area is selected).
     #[default]
     Select,
-    /// 创建节点。
+    /// Create a node.
     DrawPoint,
-    /// 绘制折线。
+    /// Draw a polyline.
     DrawLine,
-    /// 绘制闭合面。
+    /// Draw a closed area.
     DrawArea,
-    /// 测距。
+    /// Measure.
     Measure,
-    /// 按点分割：点击路径上的节点即在该点分割经过它的路径。
+    /// Split at point: clicking a node on a path splits every path through that node.
     SplitPoint,
 }
 
-/// 关系成员编辑意图（由应用层转成 `SetRelationMembers` 命令）。
+/// Relation member edit intent (translated by the app layer into a `SetRelationMembers` command).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RelationMemberEdit {
-    /// 把当前选中对象加入关系（角色取标签编辑器里的“成员角色”）。
+    /// Add the currently selected objects to a relation (the role comes from the tag editor's "member role").
     Add {
-        /// 关系 ID。
+        /// Relation ID.
         relation: ObjectId,
     },
-    /// 删除指定下标的成员。
+    /// Remove the member at the given index.
     Remove {
-        /// 关系 ID。
+        /// Relation ID.
         relation: ObjectId,
-        /// 成员下标。
+        /// Member index.
         index: usize,
     },
-    /// 上移成员。
+    /// Move the member up.
     MoveUp {
-        /// 关系 ID。
+        /// Relation ID.
         relation: ObjectId,
-        /// 成员下标。
+        /// Member index.
         index: usize,
     },
-    /// 下移成员。
+    /// Move the member down.
     MoveDown {
-        /// 关系 ID。
+        /// Relation ID.
         relation: ObjectId,
-        /// 成员下标。
+        /// Member index.
         index: usize,
     },
-    /// 修改成员角色。
+    /// Change the member role.
     SetRole {
-        /// 关系 ID。
+        /// Relation ID.
         relation: ObjectId,
-        /// 成员下标。
+        /// Member index.
         index: usize,
-        /// 新角色。
+        /// New role.
         role: String,
     },
 }
 
-/// 图层是数据还是影像。
+/// Whether a layer is data or imagery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerRole {
-    /// 可编辑的 OSM 数据。
+    /// Editable OSM data.
     Data,
-    /// 影像窗口里当前选中的底图。
+    /// The currently selected background layer in the imagery window.
     Imagery,
-    /// 标准 OSM 栅格地图。
+    /// Standard OSM raster map.
     Osm,
 }
 
-/// 数据或影像图层视图。
+/// A data or imagery layer view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayerView {
-    /// 名称。
+    /// Name.
     pub label: String,
-    /// 是否可见。
+    /// Whether the layer is visible.
     pub visible: bool,
-    /// 是否为活动（可编辑）图层。
+    /// Whether this is the active (editable) layer.
     pub active: bool,
-    /// 数据、当前影像，或 OSM 栅格图。出现在列表里的图层都能显示和删除。
+    /// Data, current imagery, or an OSM raster map. Every layer in the list can be shown or deleted.
     pub role: LayerRole,
 }
 
-/// 一次标签修改：对 `targets` 每个对象应用 `set`（添加/覆盖），并删除 `remove` 里的 key。
+/// One tag edit: apply `set` (add/overwrite) to every object in `targets`, and delete the keys in `remove`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TagEdit {
-    /// 要修改的对象（kind, id）。
+    /// Objects to modify (kind, id).
     pub targets: Vec<(ObjectKind, ObjectId)>,
-    /// 要添加/覆盖的标签。
+    /// Tags to add/overwrite.
     pub set: Vec<(String, String)>,
-    /// 要从所有对象删除的 key。
+    /// Keys to delete from all objects.
     pub remove: Vec<String>,
 }
 
-/// 标签值在选中集合中的状态。
+/// State of a tag value across the selected set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TagValue {
-    /// 所有选中对象该 key 的值一致。
+    /// All selected objects have the same value for this key.
     Same(String),
-    /// 值不一致或部分对象缺少该 key；保存出现过的值（去重，按首次出现顺序）。
+    /// Values differ or some objects lack the key; keeps the values seen (deduplicated, in first-seen order).
     Mixed(Vec<String>),
 }
 
-/// 标签编辑器的一行（多个选中对象按并集展示）。
+/// One row of the tag editor (multiple selected objects shown as a union).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TagRow {
-    /// 当前 key（可编辑）。
+    /// Current key (editable).
     pub key: String,
-    /// 同步时的 key；空表示用户新加的行。
+    /// Key at sync time; empty means a row the user just added.
     pub original_key: String,
-    /// 值状态。
+    /// Value state.
     pub value: TagValue,
 }
 
-/// UI 产生的意图，由应用层翻译成编辑命令/IO/相机操作。
+/// Intent produced by the UI, translated by the app layer into edit commands/IO/camera operations.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiActions {
-    /// 打开 OSM 数据文件（XML/PBF），始终作为新图层。
+    /// Open an OSM data file (XML/PBF), always as a new layer.
     pub open_file: bool,
-    /// 打开 PBF（兼容旧入口；与 [`Self::open_file`] 相同）。
+    /// Open PBF (legacy entry point; same as [`Self::open_file`]).
     pub open_pbf: bool,
-    /// 打开 OSM XML（兼容旧入口；与 [`Self::open_file`] 相同）。
+    /// Open OSM XML (legacy entry point; same as [`Self::open_file`]).
     pub open_xml: bool,
-    /// 导入 GPX。
+    /// Import GPX.
     pub open_gpx: bool,
-    /// 导出 GPX。
+    /// Export GPX.
     pub save_gpx: bool,
-    /// 保存为 OSM XML。
+    /// Save as OSM XML.
     pub save_xml: bool,
-    /// 导出 osmChange。
+    /// Export osmChange.
     pub save_osc: bool,
-    /// 导出 PBF。
+    /// Export PBF.
     pub save_pbf: bool,
-    /// 保存会话（.jos/.joz）。
+    /// Save session (.jos/.joz).
     pub save_session: bool,
-    /// 打开会话。
+    /// Open session.
     pub open_session: bool,
-    /// 重置视图（缩放到数据）。
+    /// Reset view (zoom to data).
     pub reset_view: bool,
-    /// 放大。
+    /// Zoom in.
     pub zoom_in: bool,
-    /// 缩小。
+    /// Zoom out.
     pub zoom_out: bool,
-    /// 撤销。
+    /// Undo.
     pub undo: bool,
-    /// 重做。
+    /// Redo.
     pub redo: bool,
-    /// 撤销 N 步（命令历史面板点击）。
+    /// Undo N steps (clicked in the command history panel).
     pub undo_to: Option<usize>,
-    /// 复制选中对象。
+    /// Copy selected objects.
     pub copy_selection: bool,
-    /// 粘贴剪贴板。
+    /// Paste clipboard.
     pub paste: bool,
-    /// 复制并偏移粘贴选中对象。
+    /// Copy and offset-paste selected objects.
     pub duplicate: bool,
-    /// 切换模式。
+    /// Switch mode.
     pub mode: Option<UiMode>,
-    /// 结束当前绘制 way。
+    /// Finish drawing the current way.
     pub finish_way: bool,
-    /// 标签修改（失焦/选择下拉值时产生）。
+    /// Tag edit (produced on focus loss or when a dropdown value is picked).
     pub tag_edit: Option<TagEdit>,
-    /// 分割选中的 way。
+    /// Split the selected ways.
     pub split_way: bool,
-    /// 反转选中的 way。
+    /// Reverse the selected ways.
     pub reverse_way: bool,
-    /// 合并选中的两条 way。
+    /// Merge the two selected ways.
     pub merge_ways: bool,
-    /// 简化选中的 way（RDP）。
+    /// Simplify the selected ways (RDP).
     pub simplify_way: bool,
-    /// 把选中的多个节点粘合成一个（JOSM glue）。
+    /// Glue the selected nodes into one (JOSM glue).
     pub merge_nodes: bool,
-    /// 节点对齐（按分布主轴）。
+    /// Align nodes (along their main distribution axis).
     pub align_nodes: bool,
-    /// 节点等距分布。
+    /// Distribute nodes evenly.
     pub distribute_nodes: bool,
-    /// 水平镜像（翻转纬度）。
+    /// Mirror horizontally (flip latitude).
     pub mirror_horizontal: bool,
-    /// 垂直镜像（翻转经度）。
+    /// Mirror vertically (flip longitude).
     pub mirror_vertical: bool,
-    /// 解粘选中节点（每条引用 way 得到独立副本）。
+    /// Unglue selected nodes (each referencing way gets its own copy).
     pub unglue: bool,
-    /// 复制选中 way 并平移出平行线。
+    /// Copy the selected ways and offset them into a parallel line.
     pub parallel_way: bool,
-    /// 使选中 way 的线段正交（水平/垂直）。
+    /// Make the selected way's segments orthogonal (horizontal/vertical).
     pub orthogonalize: bool,
-    /// 把选中的闭合 way 合并成一个 multipolygon 关系。
+    /// Merge the selected closed ways into one multipolygon relation.
     pub join_areas: bool,
-    /// 把选中节点移动到选中 way 上并接入。
+    /// Move the selected nodes onto the selected way and join them.
     pub move_node_onto_way: bool,
-    /// 把选中 way 挤出成闭合建筑轮廓。
+    /// Extrude the selected way into a closed building outline.
     pub extrude: bool,
-    /// 打开阶段 5 的插件 / 影像 / 预设覆盖窗口。
+    /// Open the Phase 5 plugins / imagery / preset override windows.
     pub toggle_ecosystem: bool,
-    /// 删除选中的对象。
+    /// Delete the selected objects.
     pub delete_selected: bool,
-    /// 从 journal 恢复。
+    /// Recover from the journal.
     pub recover_journal: bool,
-    /// 打开/关闭帮助窗口。
+    /// Open/close the help window.
     pub toggle_help: bool,
-    /// 打开图层信息窗口（图层右键菜单）。
+    /// Open the layer info window (layer context menu).
     pub layer_info: bool,
-    /// 切换图层显示（眼睛图标）。
+    /// Toggle layer visibility (eye icon).
     pub toggle_layer_visible: bool,
-    /// 切换活动数据图层。
+    /// Toggle the active data layer.
     pub toggle_layer_active: bool,
-    /// 切换到指定图层（0 = 当前活动图层；其余为停靠图层下标 + 1）。
+    /// Switch to a specific layer (0 = current active layer; others are parked layer index + 1).
     pub layer_activate: Option<usize>,
-    /// 切换指定数据图层可见性。
+    /// Toggle visibility of a specific data layer.
     pub layer_set_visible: Option<(usize, bool)>,
-    /// 切换影像图层可见性。
+    /// Toggle imagery layer visibility.
     pub imagery_layer_visible: Option<(LayerRole, bool)>,
-    /// 新建空图层。
+    /// Create a new empty layer.
     pub layer_new: bool,
-    /// 删除停靠图层（下标 + 1）。
+    /// Remove a parked layer (index + 1).
     pub layer_remove: Option<usize>,
-    /// 把停靠图层合并进活动图层。
+    /// Merge a parked layer into the active layer.
     pub layer_import: Option<usize>,
-    /// 切换界面语言。
+    /// Switch the UI language.
     pub set_language: Option<neo_i18n::Lang>,
-    /// 打开/关闭设置窗口。
+    /// Open/close the settings window.
     pub toggle_settings: bool,
-    /// 在文件管理器中打开数据目录。
+    /// Open the data directory in the file manager.
     pub open_data_dir: bool,
-    /// 清理自动保存缓存。
+    /// Clear the autosave cache.
     pub clear_autosave: bool,
-    /// 运行校验。
+    /// Run validation.
     pub run_validation: bool,
-    /// 选中校验问题涉及的对象。
+    /// Select the objects involved in a validation issue.
     pub select_objects: Option<Vec<(ObjectKind, ObjectId)>>,
-    /// 开始 OAuth 登录。
+    /// Start OAuth login.
     pub oauth_login: bool,
-    /// 退出当前账户（保留记录）。
+    /// Log out the current account (keep the record).
     pub oauth_logout: bool,
-    /// 切换当前账户。
+    /// Switch the current account.
     pub oauth_select: Option<String>,
-    /// 删除账户记录。
+    /// Delete an account record.
     pub oauth_remove: Option<String>,
-    /// 关系成员编辑（增删/排序/改角色）。
+    /// Relation member edit (add/remove/reorder/change roles).
     pub relation_member_edit: Option<RelationMemberEdit>,
-    /// 打开/关闭查找窗口。
+    /// Open/close the search window.
     pub toggle_search: bool,
-    /// 打开/关闭 Notes 窗口。
+    /// Open/close the Notes window.
     pub toggle_notes: bool,
-    /// 刷新当前区域的 notes。
+    /// Refresh notes in the current area.
     pub notes_refresh: bool,
-    /// 新建 note。
+    /// Create a note.
     pub note_create: bool,
-    /// 评论选中的 note。
+    /// Comment on the selected note.
     pub note_comment: Option<i64>,
-    /// 关闭选中的 note。
+    /// Close the selected note.
     pub note_close: Option<i64>,
-    /// 定位到 note。
+    /// Navigate to a note.
     pub note_focus: Option<(f64, f64)>,
-    /// 打开/关闭 changeset 查看器。
+    /// Open/close the changeset viewer.
     pub toggle_changeset: bool,
-    /// 加载 changeset id。
+    /// Load a changeset id.
     pub changeset_load: Option<i64>,
-    /// 打开/关闭插件管理窗口。
+    /// Open/close the plugin manager window.
     pub toggle_plugins: bool,
-    /// 刷新插件列表。
+    /// Refresh the plugin list.
     pub plugin_refresh: bool,
-    /// 安装插件包。
+    /// Install a plugin bundle.
     pub plugin_install: bool,
-    /// 删除插件（id）。
+    /// Remove a plugin (id).
     pub plugin_remove: Option<String>,
-    /// 启用/禁用插件（id, enabled）。
+    /// Enable/disable a plugin (id, enabled).
     pub plugin_toggle: Option<(String, bool)>,
-    /// 打开/关闭影像窗口。
+    /// Open/close the imagery window.
     pub toggle_imagery: bool,
-    /// 把 OSM 标准地图加进图层列表并显示。
+    /// Add the standard OSM map to the layer list and show it.
     pub imagery_add_osm: bool,
-    /// 按预设 id 把影像加进图层列表并显示。
+    /// Add imagery by preset id to the layer list and show it.
     pub imagery_pick: Option<String>,
-    /// 应用影像设置。
+    /// Apply imagery settings.
     pub imagery_apply: bool,
-    /// 清除影像瓦片缓存。
+    /// Clear the imagery tile cache.
     pub imagery_clear: bool,
-    /// 导入影像偏移库 JSON。
+    /// Import an imagery offset database JSON.
     pub imagery_offset_load: bool,
-    /// 导出当前偏移库。
+    /// Export the current offset database.
     pub imagery_offset_save: bool,
-    /// 应用最近偏移。
+    /// Apply the most recent offset.
     pub imagery_apply_offset: bool,
-    /// 选中查找结果并定位。
+    /// Select and navigate to a search result.
     pub focus_object: Option<(ObjectKind, ObjectId)>,
-    /// 打开/关闭上传窗口（原“同步”窗口，现只负责上传；下载在独立窗口）。
+    /// Open/close the upload window (formerly the "sync" window; now upload-only, downloads happen in a separate window).
     pub toggle_sync: bool,
-    /// 上传本地修改。
+    /// Upload local changes.
     pub sync_upload: bool,
-    /// 只上传选中对象的修改。
+    /// Upload the changes of the selected objects only.
     pub sync_upload_selected: bool,
-    /// 冲突后保留本地（对齐版本并重试上传）。
+    /// Keep local after a conflict (align the version and retry the upload).
     pub sync_keep_local: bool,
-    /// 用服务端对象覆盖单个本地冲突对象。
+    /// Overwrite a single local conflicting object with the server object.
     pub sync_take_remote: Option<(ObjectKind, ObjectId)>,
-    /// 合并远端独有标签（本地几何/已有标签保留）。
+    /// Merge tags that only exist on the remote (local geometry/existing tags are kept).
     pub sync_merge_remote: Option<(ObjectKind, ObjectId)>,
-    /// 采用远端几何/成员，保留本地标签。
+    /// Take the remote geometry/members but keep local tags.
     pub sync_merge_geometry: Option<(ObjectKind, ObjectId)>,
-    /// 打开/关闭导出窗口。
+    /// Open/close the export window.
     pub toggle_export: bool,
-    /// 用户在导出窗口选择格式并确认。
+    /// The user chose a format in the export window and confirmed.
     pub export_now: Option<ExportFormat>,
-    /// 打开/关闭下载窗口。
+    /// Open/close the download window.
     pub toggle_download: bool,
-    /// 开始在地图上框选下载范围。
+    /// Start selecting the download area on the map.
     pub begin_bbox: bool,
-    /// 下载已选 bbox。
+    /// Download the selected bbox.
     pub download_bbox: bool,
-    /// 通过 Overpass 下载。
+    /// Download via Overpass.
     pub download_overpass: bool,
-    /// 清除 bbox。
+    /// Clear the bbox.
     pub clear_bbox: bool,
 }
 
-/// 面板需要的只读状态快照。
+/// Read-only state snapshot the panels need.
 #[derive(Clone, Copy)]
 pub struct UiState<'a> {
-    /// 当前工具模式。
+    /// Current tool mode.
     pub mode: UiMode,
-    /// 可撤销。
+    /// Can undo.
     pub can_undo: bool,
-    /// 可重做。
+    /// Can redo.
     pub can_redo: bool,
-    /// 有未保存修改。
+    /// Has unsaved changes.
     pub dirty: bool,
-    /// 有待上传的 OSM 数据变更（用于同步入口启用/置灰）。
+    /// There are pending OSM data changes waiting to upload (used to enable/grey out the sync entry).
     pub has_pending_changes: bool,
-    /// 撤销栈长度。
+    /// Undo stack length.
     pub undo_len: usize,
-    /// 重做栈长度。
+    /// Redo stack length.
     pub redo_len: usize,
-    /// 当前缩放。
+    /// Current zoom.
     pub zoom: f64,
-    /// 数据源标签。
+    /// Data source label.
     pub label: &'a str,
-    /// 最近操作状态。
+    /// Latest action status.
     pub status: &'a str,
-    /// 选中对象数。
+    /// Number of selected objects.
     pub selection_len: usize,
-    /// 相机中心（纬度, 经度）。
+    /// Camera center (latitude, longitude).
     pub center_latlon: (f64, f64),
-    /// 鼠标所在经纬度（悬停地图时）。
+    /// Lat/lon under the mouse (while hovering the map).
     pub mouse_latlon: Option<(f64, f64)>,
-    /// 当前缩放下的米/像素（比例尺）。
+    /// Meters per pixel at the current zoom (scale bar).
     pub meters_per_px: f64,
-    /// 测距结果（米）。
+    /// Measure result (meters).
     pub measure_distance_m: Option<f64>,
-    /// 当前图层是否显示。
+    /// Whether the current layer is visible.
     pub layer_visible: bool,
-    /// 当前图层是否为活动数据图层。
+    /// Whether the current layer is an active data layer.
     pub layer_active: bool,
 }
 
-/// 导出格式。
+/// Export format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportFormat {
-    /// OSM XML（.osm）。
+    /// OSM XML (.osm).
     Xml,
-    /// osmChange（.osc）。
+    /// osmChange (.osc).
     Osc,
-    /// PBF（.osm.pbf）。
+    /// PBF (.osm.pbf).
     Pbf,
-    /// JOSM 会话（.jos/.joz）。
+    /// JOSM session (.jos/.joz).
     Session,
 }
 
-/// 标签编辑器状态：单选与多选共用同一套行模型（多选按并集显示）。
+/// Tag editor state: single and multi selection share one row model (multi selection shows the union).
 #[derive(Default)]
 pub struct TagsEditor {
     targets: Vec<(ObjectKind, ObjectId)>,
     rows: Vec<TagRow>,
-    /// 行模型对应的数据版本；版本变化（撤销/重做/外部修改）时重新同步。
+    /// Data version the row model corresponds to; resync when the version changes (undo/redo/external edit).
     synced_version: Option<u64>,
     preset_search: String,
-    /// 当前预设分类 id；空表示全部分类。
+    /// Current preset category id; empty means all categories.
     preset_category: String,
-    /// 用户手动选过分组后不再跟随匹配结果。
+    /// Once the user picks a group manually, the editor stops following the match result.
     preset_pinned: bool,
-    /// 正在同一列表里选分组（不另开下拉）。
+    /// Currently picking a group inside the same list (no separate dropdown).
     preset_picking: bool,
-    /// 添加关系成员时使用的角色。
+    /// Role used when adding relation members.
     relation_role: String,
-    /// 正在编辑的成员角色：(relation, index, buffer)。
+    /// Member role being edited: (relation, index, buffer).
     member_role_edit: Option<(ObjectId, usize, String)>,
-    /// 预设应用后待提交的标签修改（下一次 [`Self::show`] 返回）。
+    /// Tag edit waiting to be committed after a preset is applied (returned by the next [`Self::show`]).
     pending: Option<TagEdit>,
 }
 
 impl TagsEditor {
-    /// 空编辑器。
+    /// Empty editor.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 当前编辑目标集合。
+    /// Current edit target set.
     pub fn targets(&self) -> &[(ObjectKind, ObjectId)] {
         &self.targets
     }
 
-    /// 添加关系成员时使用的角色。
+    /// Role used when adding relation members.
     pub fn relation_role(&self) -> &str {
         &self.relation_role
     }
 
-    /// 目标集合或数据版本变化时需要重新扫描并集。
+    /// Whether the union must be rescanned because the target set or data version changed.
     pub fn needs_sync(&self, targets: &[(ObjectKind, ObjectId)], version: u64) -> bool {
         self.targets != targets || self.synced_version != Some(version)
     }
 
-    /// 强制下一次同步重算（撤销/重做/删除后调用）。
+    /// Force a resync on the next call (called after undo/redo/delete).
     pub fn invalidate(&mut self) {
         self.synced_version = None;
     }
 
-    /// 清空（没有选中对象时）。
+    /// Clear (when nothing is selected).
     pub fn clear(&mut self) {
         self.targets.clear();
         self.rows.clear();
@@ -467,11 +467,11 @@ impl TagsEditor {
         self.pending = None;
     }
 
-    /// 用数据集当前的并集行模型同步编辑器。
+    /// Sync the editor from the dataset's current union row model.
     pub fn sync(&mut self, targets: &[(ObjectKind, ObjectId)], version: u64, rows: &[TagRow]) {
         let targets_changed = self.targets != targets;
-        // 未失焦的新增行（草稿）在数据版本变化时保留，避免别的行提交后
-        // 把用户正在输入的新行冲掉。
+        // Draft rows the user has not unfocused (new rows) are kept across data-version changes,
+        // so other rows committing do not wipe the row the user is typing.
         let drafts: Vec<TagRow> = if targets_changed {
             Vec::new()
         } else {
@@ -499,7 +499,7 @@ impl TagsEditor {
         self.pending = None;
     }
 
-    /// 行模型里可落地的具体标签（用于预设匹配/差异计算）。
+    /// Concrete tags that can be committed from the row model (used for preset matching/diff computation).
     pub fn concrete_tags(&self) -> Vec<(String, String)> {
         self.rows
             .iter()
@@ -524,9 +524,9 @@ impl TagsEditor {
         }
     }
 
-    /// 应用 schema 或品牌预设：先去掉现有 `area` 与 `remove` 里的 key，再写入标签。
+    /// Apply a schema or brand preset: first drop the existing `area` and the keys in `remove`, then write the tags.
     ///
-    /// 修改暂存为一次待提交的 [`TagEdit`]，由下一次 [`Self::show`] 返回。
+    /// The change is staged as one pending [`TagEdit`], returned by the next [`Self::show`].
     pub fn apply_preset_owned(&mut self, tags: &[(String, String)], remove: &[String]) {
         if self.targets.is_empty() {
             return;
@@ -561,7 +561,7 @@ impl TagsEditor {
         }
     }
 
-    /// 绘制编辑器。用户完成一次编辑（失焦/选择值/删除行）时返回标签修改。
+    /// Draw the editor. Returns a tag edit when the user finishes an edit (focus loss/selecting a value/deleting a row).
     pub fn show(&mut self, ui: &mut Ui) -> Option<TagEdit> {
         if let Some(edit) = self.pending.take() {
             return Some(edit);
@@ -580,7 +580,7 @@ impl TagsEditor {
             .show(ui, |ui| {
                 for (idx, row) in self.rows.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        // 值不一致时 key 只读：跨对象改名没有确定语义。
+                        // Keep the key read-only when values differ: renaming across objects has no well-defined semantics.
                         if matches!(row.value, TagValue::Mixed(_)) {
                             ui.add_sized(
                                 [90.0, ui.spacing().interact_size.y],
@@ -631,7 +631,7 @@ impl TagsEditor {
                                         let new_value = value.trim().to_owned();
                                         let empty = new_value.is_empty();
                                         if row.original_key.is_empty() {
-                                            // 新行：只在有值时才写入；清空不产生删除。
+                                            // New row: only write when it has a value; clearing it produces no deletion.
                                             if !empty {
                                                 row.original_key = key.clone();
                                                 edit = Some(TagEdit {
@@ -718,10 +718,10 @@ impl TagsEditor {
     }
 }
 
-/// 多个选中对象的标签并集（单选即其自身标签）。
+/// Union of the tags of multiple selected objects (for a single selection it is just its own tags).
 ///
-/// key 顺序按对象顺序首次出现排列；值完全一致时是 [`TagValue::Same`]，否则
-/// [`TagValue::Mixed`]（列出出现过的值）。
+/// Key order follows first appearance across object order; when all values are identical it is [`TagValue::Same`], otherwise
+/// [`TagValue::Mixed`] (listing the values seen).
 pub fn tag_rows_from(lists: &[Vec<(String, String)>]) -> Vec<TagRow> {
     if lists.is_empty() {
         return Vec::new();
@@ -793,7 +793,7 @@ mod tags_editor_tests {
         assert_eq!(rows[0].value, TagValue::Same("residential".into()));
         assert_eq!(rows[1].key, "name");
         assert_eq!(rows[1].value, TagValue::Mixed(vec!["A".into(), "B".into()]));
-        // 只有第一个对象有 surface：也是混合，下拉里列出已有的值。
+        // Only the first object has surface: also mixed, the dropdown lists the values that exist.
         assert_eq!(rows[2].key, "surface");
         assert_eq!(rows[2].value, TagValue::Mixed(vec!["asphalt".into()]));
     }
@@ -826,10 +826,13 @@ mod tags_editor_tests {
         let rows = tag_rows_from(&[tags(&[("area", "yes")])]);
         editor.sync(&targets(), 7, &rows);
         editor.apply_preset_owned(&[("building".into(), "yes".into())], &[]);
-        let edit = editor.pending.clone().expect("预设应产生待提交修改");
+        let edit = editor
+            .pending
+            .clone()
+            .expect("preset should produce a pending edit");
         assert_eq!(edit.targets, targets());
         assert!(edit.set.contains(&("building".to_owned(), "yes".to_owned())));
-        // 旧实现会先清掉绘制时自动写入的 area，这里同样作为删除提交。
+        // The old implementation first removed the `area` tag written automatically while drawing; here it is likewise committed as a deletion.
         assert_eq!(edit.remove, vec!["area".to_owned()]);
     }
 

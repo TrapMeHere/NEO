@@ -1,7 +1,7 @@
-//! Relation 的 SoA 存储。
+//! SoA storage for relations.
 //!
-//! 成员是 `(role, target)` 对，`target` 用 [`AnyHandle`] 表示——种类 + 槽位 + generation。
-//! 成员**顺序是数据**（route / multipolygon 语义），因此这里只追加、不改顺序。
+//! Members are `(role, target)` pairs, where `target` is [`AnyHandle`] —— kind + slot + generation.
+//! Member **order is data** (route / multipolygon semantics), so this storage only appends and never reorders.
 
 use neo_core::{ByteSize, Handle, Meta, ObjectId, ObjectKind, SlotAllocator, Sym};
 
@@ -9,23 +9,23 @@ use crate::node_store::NodeSlot;
 use crate::tag_store::TagSetId;
 use crate::way_store::WaySlot;
 
-/// 标记类型。
+/// Marker type.
 #[derive(Debug)]
 pub struct RelationSlot;
 
-/// 指向任意图元的句柄（种类 + 槽位 + generation）。
+/// Handle to any primitive (kind + slot + generation).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AnyHandle {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 槽位下标。
+    /// Slot index.
     pub index: u32,
-    /// 槽位代号。
+    /// Slot generation.
     pub generation: u32,
 }
 
 impl AnyHandle {
-    /// 由 node 句柄构造。
+    /// Construct from a node handle.
     #[inline]
     pub fn from_node(h: Handle<NodeSlot>) -> Self {
         Self {
@@ -35,7 +35,7 @@ impl AnyHandle {
         }
     }
 
-    /// 由 way 句柄构造。
+    /// Construct from a way handle.
     #[inline]
     pub fn from_way(h: Handle<WaySlot>) -> Self {
         Self {
@@ -45,7 +45,7 @@ impl AnyHandle {
         }
     }
 
-    /// 由 relation 句柄构造。
+    /// Construct from a relation handle.
     #[inline]
     pub fn from_relation(h: Handle<RelationSlot>) -> Self {
         Self {
@@ -55,52 +55,52 @@ impl AnyHandle {
         }
     }
 
-    /// 转回 node 句柄（种类不匹配返回 `None`）。
+    /// Convert back to a node handle (returns `None` if the kind does not match).
     #[inline]
     pub fn as_node(self) -> Option<Handle<NodeSlot>> {
         (self.kind == ObjectKind::Node).then(|| Handle::new(self.index, self.generation))
     }
 
-    /// 转回 way 句柄。
+    /// Convert back to a way handle.
     #[inline]
     pub fn as_way(self) -> Option<Handle<WaySlot>> {
         (self.kind == ObjectKind::Way).then(|| Handle::new(self.index, self.generation))
     }
 
-    /// 转回 relation 句柄。
+    /// Convert back to a relation handle.
     #[inline]
     pub fn as_relation(self) -> Option<Handle<RelationSlot>> {
         (self.kind == ObjectKind::Relation).then(|| Handle::new(self.index, self.generation))
     }
 }
 
-/// 一个 relation 成员。
+/// One relation member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoredMember {
-    /// 角色（驻留符号）。
+    /// Role (interned symbol).
     pub role: Sym,
-    /// 目标图元句柄。
+    /// Target primitive handle.
     pub target: AnyHandle,
 }
 
-/// Relation 的只读快照。
+/// Read-only snapshot of a Relation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RelationRef {
-    /// 句柄。
+    /// Handle.
     pub handle: Handle<RelationSlot>,
-    /// 外部 ID。
+    /// External ID.
     pub id: ObjectId,
-    /// tag 集合。
+    /// Tag set.
     pub tags: TagSetId,
-    /// 元数据。
+    /// Metadata.
     pub meta: Meta,
-    /// 成员区间起点。
+    /// Start of the member range.
     pub first_member: u32,
-    /// 成员个数。
+    /// Number of members.
     pub member_count: u32,
 }
 
-/// Relation 的 SoA 存储。
+/// SoA storage for relations.
 #[derive(Debug, Default)]
 pub struct RelationStore {
     ids: Vec<ObjectId>,
@@ -113,12 +113,12 @@ pub struct RelationStore {
 }
 
 impl RelationStore {
-    /// 空存储。
+    /// Empty storage.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 预分配。
+    /// Preallocate.
     pub fn with_capacity(capacity: usize) -> Self {
         let mut s = Self::new();
         s.ids.reserve(capacity);
@@ -130,31 +130,31 @@ impl RelationStore {
         s
     }
 
-    /// 槽位总数。
+    /// Total number of slots.
     #[inline]
     pub fn slot_len(&self) -> usize {
         self.ids.len()
     }
 
-    /// 存活 relation 数。
+    /// Number of live relations.
     #[inline]
     pub fn len(&self) -> usize {
         self.alloc.live_len()
     }
 
-    /// 是否没有 relation。
+    /// Whether there are no relations.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// 成员总数。
+    /// Total number of members.
     #[inline]
     pub fn member_count(&self) -> usize {
         self.members.len()
     }
 
-    /// 追加关系。
+    /// Append a relation.
     pub fn push(
         &mut self,
         id: ObjectId,
@@ -180,19 +180,19 @@ impl RelationStore {
         Handle::new(index, generation)
     }
 
-    /// 句柄是否有效。
+    /// Whether a handle is valid.
     #[inline]
     pub fn contains(&self, handle: Handle<RelationSlot>) -> bool {
         self.alloc.is_valid(handle)
     }
 
-    /// 槽位当前的 generation。
+    /// Current generation of a slot.
     #[inline]
     pub fn generation(&self, index: u32) -> Option<u32> {
         self.alloc.generation(index)
     }
 
-    /// 读取快照。
+    /// Read a snapshot.
     pub fn get(&self, handle: Handle<RelationSlot>) -> Option<RelationRef> {
         if !self.contains(handle) {
             return None;
@@ -208,13 +208,13 @@ impl RelationStore {
         })
     }
 
-    /// 外部 ID。
+    /// External ID.
     #[inline]
     pub fn id(&self, handle: Handle<RelationSlot>) -> Option<ObjectId> {
         self.contains(handle).then(|| self.ids[handle.index() as usize])
     }
 
-    /// 成员切片。
+    /// Slice of members.
     #[inline]
     pub fn members_of(&self, handle: Handle<RelationSlot>) -> Option<&[StoredMember]> {
         if !self.contains(handle) {
@@ -226,7 +226,7 @@ impl RelationStore {
         Some(&self.members[start..end])
     }
 
-    /// 替换成员（追加式）。
+    /// Replace members (append-only).
     pub fn set_members(&mut self, handle: Handle<RelationSlot>, members: &[StoredMember]) -> bool {
         if !self.contains(handle) {
             return false;
@@ -238,7 +238,7 @@ impl RelationStore {
         true
     }
 
-    /// 替换外部 ID（上传成功后映射为服务端新 ID）。
+    /// Replace the external ID (mapped to the new server ID after a successful upload).
     pub fn set_id(&mut self, handle: Handle<RelationSlot>, id: ObjectId) -> bool {
         if !self.contains(handle) {
             return false;
@@ -247,7 +247,7 @@ impl RelationStore {
         true
     }
 
-    /// 替换 tag 集合。
+    /// Replace the tag set.
     pub fn set_tags(&mut self, handle: Handle<RelationSlot>, tags: TagSetId) -> bool {
         if !self.contains(handle) {
             return false;
@@ -256,7 +256,7 @@ impl RelationStore {
         true
     }
 
-    /// 替换元数据。
+    /// Replace metadata.
     pub fn set_meta(&mut self, handle: Handle<RelationSlot>, meta: Meta) -> bool {
         if !self.contains(handle) {
             return false;
@@ -265,14 +265,14 @@ impl RelationStore {
         true
     }
 
-    /// 删除（逻辑删除 + 槽位回收）。
+    /// Delete (logical delete + slot recycling).
     pub fn remove(&mut self, handle: Handle<RelationSlot>) -> Option<RelationRef> {
         let view = self.get(handle)?;
         self.alloc.free(handle.index());
         Some(view)
     }
 
-    /// 迭代存活 relation 快照。
+    /// Iterate snapshots of live relations.
     pub fn iter(&self) -> impl Iterator<Item = RelationRef> + '_ {
         (0..self.slot_len()).filter_map(|i| {
             let generation = self.alloc.generation(i as u32)?;
@@ -280,7 +280,7 @@ impl RelationStore {
         })
     }
 
-    /// 估算堆内存。
+    /// Estimate heap memory.
     pub fn mem_bytes(&self) -> ByteSize {
         use core::mem::size_of;
         ByteSize(

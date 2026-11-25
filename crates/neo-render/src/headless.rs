@@ -1,16 +1,16 @@
-//! 离屏（headless）渲染：渲染到纹理 → 读回 RGBA → 写 PNG。
+//! Offscreen (headless) rendering: render to a texture → read back RGBA → write a PNG.
 //!
-//! 用途：
+//! Uses:
 //!
-//! * 性能验证原型 `neo-prototype render` 子命令；
-//! * CI 的 GPU 图像回归（不依赖桌面窗口）；
-//! * 文档截图。
+//! * the `neo-prototype render` subcommand of the performance verification prototype;
+//! * CI GPU image regressions (no desktop window required);
+//! * documentation screenshots.
 //!
-//! 实现注意（wgpu 30）：
-//! * `TextureDescriptor.view_formats` 是 `&[TextureFormat]`；
-//! * `copy_texture_to_buffer` 的 `bytes_per_row` 必须 256 字节对齐 → 使用对齐行距再裁剪；
-//! * `device.poll(PollType::wait_indefinitely())` 取代旧的 `Maintain::Wait`；
-//! * `Buffer::get_mapped_range` 返回 `Result`。
+//! Implementation notes (wgpu 30):
+//! * `TextureDescriptor.view_formats` is `&[TextureFormat]`;
+//! * `bytes_per_row` of `copy_texture_to_buffer` must be 256-byte aligned → use an aligned row pitch and then crop;
+//! * `device.poll(PollType::wait_indefinitely())` replaces the old `Maintain::Wait`;
+//! * `Buffer::get_mapped_range` returns `Result`.
 
 use std::time::Instant;
 
@@ -21,56 +21,56 @@ use crate::gpu::{GpuContext, RenderError};
 use crate::pipeline::MapPipeline;
 use crate::scene_gpu::{GpuScene, UploadStats};
 
-/// 一次 GPU 帧的耗时分解（不含读回）。
+/// Time breakdown of one GPU frame (excluding readback).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GpuFrameTiming {
-    /// 编码 + 提交 + 等待完成的总耗时（微秒）。
+    /// Total time of encode + submit + wait for completion (microseconds).
     pub total_micros: u64,
-    /// 其中 buffer 上传耗时（微秒；复用缓存时为 0）。
+    /// Of which buffer upload time (microseconds; 0 when the cache is reused).
     pub upload_micros: u64,
-    /// 本次上传字节数（复用缓存时为 0）。
+    /// Bytes uploaded this time (0 when the cache is reused).
     pub uploaded_bytes: u64,
-    /// draw call 数。
+    /// Number of draw calls.
     pub draw_calls: u32,
-    /// 三角形数。
+    /// Triangle count.
     pub triangles: u32,
 }
 
-/// 离屏渲染器。
+/// Offscreen renderer.
 pub struct HeadlessRenderer {
-    /// GPU 上下文。
+    /// GPU context.
     pub ctx: GpuContext,
-    /// 管线。
+    /// Pipeline.
     pub pipeline: MapPipeline,
-    /// GPU 场景缓存。
+    /// GPU scene cache.
     pub gpu_scene: GpuScene,
-    /// 纹理。
+    /// Texture.
     pub target: wgpu::Texture,
-    /// 纹理视图。
+    /// Texture view.
     pub target_view: wgpu::TextureView,
-    /// 读回 staging buffer。
+    /// Readback staging buffer.
     pub staging: wgpu::Buffer,
-    /// 尺寸（像素）。
+    /// Size (pixels).
     pub size: [u32; 2],
-    /// 最近一次渲染耗时（微秒）。
+    /// Duration of the most recent render (microseconds).
     pub last_render_micros: u64,
-    /// 最近一次上传统计。
+    /// Most recent upload stats.
     pub last_upload: UploadStats,
 }
 
-/// 8 位 RGBA 图像。
+/// 8-bit RGBA image.
 #[derive(Clone, Debug)]
 pub struct RgbaImage {
-    /// 宽。
+    /// Width.
     pub width: u32,
-    /// 高。
+    /// Height.
     pub height: u32,
-    /// RGBA 数据（行优先，无 padding）。
+    /// RGBA data (row-major, no padding).
     pub data: Vec<u8>,
 }
 
 impl HeadlessRenderer {
-    /// 创建指定尺寸的离屏渲染器（RGBA8）。
+    /// Create an offscreen renderer of the given size (RGBA8).
     pub fn new(width: u32, height: u32) -> Result<Self, RenderError> {
         let width = width.max(1);
         let height = height.max(1);
@@ -117,10 +117,10 @@ impl HeadlessRenderer {
         })
     }
 
-    /// 只做"编码 + 提交 + 等待 GPU 完成"，不做读回。
+    /// Only "encode + submit + wait for the GPU to finish", no readback.
     ///
-    /// 用于隔离 GPU 帧时间与 `copy_texture_to_buffer` + `map_async` 的读回成本；
-    /// 性能报告里两者分开列（见 docs/14）。
+    /// Used to isolate GPU frame time from the readback cost of `copy_texture_to_buffer` + `map_async`;
+    /// the two are listed separately in performance reports (see docs/14).
     pub fn render_encode_submit(
         &mut self,
         scene: &SceneFrame,
@@ -180,7 +180,7 @@ impl HeadlessRenderer {
         })
     }
 
-    /// 渲染一帧并读回 RGBA。
+    /// Render one frame and read back RGBA.
     pub fn render(
         &mut self,
         scene: &SceneFrame,
@@ -268,7 +268,7 @@ impl HeadlessRenderer {
         })
     }
 
-    /// 渲染并写 PNG。
+    /// Render and write a PNG.
     pub fn render_to_png(
         &mut self,
         scene: &SceneFrame,

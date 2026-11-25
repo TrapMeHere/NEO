@@ -1,34 +1,34 @@
-## Summary / 概述
+## Summary
 
-<!-- 这个 PR 做了什么？关联 Issue / ADR： -->
+<!-- What does this PR do? Linked issues / ADRs: -->
 
 Closes #
 
-## Type / 类型
+## Type
 
-- [ ] feat: 新功能
-- [ ] fix: 缺陷修复
-- [ ] perf: 性能
-- [ ] refactor: 重构（无行为变化）
-- [ ] docs: 文档
-- [ ] chore: 构建/CI/依赖
+- [ ] feat: new feature
+- [ ] fix: bug fix
+- [ ] perf: performance
+- [ ] refactor: refactor (no behavior change)
+- [ ] docs: documentation
+- [ ] chore: build/CI/dependencies
 
-## Test plan / 验证
+## Test plan
 
-<!-- 命令、截图、性能数据；UI 改动请附 out/ui-check 截图 -->
+<!-- Commands, screenshots, performance numbers; attach out/ui-check screenshots for UI changes -->
 
 ```bash
 cargo check --workspace
 python scripts/check-i18n.py
-# 测试在 test 分支：git checkout test && git merge master && cargo test --workspace
+# Tests run on the test branch: git checkout test && git merge master && cargo test --workspace
 ```
 
 ## Checklist
 
-- [ ] 只通过 `neo-editor` 命令修改数据（UI 未直接写 `DataSet`）
-- [ ] 新增/修改的用户文本已加入 `i18n/zh-CN.json` 与 `en-US.json`
-- [ ] `cargo fmt --all --check` 通过
-- [ ] `cargo clippy --workspace --all-targets` 无新增警告
-- [ ] 接口/行为变化已同步文档（`docs/`）
-- [ ] 提交包含 DCO 签名（`git commit -s`）
-- [ ] 未引入 JOSM/GPL 代码或资源（见 `docs/17`）
+- [ ] Data is only modified through `neo-editor` commands (the UI never writes `DataSet` directly)
+- [ ] New/changed user-facing text is added to `i18n/zh-CN.json` and `en-US.json`
+- [ ] `cargo fmt --all --check` passes
+- [ ] `cargo clippy --workspace --all-targets` adds no new warnings
+- [ ] API/behavior changes are reflected in the docs (`docs/`)
+- [ ] Commits carry the DCO sign-off (`git commit -s`)
+- [ ] No JOSM/GPL code or assets are introduced (see `docs/17`)

@@ -1,4 +1,4 @@
-//! side 面板。
+//! side panel.
 
 use egui::{Color32, FontId, RichText, Stroke, Ui};
 use egui_phosphor::regular as ph;
@@ -10,30 +10,30 @@ use super::presets::preset_combo;
 use super::{LayerRole, LayerView, RelationMemberEdit, TagsEditor, UiActions, UiMode, UiState};
 
 // ---------------------------------------------------------------------------
-// 右侧面板堆叠：图层 / 标签 / 选择 / 关系 / 校验 / 冲突
+// Right-side panel stack: layers / tags / selection / relations / validation / conflicts
 // ---------------------------------------------------------------------------
 
-/// 一条校验问题（由应用层从 `neo-validate` 报告转换而来）。
+/// One validation issue (converted by the app layer from a `neo-validate` report).
 #[derive(Clone, Debug)]
 pub struct ValidationItem {
-    /// 严重级别：2 = error，1 = warning，0 = info。
+    /// Severity: 2 = error, 1 = warning, 0 = info.
     pub severity: u8,
-    /// 规则 id（`validate.rule.<id>`）。
+    /// Rule id (`validate.rule.<id>`).
     pub rule: &'static str,
-    /// 语言无关的细节（ID/数量）。
+    /// Language-independent details (IDs/counts).
     pub detail: String,
-    /// 涉及对象。
+    /// Involved objects.
     pub objects: Vec<(ObjectKind, ObjectId)>,
 }
 
-/// 校验结果视图。
+/// Validation result view.
 #[derive(Clone, Debug, Default)]
 pub struct ValidationView {
-    /// 问题列表。
+    /// Issue list.
     pub items: Vec<ValidationItem>,
-    /// 错误数。
+    /// Error count.
     pub errors: usize,
-    /// 警告数。
+    /// Warning count.
     pub warnings: usize,
     /// (nodes, ways, relations)
     pub checked: (usize, usize, usize),
@@ -70,9 +70,9 @@ fn validation_rule_text(rule: &str) -> String {
     t(key).to_owned()
 }
 
-/// 右侧面板（JOSM 风格堆叠）。
+/// Right-side panel (JOSM-style stack).
 ///
-/// 空面板不显示占位文字：标签无内容时留空；选择/关系为空时也留空。
+/// Empty panels show no placeholder text: tags stay blank when there is no content; selection/relations stay blank when empty.
 #[allow(clippy::too_many_arguments)]
 pub fn right_side_panel(
     ui: &mut Ui,
@@ -90,7 +90,7 @@ pub fn right_side_panel(
     egui::ScrollArea::vertical()
         .id_salt("neo-right-panel")
         .show(ui, |ui| {
-            // ---- 图层：活动图层 + 停靠图层 ----
+            // ---- Layers: active layer + docked layers ----
             section_header(ui, ph::STACK, t("panel.layers"), |ui| {
                 if header_action(ui, ph::PLUS, t("layer.new")).clicked() {
                     actions.layer_new = true;
@@ -181,7 +181,7 @@ pub fn right_side_panel(
                 });
             }
 
-            // ---- 标签 / 成员（各自独立 ScrollArea，避免滚轮绑在一起）----
+            // ---- Tags / members (separate ScrollAreas so the scroll wheel is not shared) ----
             section_header(ui, ph::TAG, t("panel.tags"), |_| {});
             if !selection_list.is_empty() {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -205,7 +205,7 @@ pub fn right_side_panel(
                 }
             }
 
-            // ---- 选择：为空则留空 ----
+            // ---- Selection: blank when empty ----
             section_header(ui, ph::SELECTION, t("panel.selection"), |_| {});
             if !selection_list.is_empty() {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -227,7 +227,7 @@ pub fn right_side_panel(
                 });
             }
 
-            // ---- 关系：选中关系时编辑它自己的成员，下面列出全部关系 ----
+            // ---- Relations: when a relation is selected, edit its own members; all relations are listed below ----
             section_header(ui, ph::TREE_STRUCTURE, t("panel.relations"), |_| {});
             if let Some(relation) = relation_being_edited(selection, selection_list) {
                 relation_members_editor(ui, actions, data, relation, selection_list, tags_editor);
@@ -263,7 +263,7 @@ pub fn right_side_panel(
                 });
             }
 
-            // ---- 命令历史：点击某步等价于连续撤销到该步之前 ----
+            // ---- Command history: clicking a step is equivalent to undoing repeatedly to before that step ----
             section_header(ui, ph::CLOCK_COUNTER_CLOCKWISE, t("panel.history"), |_| {});
             if history.is_empty() {
                 ui.label(RichText::new(t("history.empty")).size(11.0));
@@ -284,7 +284,7 @@ pub fn right_side_panel(
                     });
             }
 
-            // ---- 校验结果 ----
+            // ---- Validation results ----
             section_header(ui, ph::CHECK_SQUARE, t("panel.validation"), |ui| {
                 if header_action(ui, ph::PLAY, t("validate.run")).clicked() {
                     actions.run_validation = true;
@@ -348,7 +348,7 @@ pub fn right_side_panel(
         });
 }
 
-/// 用选中对象集合（单选即自身）的标签并集同步标签编辑器。
+/// Sync the tag editor with the union of tags of the selected object set (a single selection is itself).
 fn sync_tags_editor(data: &DataSet, targets: &[(ObjectKind, ObjectId)], editor: &mut TagsEditor) {
     let version = data.version();
     if !editor.needs_sync(targets, version) {
@@ -362,7 +362,7 @@ fn sync_tags_editor(data: &DataSet, targets: &[(ObjectKind, ObjectId)], editor: 
     editor.sync(targets, version, &rows);
 }
 
-/// 读取一个对象的标签（字符串对）；对象不存在时为空。
+/// Read an object's tags (string pairs); empty when the object does not exist.
 fn object_tags(data: &DataSet, kind: ObjectKind, id: ObjectId) -> Vec<(String, String)> {
     let pairs: &[(neo_core::Sym, neo_core::Sym)] = match kind {
         ObjectKind::Node => data
@@ -388,7 +388,7 @@ fn object_tags(data: &DataSet, kind: ObjectKind, id: ObjectId) -> Vec<(String, S
         .collect()
 }
 
-/// 标签栏里的成员：该要素属于哪些关系，以及它在其中的角色。
+/// Members in the tag panel: which relations this feature belongs to, and its role in them.
 fn membership_block(
     ui: &mut Ui,
     actions: &mut UiActions,
@@ -498,7 +498,7 @@ fn member_is(data: &DataSet, member: &neo_store::StoredMember, kind: ObjectKind,
     }
 }
 
-/// 当前要编辑其自身成员的关系：主选择优先，否则取选择列表里的关系。
+/// The relation whose own members are being edited: primary selection first, otherwise a relation from the selection list.
 fn relation_being_edited(
     selection: Option<(ObjectKind, ObjectId)>,
     selection_list: &[(ObjectKind, ObjectId)],
@@ -512,7 +512,7 @@ fn relation_being_edited(
         .map(|(_, id)| *id)
 }
 
-/// 关系自己的成员（增删、排序、改角色）。不放在标签栏。
+/// A relation's own members (add/remove, reorder, change role). Not placed in the tag panel.
 fn relation_members_editor(
     ui: &mut Ui,
     actions: &mut UiActions,
@@ -634,10 +634,10 @@ fn header_action(ui: &mut Ui, icon: &str, tip: &str) -> egui::Response {
 }
 
 // ---------------------------------------------------------------------------
-// 底部状态栏：经纬度 / 比例尺 / 测距 / 缩放 / 撤销重做
+// Bottom status bar: lat/lon / scale / measure / zoom / undo-redo
 // ---------------------------------------------------------------------------
 
-/// 底部状态栏。
+/// Bottom status bar.
 pub fn status_bar(ui: &mut Ui, state: UiState<'_>) {
     ui.horizontal(|ui| {
         let (lat, lon) = state.mouse_latlon.unwrap_or(state.center_latlon);
@@ -711,13 +711,13 @@ pub fn status_bar(ui: &mut Ui, state: UiState<'_>) {
     });
 }
 
-/// 比例尺：按当前米/像素画一段 80px 左右的标尺并标注距离。
+/// Scale bar: draw a ruler of about 80px using the current meters/pixel and label the distance.
 fn scale_bar(ui: &mut Ui, meters_per_px: f64) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 20.0), egui::Sense::hover());
     let painter = ui.painter();
     let target_px = 90.0_f64;
     let raw = meters_per_px * target_px;
-    // 取 1/2/5 × 10^n 的"漂亮"距离
+    // Pick a "nice" distance of 1/2/5 × 10^n
     let exponent = raw.log10().floor();
     let base = 10f64.powf(exponent);
     let mut nice = base;
@@ -755,10 +755,10 @@ fn scale_bar(ui: &mut Ui, meters_per_px: f64) {
 }
 
 // ---------------------------------------------------------------------------
-// 图层信息窗口（右键图层 → 信息）
+// Layer info window (right-click layer → Info)
 // ---------------------------------------------------------------------------
 
-/// 图层信息窗口（JOSM：图层右键 → 信息）。
+/// Layer info window (JOSM: right-click layer → Info).
 pub fn layer_info_window(
     ctx: &egui::Context,
     data: &DataSet,

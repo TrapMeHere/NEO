@@ -1,100 +1,100 @@
-# 06 · 编辑核心与撤销（Editing Core & Undo）
+# 06 · Editing Core & Undo
 
-NEO 的一切数据修改都经过 `Command` + `Transaction`：命令只描述意图，`EditTx` 在影子层收集操作，提交时按固定管线验证、应用、生成逆操作、写日志、发布快照。本文定义 `EditCommand`/`EditTx` 的语义、提交管线的顺序与失败语义、Undo/Redo 与上传状态的交互、ChangeSet/OSC 生成，以及 Journal 格式与崩溃恢复；线程归属见 [并发模型](./07-concurrency-and-tasks.md)，编辑器在整体中的位置见 [系统架构](./01-system-architecture.md) §2.3。
+All data modifications in NEO go through `Command` + `Transaction`: a command describes only intent, `EditTx` collects operations in a shadow layer, and on commit a fixed pipeline validates, applies, captures inverse operations, writes the journal, and publishes the snapshot. This document defines the semantics of `EditCommand`/`EditTx`, the commit pipeline's order and failure semantics, the interaction between Undo/Redo and upload state, ChangeSet/OSC generation, and the Journal format and crash recovery; thread ownership is in [Concurrency Model](./07-concurrency-and-tasks.md), and the editor's place in the whole is in [System Architecture](./01-system-architecture.md) §2.3.
 
-## 1 目标与范围
+## 1 Goals and Scope
 
-**在范围内**：编辑原语（增删改、节点移动、way 增删点、relation 成员）、事务原子性、Undo/Redo 栈、内存 journal 与 replay、冲突数据模型。
+**In scope**: editing primitives (create/update/delete, node movement, way node add/remove, relation members), transaction atomicity, the Undo/Redo stack, the in-memory journal and replay, and the conflict data model.
 
-**不在范围**：具体工具的交互手感（`neo-tools`）、OSM API 的 HTTP 语义（[09](./09-osm-api-and-sync.md)）、校验规则内容（[12](./12-validation.md)）、SQLite schema（[10](./10-persistence-and-recovery.md)）。
+**Out of scope**: the interaction feel of specific tools (`neo-tools`), the HTTP semantics of the OSM API ([09](./09-osm-api-and-sync.md)), the content of validation rules ([12](./12-validation.md)), and the SQLite schema ([10](./10-persistence-and-recovery.md)).
 
-## 2 架构设计
+## 2 Architecture Design
 
-### 2.1 为什么不是直接改 store
+### 2.1 Why Not Mutate the Store Directly
 
-| 若允许直接改 store，会失去 | 后果 | Command 模型如何补上 |
+| What would be lost if direct store mutation were allowed | Consequence | How the Command model restores it |
 |---|---|---|
-| 逆操作 | 无法撤销（事后重建前像需要全量 diff） | 应用阶段逐操作捕获逆操作 |
-| 原子性 | 半完成状态（移动了节点但 way 未更新） | 影子层缓冲 + 全成或全败 |
-| 单点验证 | 校验散落在 UI/工具里，无法在 headless 下测 | `commit()` 是唯一校验入口 |
-| 日志 | 崩溃恢复只能靠全量 autosave | 提交前写 op 日志 |
-| OSC 生成 | 上传 diff 需要另行对比快照 | `ChangeSet` 由提交产物累积 |
-| 插件安全边界 | WASM 插件能篡改任意状态 | 插件只能返回 `EditCommand` |
+| Inverse operations | No undo (reconstructing the prior image after the fact needs a full diff) | Capture inverse operations per operation during apply |
+| Atomicity | Half-finished state (node moved but way not updated) | Shadow-layer buffering + all-or-nothing |
+| Single-point validation | Validation scattered across UI/tools, untestable headless | `commit()` is the only validation entry point |
+| Journaling | Crash recovery can only rely on full autosave | Write the op log before committing |
+| OSC generation | Upload diffs would need a separate snapshot comparison | `ChangeSet` is accumulated from commit products |
+| Plugin safety boundary | WASM plugins could tamper with arbitrary state | Plugins can only return `EditCommand` |
 
-直改 store 的诱惑在"性能"：多一层缓冲看似浪费。实际缓冲成本是一次 `Vec<EditOp>` push（几十字节），相对几何索引更新的量级可忽略；**具体开销【待实测，见 docs/14-performance-and-verification.md】**。
+The temptation of direct store mutation is "performance": an extra buffer layer looks wasteful. The actual buffering cost is one `Vec<EditOp>` push (tens of bytes), negligible relative to geometry index updates; **concrete overhead is [pending measurement, see docs/14-performance-and-verification.md]**.
 
-### 2.2 命令、事务、数据集三者的关系
+### 2.2 Relationship Between Commands, Transactions, and the Dataset
 
 
-**关键点：`apply` 不改 `DataSet`。** `EditTx` 维护 `inserts / updates / deletes` 三个叠加层，`tx.node(id)` 先查 overlay 再查 base，因此同一事务内"先建点、再建 way、再改点标签"能自洽。真正的写入发生在 `commit()`，此时才需要 `&mut DataSet`，也才可能失败（唯一能失败的写路径是句柄 generation 与索引冲突，前置验证已排除绝大多数）。
+**Key point: `apply` does not modify `DataSet`.** `EditTx` maintains three overlay layers, `inserts / updates / deletes`, and `tx.node(id)` checks the overlay first, then the base, so "create a node, then a way, then edit the node's tags" is self-consistent within the same transaction. The actual writes happen in `commit()`, which is when `&mut DataSet` is needed and when failure is possible (the only write paths that can fail are handle generation and index conflicts; prior validation has already ruled out the vast majority).
 
-### 2.3 提交管线（12 步）
+### 2.3 Commit Pipeline (12 Steps)
 
-| # | 步骤 | 失败语义 | 为何在此位置 |
+| # | Step | Failure semantics | Why at this position |
 |---|---|---|---|
-| 1 | `validate_structure`：引用完整、way 至少 2 点、relation 成员类型合法、自相交可选 | 返回 `EditError::InvalidGeometry`，**DataSet 未变** | 最早失败最便宜 |
-| 2 | `journal.append_begin(txn, label)` | `JournalError` → 整个事务放弃 | 写前日志必须先于任何状态改变 |
-| 3 | `apply_ops`：把 write-set 落到 `DataSet` 的 SoA 列 | 不应失败（前置已验证）；debug 下 `assert!` | — |
-| 4 | `capture_inverse`：为每个 op 记录前像/后像 | 不可能失败（内存不足则 abort） | 必须在应用时捕获，事后不可重建 |
-| 5 | `journal.append_commit(txn)` + `sync`（按策略） | 失败 → 用第 4 步的逆操作回滚到 txn 前 | 崩溃一致性点 |
-| 6 | `dirty.mark(touched)` | — | 供增量渲染与 autosave |
-| 7 | `geo.invalidate(touched, version+1)` | — | 几何缓存键含 version 区间 |
-| 8 | `refs.update(touched)`（node→ways、way→relations） | — | 索引与数据同步更新 |
-| 9 | `spatial.update(touched)`（rstar 增量插入/删除） | — | 拾取与可见集依赖它 |
-| 10 | `version += 1`（无条件，包括 undo） | — | INV-7 |
-| 11 | `publish(snapshot)`：`Arc::new` + `ArcSwap::store` | — | 订阅者从此看到新版本 |
-| 12 | `notify`：selection 修剪、UI 失效、autosave 触发、插件事件、`puffin` 打点 | 订阅者异常不得回滚已提交事务 | 观察者只读 |
+| 1 | `validate_structure`: references complete, way has at least 2 points, relation member types legal, optional self-intersection check | Returns `EditError::InvalidGeometry`, **DataSet unchanged** | Failing earliest is cheapest |
+| 2 | `journal.append_begin(txn, label)` | `JournalError` → abandon the whole transaction | Write-ahead logging must precede any state change |
+| 3 | `apply_ops`: write the write-set into `DataSet`'s SoA columns | Should not fail (pre-validated); `assert!` in debug | — |
+| 4 | `capture_inverse`: record the prior/post image for every op | Cannot fail (abort on out-of-memory) | Must be captured during apply; it cannot be reconstructed later |
+| 5 | `journal.append_commit(txn)` + `sync` (per policy) | Failure → roll back to pre-txn using the inverse ops from step 4 | The crash-consistency point |
+| 6 | `dirty.mark(touched)` | — | For incremental rendering and autosave |
+| 7 | `geo.invalidate(touched, version+1)` | — | Geometry cache keys include the version range |
+| 8 | `refs.update(touched)` (node→ways, way→relations) | — | Indexes and data update together |
+| 9 | `spatial.update(touched)` (incremental rstar insert/remove) | — | Picking and the visible set depend on it |
+| 10 | `version += 1` (unconditionally, including undo) | — | INV-7 |
+| 11 | `publish(snapshot)`: `Arc::new` + `ArcSwap::store` | — | Subscribers see the new version from here on |
+| 12 | `notify`: selection pruning, UI invalidation, autosave trigger, plugin events, `puffin` points | Subscriber exceptions must not roll back a committed transaction | Observers are read-only |
 
-第 2/5 步的顺序说明"写前日志"的准确含义：journal 记录的是**操作**（`EditOp`），不是后像。因为 `EditOp` 在给定前像下是确定性的，replay 可重建状态，且记录体积远小于镜像。代价是 replay 依赖代码版本（见 §2.6 的 schema 版本门）。
+The ordering of steps 2/5 explains the precise meaning of "write-ahead logging": the journal records **operations** (`EditOp`), not post-images. Because `EditOp` is deterministic given the prior image, replay can reconstruct state, and the record size is far smaller than a mirror. The cost is that replay depends on the code version (see the schema version gate in §2.6).
 
 ### 2.4 Undo / Redo
 
 ```
- History.entries: [ e0 | e1 | e2 | e3 | e4 ]      cursor = 5 (尾部)
-                                     ↑ 新事务 → 截断 cursor 之后（清空 redo），push e5
- undo: cursor-- → 取 entries[cursor].inverse → 作为普通事务提交（version+1）
- redo: cursor++ → 取 entries[cursor].forward → 作为普通事务提交（version+1）
+ History.entries: [ e0 | e1 | e2 | e3 | e4 ]      cursor = 5 (tail)
+                                     ↑ new transaction → truncate after cursor (clear redo), push e5
+ undo: cursor-- → take entries[cursor].inverse → commit as an ordinary transaction (version+1)
+ redo: cursor++ → take entries[cursor].forward → commit as an ordinary transaction (version+1)
 ```
 
-| 设计点 | 规则 | 理由 |
+| Design point | Rule | Rationale |
 |---|---|---|
-| 撤销也是事务 | 走 §2.3 全部 12 步，version+1 | 订阅者不需要区分"正向/反向"，INV-7 |
-| 逆操作来源 | `apply` 时逐 op 捕获（前像 + 被删对象的完整对象） | 事后无法重建被覆盖的标签 |
-| 合并（coalescing） | 仅当 `merge_hint` 相等且间隔 < 500 ms：同类拖拽、同一标签键连续编辑 | 避免一次拖动产生 60 条记录 |
-| 幂等 | `undo` 两次 = 原状态 + 两次 version++；`redo` 只在 cursor 处有效 | 保证脚本化重放可预测 |
-| 容量 | 默认上限 256 MiB（可配），按对象大小估算；超限驱逐最旧条目并置 `history_truncated` | 10M 对象下前像不能无限存 |
-| 与上传状态 | 条目状态 `Unuploaded / Uploaded{changeset} / DirtyAgain`；对已上传条目 undo 后置 `DirtyAgain` | 远端不会回滚，本地需重新上传（见下表） |
+| Undo is also a transaction | Goes through all 12 steps of §2.3, version+1 | Subscribers need not distinguish "forward/reverse", INV-7 |
+| Source of inverse ops | Captured per op during `apply` (prior image + complete object for deleted objects) | Overwritten tags cannot be reconstructed later |
+| Coalescing | Only when `merge_hint` is equal and the gap is < 500 ms: same-kind drags, consecutive edits of the same tag key | Avoids 60 entries from one drag |
+| Idempotence | `undo` twice = original state + two version++ increments; `redo` only valid at the cursor | Keeps scripted replay predictable |
+| Capacity | Default cap 256 MiB (configurable), estimated by object size; evict oldest entries when exceeded and set `history_truncated` | Prior images of 10M objects cannot be kept unbounded |
+| Upload state | Entry state `Unuploaded / Uploaded{changeset} / DirtyAgain`; undo of an uploaded entry sets `DirtyAgain` | The remote side does not roll back, so local re-upload is needed (see table below) |
 
-| 条目状态 | 触发 | 再次上传时生成 |
+| Entry state | Trigger | Generated on next upload |
 |---|---|---|
-| `Unuploaded` | 新提交 | 创建/修改/删除元素 |
-| `Uploaded{cs}` | 上传成功并标记 | —（已固化） |
-| `DirtyAgain` | 对已上传条目 undo/redo，或改动了已上传对象 | 新 changeset 中的 modify/delete |
-| `Orphaned` | 对象被远端删除（409 后确认） | 不出现在 OSC，改为 `RecreateObject` 候选 |
+| `Unuploaded` | New commit | create/modify/delete elements |
+| `Uploaded{cs}` | Upload succeeded and marked | — (already fixed) |
+| `DirtyAgain` | Undo/redo of an uploaded entry, or editing an uploaded object | modify/delete in a new changeset |
+| `Orphaned` | Object deleted remotely (confirmed after 409) | Does not appear in the OSC; becomes a `RecreateObject` candidate |
 
-### 2.5 ChangeSet 与 OSC 生成
+### 2.5 ChangeSet and OSC Generation
 
-`ChangeSet` 是**提交产物的累积器**，与 History 解耦（History 可被截断，ChangeSet 不能丢）。
+`ChangeSet` is the **accumulator of commit products**, decoupled from History (History may be truncated; ChangeSet must not be lost).
 
-| 本地状态 | OSC 元素 | 备注 |
+| Local state | OSC element | Notes |
 |---|---|---|
-| 新对象（负 id） | `<create>` | 上传后由 `id_map: ObjectId → ObjectId` 映射为正 id |
-| 已有对象被修改 | `<modify>` | 携带 `version`，服务端据此判冲突 |
-| 已有对象被删除 | `<delete>` | 携带 `version`；服务端 `if-unused` 校验 |
-| 新建后又删除 | 不出现 | 提交时即从 ChangeSet 中消解，避免噪声 |
+| New object (negative id) | `<create>` | After upload, mapped to a positive id by `id_map: ObjectId → ObjectId` |
+| Existing object modified | `<modify>` | Carries `version`; the server judges conflicts from it |
+| Existing object deleted | `<delete>` | Carries `version`; server-side `if-unused` validation |
+| Created then deleted | Does not appear | Resolved out of the ChangeSet at commit time, avoiding noise |
 
-生成时机：`ChangeSetAccumulator::diff() -> EditDiff`（`created/modified/deleted`），再交给 `neo_io::osc::OscWriter::write_osc(&diff, opts, w)`；逐对象比较 base 像与当前像，**不读 History**。`EditDiff` 的形态与写入器见 [08](./08-io-pbf-xml-osc.md) §3。冲突上传返回 409 时，服务端返回的 diff 与本地 base 像构成三方合并的输入（§2.6）。
+Generation timing: `ChangeSetAccumulator::diff() -> EditDiff` (`created/modified/deleted`), then handed to `neo_io::osc::OscWriter::write_osc(&diff, opts, w)`; objects are compared base-image vs current-image, **History is not read**. The shape of `EditDiff` and the writer are in [08](./08-io-pbf-xml-osc.md) §3. When a conflicting upload returns 409, the diff returned by the server plus the local base image form the input to a three-way merge (§2.6).
 
-### 2.6 冲突：数据模型与 UI 交接
+### 2.6 Conflicts: Data Model and UI Handoff
 
 ```rust
-/// 对象级"合并情形"。刻意不叫 ConflictKind——那个名字归 neo-api 的
-/// ConflictReport 使用（见 09 §3）；editor 不依赖 api，两者分离。
+/// Object-level "merge case". Deliberately not named ConflictKind — that name belongs to neo-api's
+/// ConflictReport (see 09 §3); editor does not depend on api, and the two are separate.
 pub enum MergeCase {
     VersionMismatch { local: i32, remote: i32 },
     LocalDeletedRemoteModified,
     RemoteDeletedLocalModified,
-    TagDiverged { key: String },                       // 同键不同值
+    TagDiverged { key: String },                       // same key, different values
     NodeMoved { local_delta_m: f64, remote_delta_m: f64 },
     WayNodeListDiverged { local: Vec<NodeId>, remote: Vec<NodeId> },
     RelationMemberDiverged,
@@ -104,13 +104,13 @@ pub enum MergeCase {
 pub struct Conflict {
     pub object: ObjectRef,
     pub case: MergeCase,
-    pub base: Option<ObjectImage>,     // 上传前的本地像
-    pub local: Option<ObjectImage>,    // 当前本地像（可能已再编辑）
-    pub remote: Option<ObjectImage>,   // 服务端当前像（409 响应或重下载）
+    pub base: Option<ObjectImage>,     // local image before upload
+    pub local: Option<ObjectImage>,    // current local image (may have been re-edited)
+    pub remote: Option<ObjectImage>,   // current server image (409 response or re-download)
 }
 
-/// 与 neo-api 的 ConflictResolution 同名同序（KeepLocal | TakeRemote | MergeManually），
-/// 便于 app 层一对一转换；额外两项是 editor 独有的本地动作。
+/// Same names and order as neo-api's ConflictResolution (KeepLocal | TakeRemote | MergeManually),
+/// for one-to-one conversion at the app layer; the extra two entries are local actions unique to editor.
 pub enum ConflictResolution {
     KeepLocal, TakeRemote,
     MergeManually { tags: BTreeMap<String, String>, geometry: GeometryChoice },
@@ -118,87 +118,85 @@ pub enum ConflictResolution {
 }
 ```
 
-| 情形 | 合并规则 | 落入哪类 |
+| Case | Merge rule | Which category |
 |---|---|---|
-| 双方改不同标签键 | 自动合并（并集） | 无（不需人工） |
-| 同键不同值 | 必须人工选择（本地/远端/手填） | `TagDiverged` |
-| 远端删除、本地修改 | 人工选择（保留/删除/重建为新对象） | `RemoteDeletedLocalModified` |
-| way 节点列表双方都变 | 人工选择 + 可视 diff | `WayNodeListDiverged` |
+| Both sides change different tag keys | Automatic merge (union) | None (no manual work needed) |
+| Same key, different values | Manual choice required (local/remote/manual entry) | `TagDiverged` |
+| Remote deleted, local modified | Manual choice (keep/delete/recreate as new object) | `RemoteDeletedLocalModified` |
+| Both sides change a way's node list | Manual choice + visual diff | `WayNodeListDiverged` |
 
-UI 交接形态：`ConflictQueue` 由 `Editor` 拥有，UI 每帧只 `peek`，用户选择后调用 `resolve()`，它返回一个**普通 `EditCommand`**（`ResolveConflictCommand`），走 §2.3 管线。因此"解决冲突"与"编辑"完全同构：可撤销、可入 journal、可测试（不需要 UI）。
+UI handoff shape: `ConflictQueue` is owned by `Editor`; the UI only `peek`s each frame, and after the user chooses it calls `resolve()`, which returns an **ordinary `EditCommand`** (`ResolveConflictCommand`) that goes through the §2.3 pipeline. Thus "resolving a conflict" and "editing" are completely isomorphic: undoable, journalable, and testable (without a UI).
 
-**409 的翻译发生在应用层**：`neo-api::ApiError::Conflict(ConflictReport)` 只含 id/version/stage 与服务端文本，不含本地对象像；把 `ConflictReport` + ChangeSet base 像翻译成 `Conflict` 的适配器放在 `apps/neo-desktop/src/sync_bridge.rs`（同时依赖 api 与 editor 的唯一位置）。这样 editor 不依赖 api、api 不依赖 editor，冲突模型只由 ID/版本/对象像构成。
+**409 translation happens at the application layer**: `neo-api::ApiError::Conflict(ConflictReport)` contains only id/version/stage and server text, not local object images; the adapter that translates `ConflictReport` + ChangeSet base images into `Conflict` lives in `apps/neo-desktop/src/sync_bridge.rs` (the only place that depends on both api and editor). This way editor does not depend on api, api does not depend on editor, and the conflict model consists only of IDs/versions/object images.
 
-### 2.6.1 引用完整性：删除 / 合并 / 分割的级联语义
+### 2.6.1 Referential Integrity: Cascading Semantics of Delete / Merge / Split
 
-OSM 服务端拒绝删除仍被引用的对象（HTTP 412 `Node … is still used by ways …`），但允许在
-**同一个 changeset 里先修改引用者、再删除**。JOSM/iD 删除顶点就是这么做。所以本地不能
-"被引用就报错"，必须把引用者一起改掉：
+The OSM server refuses to delete objects that are still referenced (HTTP 412 `Node … is still used by ways …`), but it allows modifying the referrers **and then deleting within the same changeset**. This is exactly what JOSM/iD do when deleting vertices. So locally we cannot "error out whenever referenced"; the referrers must be modified along with it:
 
-| 操作 | 引用者处理 | 实现 |
+| Operation | Referrer handling | Implementation |
 |---|---|---|
-| 删节点 | 从各 way 的节点序列中摘掉；剩余不足 2 点的 way 整条删除（UI 二次确认） | `neo_editor::plan_delete` |
-| 删节点 / way / relation | 从 relation 成员列表中剔除该成员 | 同上 |
-| 合并 way B→A | 引用 B 的 relation 成员就地换成 A（保留角色），重复成员去重 | `MergeWay::apply` |
-| 分割 way | 新 way 紧跟原 way 插入其所在的 relation（同一角色） | `SplitWay::apply` |
-| 批量粘贴 relation | 成员 relation 先于引用者创建 | `neo_editor::order_relations_by_dependency` |
+| Delete node | Remove it from each way's node sequence; delete any way left with fewer than 2 points entirely (UI double confirmation) | `neo_editor::plan_delete` |
+| Delete node / way / relation | Remove that member from relation member lists | Same as above |
+| Merge way B→A | Relation members referencing B are replaced in place with A (role preserved); duplicate members deduplicated | `MergeWay::apply` |
+| Split way | The new way is inserted into the relations containing the original way, right after it (same role) | `SplitWay::apply` |
+| Batch-paste relations | Member relations are created before their referrers | `neo_editor::order_relations_by_dependency` |
 
-`plan_delete` 只**生成**命令，由 `execute_batch` 提交：引用者修正与删除共享一次事务和
-**一条** undo 记录。`DeleteObject::precheck` 仍保持严格（被引用就拒绝）作为最后一道安全网；
-journal 记录的是整批命令，replay 按同样顺序复现。
+`plan_delete` only **generates** commands, submitted by `execute_batch`: referrer fixes and deletions share one transaction and
+**one** undo record. `DeleteObject::precheck` remains strict (reject when referenced) as the final safety net;
+the journal records the whole batch, and replay reproduces it in the same order.
 
-配套约束：
+Supporting constraints:
 
-- way 的节点数下限 2 由规划器保证（不会产生 1 点 way）；上限 2000 由服务端在上传时校验。
-- relation 成员不允许成环：`SetRelationMembers::precheck` 沿成员链检测（服务端会 412）。
-- osmChange 的 `<delete>` 按 relation → way → node 排列，relation 内部再按**祖先深度降序**
-  （父先于子）；否则子 relation 会因仍被父引用而被服务端拒绝。
+- The minimum of 2 nodes per way is guaranteed by the planner (it never produces a 1-point way); the upper bound of 2000 is validated by the server on upload.
+- Relation members must not form cycles: `SetRelationMembers::precheck` checks along the member chain (the server returns 412).
+- osmChange `<delete>` entries are ordered relation → way → node, and within relations by **descending ancestor depth**
+  (parents before children); otherwise child relations would be rejected by the server for still being referenced by their parents.
 
-### 2.7 Journal：格式、replay、与 autosave 的分工
+### 2.7 Journal: Format, Replay, and the Division of Labor with autosave
 
 
-| 记录 | 何时写 | 载荷 |
+| Record | When written | Payload |
 |---|---|---|
-| `TxnBegin` | 步骤 2 | `txn_id, label, base_version, timestamp, author` |
-| `Op` | 步骤 2 之后（随 apply 逐条写） | `EditOp` |
-| `TxnCommit` | 步骤 5 | `txn_id, op_count` |
-| `Checkpoint` | autosave 成功后 | `snapshot_version, autosave_path` |
+| `TxnBegin` | Step 2 | `txn_id, label, base_version, timestamp, author` |
+| `Op` | After step 2 (written one by one during apply) | `EditOp` |
+| `TxnCommit` | Step 5 | `txn_id, op_count` |
+| `Checkpoint` | After a successful autosave | `snapshot_version, autosave_path` |
 
-| 决策 | 选择 | 理由 |
+| Decision | Choice | Rationale |
 |---|---|---|
-| 编码 | **rkyv 0.8.18**（`Archive + Serialize`） | 零拷贝读、体积小；bincode 无版本校验且演进脆弱 |
-| 对齐 | payload 先写 `AlignedVec` 再落盘；读侧逐条 `AlignedVec::from_slice` 后 `access` | rkyv 相对指针要求整体基址对齐 |
-| 版本门 | header `schema: u16`，不匹配即拒绝加载 | rkyv 的 schema 演进不自动 |
-| 完整性 | 每帧 `crc32c` + magic 校验 | 崩溃时最后半帧必然撕裂，靠校验定位截断点 |
-| fsync 策略 | `always` / `interval(1s)` / `never`，默认 `interval` + 上传前强制 `always` | `always` 每事务一次 fsync 在大数据集上过慢【待实测，见 docs/14-performance-and-verification.md】 |
-| 与 SQLite 的分工 | journal = 操作日志；SQLite = 对象镜像缓存 + autosave | 一个面向操作、一个面向镜像，不重复 |
+| Encoding | **rkyv 0.8.18** (`Archive + Serialize`) | Zero-copy reads, small size; bincode has no version validation and evolves fragilely |
+| Alignment | Payload is written to an `AlignedVec` before hitting disk; the read side does `AlignedVec::from_slice` then `access` per record | rkyv relative pointers require the overall base address to be aligned |
+| Version gate | Header `schema: u16`; mismatch refuses to load | rkyv schema evolution is not automatic |
+| Integrity | Per-frame `crc32c` + magic validation | On crash the last half-frame is necessarily torn; validation locates the truncation point |
+| fsync policy | `always` / `interval(1s)` / `never`; default `interval` + forced `always` before upload | `always` means one fsync per transaction, too slow on large datasets [pending measurement, see docs/14-performance-and-verification.md] |
+| Division of labor with SQLite | journal = operation log; SQLite = object image cache + autosave | One is operation-oriented, the other image-oriented; no duplication |
 
-**所有权切分（避免 editor↔persist 反向依赖）**：帧格式、`JournalRecord`、`EditOp` 的 rkyv 归档与 replay 算法都归 `neo-editor`；文件创建/轮转/索引/GC/fsync 归 `neo-persist::JournalStore`，它只接收 `(FrameKind, &[u8])` 并回传 `seq`。装配点在 `apps/neo-desktop`：把 `Arc<Mutex<JournalStore>>` 适配成 `JournalSink` 注入 `Editor`。这样 `neo-persist` 依赖 `store` 而不依赖 `editor`（[02](./02-workspace-and-dependency-rules.md) §2.2）；细节见 [10](./10-persistence-and-recovery.md) §2.3。
+**Ownership split (avoiding a reverse editor↔persist dependency)**: frame format, `JournalRecord`, `EditOp` rkyv archiving, and the replay algorithm all belong to `neo-editor`; file creation/rotation/indexing/GC/fsync belong to `neo-persist::JournalStore`, which only receives `(FrameKind, &[u8])` and returns a `seq`. The wiring point is `apps/neo-desktop`: adapt `Arc<Mutex<JournalStore>>` into a `JournalSink` and inject it into `Editor`. This way `neo-persist` depends on `store` but not on `editor` ([02](./02-workspace-and-dependency-rules.md) §2.2); details in [10](./10-persistence-and-recovery.md) §2.3.
 
-**Replay 算法**：
+**Replay algorithm**:
 
 
-## 3 关键接口
+## 3 Key Interfaces
 
 ```rust
 // crates/neo-editor/src/command.rs
 pub trait EditCommand: Send {
-    /// 只记录操作到 tx 的影子层；不得直接触碰 DataSet。
+    /// Records operations into the tx shadow layer only; must not touch DataSet directly.
     fn apply(&mut self, tx: &mut EditTx) -> Result<CmdOutcome, EditError>;
-    /// 逆操作。默认实现由 AutoUndo 包装器注入（重放捕获到的逆操作）；
-    /// 仅当命令有非结构副作用（selection/changeset/插件状态）时才需要手写。
+    /// Inverse operations. The default implementation is injected by the AutoUndo wrapper (replaying the captured inverses);
+    /// only commands with non-structural side effects (selection/changeset/plugin state) need a hand-written version.
     fn undo(&mut self, tx: &mut EditTx) -> Result<(), EditError>;
     fn label(&self) -> CmdLabel;
     fn merge_hint(&self) -> MergeHint { MergeHint::None }
     fn touched(&self) -> &[ObjectRef] { &[] }
 }
 
-/// 为什么 `apply` 取 `&mut self`：
-/// 1) 命令会被 redo 重放，需要可重置的内部游标；
-/// 2) 合并（coalescing）要修改既有命令的终态；
-/// 3) 逆操作缓存（前像、被删对象）挂在命令上，避免二次遍历。
-/// 为什么 `undo` 也返回 `Result`：undo 可能因句柄过期或依赖缺失失败，
-/// 必须能向用户报错并保留 history 一致性（失败则 cursor 不前移）。
+/// Why `apply` takes `&mut self`:
+/// 1) commands are replayed on redo, needing a resettable internal cursor;
+/// 2) coalescing must modify an existing command's final state;
+/// 3) inverse caches (prior images, deleted objects) hang off the command, avoiding a second traversal.
+/// Why `undo` also returns `Result`: undo may fail due to an expired handle or a missing dependency,
+/// and must be able to report the error to the user while preserving history consistency (on failure the cursor does not advance).
 
 pub struct CmdOutcome {
     pub label: CmdLabel,
@@ -213,12 +211,12 @@ pub struct EditTx<'a> { /* base: &'a mut DataSet, ops: Vec<EditOp>, policy: &'a 
 
 impl EditTx<'_> {
     pub fn base_version(&self) -> u64;
-    // 读穿透：先查 overlay 再查 base，因此同一事务内的写入立刻可见
+    // Read-through: check the overlay first, then the base, so writes within the same transaction are immediately visible
     pub fn node(&self, id: NodeId) -> Option<NodeView<'_>>;
     pub fn way(&self, id: WayId) -> Option<WayView<'_>>;
     pub fn way_node_ids(&self, id: WayId) -> Option<Vec<NodeId>>;
 
-    pub fn insert_node(&mut self, node: Node) -> NodeId;                 // 自动分配负 id
+    pub fn insert_node(&mut self, node: Node) -> NodeId;                 // allocates a negative id automatically
     pub fn insert_node_with_id(&mut self, id: NodeId, node: Node) -> Result<(), EditError>;
     pub fn set_position(&mut self, id: NodeId, pos: LatLon) -> Result<(), EditError>;
     pub fn set_tags(&mut self, id: ObjectId, diff: TagDiff) -> Result<(), EditError>;
@@ -250,15 +248,15 @@ pub struct Selection {
 impl Selection {
     pub fn toggle(&mut self, id: ObjectRef);
     pub fn set_primary(&mut self, id: Option<ObjectRef>);
-    pub fn snapshot(&self) -> SelectionSnapshot;          // 供后台任务只读使用
-    pub fn prune(&mut self, snap: &Snapshot) -> usize;    // 返回被移除的数量
+    pub fn snapshot(&self) -> SelectionSnapshot;          // for read-only use by background tasks
+    pub fn prune(&mut self, snap: &Snapshot) -> usize;    // returns the number removed
     pub fn contains(&self, id: ObjectRef) -> bool;
 }
 
 // crates/neo-editor/src/history.rs
 pub struct History { entries: Vec<HistoryEntry>, cursor: usize, bytes: usize, cap_bytes: usize }
 impl History {
-    pub fn push(&mut self, e: HistoryEntry) -> Option<HistoryEntry>;   // 返回被驱逐项
+    pub fn push(&mut self, e: HistoryEntry) -> Option<HistoryEntry>;   // returns the evicted entry
     pub fn can_undo(&self) -> bool;
     pub fn can_redo(&self) -> bool;
     pub fn undo(&mut self, tx: &mut EditTx) -> Result<CmdLabel, EditError>;
@@ -267,12 +265,12 @@ impl History {
     pub fn set_cap(&mut self, bytes: usize);
 }
 
-// crates/neo-editor/src/journal.rs —— editor 拥有"记录什么"，persist 拥有"写到哪"
+// crates/neo-editor/src/journal.rs —— editor owns "what to record", persist owns "where to write it"
 pub fn encode_record(rec: &JournalRecord, out: &mut rkyv::util::AlignedVec) -> Result<FrameHeader, JournalError>;
 pub fn decode_record(bytes: &[u8]) -> Result<JournalRecord, JournalError>;
 
-/// 字节级落盘接口：由 neo-persist::JournalStore 实现（feature = "persist" 时），
-/// 无 persist 时用 editor 自带的 MemoryJournal / FileJournal。
+/// Byte-level persistence interface: implemented by neo-persist::JournalStore (with feature = "persist"),
+/// or by editor's built-in MemoryJournal / FileJournal when persist is absent.
 pub trait JournalSink: Send {
     fn append_frame(&mut self, kind: FrameKind, payload: &[u8]) -> Result<u64, JournalError>; // -> seq
     fn sync(&mut self, mode: SyncMode) -> Result<(), JournalError>;
@@ -294,52 +292,52 @@ pub trait ConflictQueue: Send {
 }
 ```
 
-## 4 数据流与时序
+## 4 Data Flow and Sequencing
 
-### 4.1 一次提交的完整时序
+### 4.1 Full Sequence of One Commit
 
 ```
 UI ──execute──► Editor ──EditTx──► DataSet ──► Journal ──► Snapshot
-                 │ apply(ops)        │ SoA 写入    │ 落盘       │ publish
+                 │ apply(ops)        │ SoA writes  │ persist    │ publish
                  │ validate          │             │            │
-                 └─ 失败 ⇒ 零副作用（DataSet 未改，返回 Err）
-                 成功 ⇒ inverse → version+1 → notify(UI / 渲染 / autosave)
+                 └─ failure ⇒ zero side effects (DataSet unchanged, returns Err)
+                  success ⇒ inverse → version+1 → notify(UI / rendering / autosave)
 ```
 
-## 5 权衡与替代方案
+## 5 Tradeoffs and Alternatives
 
-| 选择 | 替代 | 为什么选它 | 代价 |
+| Choice | Alternative | Why this one | Cost |
 |---|---|---|---|
-| 影子层收集后统一 apply | 立即写 DataSet + 失败回滚 | 验证零副作用，工具代码简单 | overlay 读路径多一次查表；聚合查询需同时看两层 |
-| 操作日志（op log） | 镜像日志（post-image） | 体积小、可表达"创建再删除"消解 | replay 依赖代码 schema，跨版本需转换器 |
-| 逆操作在 apply 时捕获 | undo 时重新计算 | 唯一正确的方式（前像已被覆盖） | 内存随事务大小增长，需要容量上限 |
-| `EditTx::insert_node` 自动分配负 id | 由调用方传入临时 id | 避免 id 冲突；集中管理 id 空间 | 负 id 的分配顺序必须写入日志才能复现 |
+| Collect in a shadow layer then apply all at once | Write DataSet immediately + roll back on failure | Validation has zero side effects; tool code stays simple | The overlay read path adds one lookup; aggregate queries must consult both layers |
+| Operation log (op log) | Image log (post-image) | Smaller, and can express "create then delete" resolution | Replay depends on the code schema; cross-version conversion needs a converter |
+| Capture inverses during apply | Recompute during undo | The only correct approach (prior images are already overwritten) | Memory grows with transaction size; a capacity cap is required |
+| `EditTx::insert_node` allocates negative ids automatically | Caller supplies a temporary id | Avoids id conflicts; centralizes id-space management | Negative id allocation order must be journaled to be reproducible |
 
-## 6 风险
+## 6 Risks
 
-| # | 风险 | 触发信号 | 缓解 |
+| # | Risk | Trigger signal | Mitigation |
 |---|---|---|---|
-| C1 | 逆操作内存爆炸（批量操作 100 万对象后 undo） | History bytes 逼近 cap，驱逐频繁 | 单事务 ops 上限（`EditPolicy`）+ 大操作要求确认 |
-| C2 | replay 与当前代码 schema 不兼容 | 升级后启动提示"日志版本过新" | schema 版本门 + 每次发布跑"旧日志 replay"回归 |
-| C3 | 提交管线顺序被改（journal 落后于 publish） | 崩溃后数据比日志新 | 管线顺序写成集成测试（`tests/commit_order.rs`） |
-| C4 | 三方合并静默丢标签 | 用户报告"标签消失" | 自动合并只允许"不同键"；同键一律人工 |
+| C1 | Inverse-operation memory blowup (undo after a batch operation on 1 million objects) | History bytes approach the cap, evictions become frequent | Per-transaction ops cap (`EditPolicy`) + confirmation required for large operations |
+| C2 | Replay incompatible with the current code schema | After an upgrade, startup warns "log version too new" | Schema version gate + run an "old log replay" regression on every release |
+| C3 | Commit pipeline order changed (journal after publish) | Data newer than the log after a crash | Lock the pipeline order in an integration test (`tests/commit_order.rs`) |
+| C4 | Three-way merge silently loses tags | Users report "tags disappeared" | Automatic merging only allows "different keys"; same keys are always manual |
 
-## 7 验收标准
+## 7 Acceptance Criteria
 
-1. 任一 `apply` 成功但 `validate` 失败的事务，`DataSet` 的 `version` 与内容零变化（属性测试：随机命令 + 随机注入验证失败）。
-2. `undo` 后再 `redo` 得到除 version 外逐字段相同的 `Snapshot`，覆盖 create/delete/modify/way 增删点/relation 成员。
-3. 提交管线顺序由测试锁定：模拟"commit 后、publish 前"崩溃，replay 后状态与已提交状态一致。
-4. 杀进程测试（SIGKILL / `TerminateProcess`）100 次随机注入，绝不出现"半个事务"【通过率待实测，见 docs/14-performance-and-verification.md】。
-5. 对同一对象连续拖拽 60 帧只产生 1 条历史；间隔 > 500 ms 的两次拖拽产生 2 条。
-6. 409 冲突集成测试：构造 6 类 `MergeCase`，`resolve` 后的 OSC 能被服务端（mock）接受。
-7. 10 万对象批量操作时 History 内存不超过配置上限，驱逐后仍可 undo 最近 100 条。
+1. For any transaction where `apply` succeeds but `validate` fails, `DataSet`'s `version` and content change by zero (property test: random commands + randomly injected validation failures).
+2. `undo` followed by `redo` yields a `Snapshot` identical field by field except for version, covering create/delete/modify/way node add-remove/relation members.
+3. The commit pipeline order is locked by tests: simulating a crash "after commit, before publish", replay yields a state consistent with the committed state.
+4. Kill-process tests (SIGKILL / `TerminateProcess`) with 100 random injections never produce "half a transaction" [pass rate pending measurement, see docs/14-performance-and-verification.md].
+5. Dragging the same object continuously for 60 frames produces only 1 history entry; two drags more than 500 ms apart produce 2.
+6. 409 conflict integration tests: construct all 6 classes of `MergeCase`; the OSC produced after `resolve` is accepted by the server (mock).
+7. During a batch operation on 100k objects, History memory stays under the configured cap, and after eviction the most recent 100 entries can still be undone.
 
-## 8 参考
+## 8 References
 
-- OsmChange（OSC）规范：https://wiki.openstreetmap.org/wiki/OsmChange
-- OSM API v0.6 上传与 409 冲突语义：https://wiki.openstreetmap.org/wiki/API_v0.6
-- JOSM 冲突解决流程（行为对齐基准）：https://josm.openstreetmap.de/wiki/Help/ConflictResolution
-- JOSM 撤销/命令栈的公开说明：https://josm.openstreetmap.de/wiki/Help/Action/Undo
-- rkyv 0.8 归档与对齐要求：https://docs.rs/rkyv/0.8.18/rkyv/
-- arc-swap 与快照切换：https://docs.rs/arc-swap/1.9.5/arc_swap/
-- 项目内部取证记录（命令/冲突/JOSM 语义清单）：`.research/josm-inventory.md`、`.research/pages/conflict.txt`
+- OsmChange (OSC) specification: https://wiki.openstreetmap.org/wiki/OsmChange
+- OSM API v0.6 upload and 409 conflict semantics: https://wiki.openstreetmap.org/wiki/API_v0.6
+- JOSM conflict resolution flow (behavioral alignment baseline): https://josm.openstreetmap.de/wiki/Help/ConflictResolution
+- JOSM's public description of undo/command stacks: https://josm.openstreetmap.de/wiki/Help/Action/Undo
+- rkyv 0.8 archiving and alignment requirements: https://docs.rs/rkyv/0.8.18/rkyv/
+- arc-swap and snapshot switching: https://docs.rs/arc-swap/1.9.5/arc_swap/
+- Project-internal evidence records (command/conflict/JOSM semantics inventory): `.research/josm-inventory.md`, `.research/pages/conflict.txt`

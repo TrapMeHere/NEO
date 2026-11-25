@@ -1,4 +1,4 @@
-//! 编辑核心回归测试：本地 ID 稳定性、undo 落点、事务回滚、journal 与上传回写。
+//! Editing-core regression tests: local ID stability, undo target, transaction rollback, journal and upload write-back.
 
 use std::sync::{Arc, Mutex};
 
@@ -126,7 +126,7 @@ fn relation_members_can_be_added_reordered_and_removed_with_undo() {
     let relation = editor.data().iter_relations().next().unwrap().id;
     assert_eq!(editor.relation_members(relation).unwrap().len(), 2);
 
-    // 删掉第二个成员并改第一个角色。
+    // Remove the second member and change the first member's role.
     let mut changed = members.clone();
     changed.remove(1);
     changed[0].role = "outer".into();
@@ -295,7 +295,7 @@ fn import_from_dataset_copies_selected_objects_with_remapped_ids() {
     let (mut editor, _frames) = editor_with_sink();
     assert_eq!(editor.data().node_count(), 0);
 
-    // 远端：2 个节点 + 引用它们的 1 条 way。
+    // Remote: 2 nodes + 1 way referencing them.
     let mut remote = DataSet::new();
     remote
         .push_node(Node {
@@ -340,7 +340,7 @@ fn import_from_dataset_copies_selected_objects_with_remapped_ids() {
     assert_eq!(created, 3);
     assert_eq!(editor.data().node_count(), 2);
     assert_eq!(editor.data().way_count(), 1);
-    // 一个命令批 = 一条历史记录。
+    // One command batch = one history entry.
     assert_eq!(editor.history().undo_len(), 1);
 
     let mut new_nodes: Vec<ObjectId> = editor.data().iter_nodes().map(|node| node.id).collect();
@@ -357,7 +357,7 @@ fn import_from_dataset_copies_selected_objects_with_remapped_ids() {
     new_nodes.sort_unstable_by_key(|id| id.0);
     referenced.sort_unstable_by_key(|id| id.0);
     assert_eq!(referenced, new_nodes);
-    // 远端 ID 没有被直接带进活动数据集。
+    // Remote IDs were not carried directly into the active dataset.
     assert!(editor.data().node_handle(ObjectId(10)).is_none());
     assert!(editor.data().node_handle(ObjectId(11)).is_none());
     assert!(editor.data().way_handle(ObjectId(20)).is_none());
@@ -369,7 +369,7 @@ fn merge_from_dataset_keeps_local_edits_and_adds_new_ids() {
     let mut add = AddNode::new(lon(0.0), vec![("name".into(), "local".into())]);
     add.id = Some(ObjectId(1));
     editor.execute(Box::new(add)).unwrap();
-    // 弄脏本地对象：合并时应跳过。
+    // Mark the local object dirty: it should be skipped during merging.
     editor
         .execute(Box::new(SetTags::new(
             ObjectKind::Node,
@@ -416,7 +416,7 @@ fn merge_from_dataset_keeps_local_edits_and_adds_new_ids() {
     assert_eq!(stats.updated, 0);
     assert_eq!(editor.data().node_count(), 2);
     assert!(editor.data().node_handle(ObjectId(2)).is_some());
-    // 本地脏对象保留编辑后的标签。
+    // Locally dirty objects keep their edited tags.
     let handle = editor.data().node_handle(ObjectId(1)).unwrap();
     let view = editor.data().node_view(handle).unwrap();
     let name = view

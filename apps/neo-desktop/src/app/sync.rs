@@ -1,4 +1,4 @@
-//! NeoApp::sync — 经 neo-sync 旁路完成登录/下载/上传/笔记。
+//! NeoApp::sync — login/download/upload/notes through the neo-sync sidecar.
 
 use anyhow::Result;
 use neo_core::{ObjectId, ObjectKind};
@@ -55,7 +55,7 @@ impl NeoApp {
         }
     }
 
-    /// 启动 OAuth2 + PKCE 登录
+    /// Starts OAuth2 + PKCE login
     pub(super) fn start_oauth(&mut self) {
         let Some(sidecar) = &self.sync_sidecar else {
             self.settings.login_status = tf("settings.account.failed", &[("err", "neo-sync unavailable")]);
@@ -98,7 +98,7 @@ impl NeoApp {
         }
     }
 
-    /// 轮询 OAuth 后台结果
+    /// Polls the OAuth background result
     pub(super) fn poll_oauth(&mut self) {
         if !self.oauth_pending {
             return;
@@ -193,7 +193,7 @@ impl NeoApp {
         });
     }
 
-    /// 把一次成功下载的范围并入活动层（已包含则跳过，被新框完全覆盖的旧框剔除）。
+    /// Merges the range of a successful download into the active layer (skipped if already covered; old boxes fully covered by the new one are dropped).
     pub(super) fn record_download_bbox(&mut self, bbox: neo_ui::BboxView) {
         let bbox = neo_ui::BboxView {
             min_lon: bbox.min_lon.min(bbox.max_lon),
@@ -505,7 +505,7 @@ impl NeoApp {
         }
     }
 
-    /// 构造校验面板视图
+    /// Builds the validation panel view
     pub(super) fn validation_view(&self) -> Option<neo_ui::ValidationView> {
         self.validation.as_ref().map(|report| neo_ui::ValidationView {
             items: report
@@ -689,7 +689,7 @@ impl NeoApp {
         self.settings.login_status = tf("settings.account.removed", &[("name", &name)]);
     }
 
-    /// 经旁路下载单个对象的 OSM XML。
+    /// Downloads a single object's OSM XML through the sidecar.
     pub(super) fn download_object_xml(&mut self, kind: ObjectKind, id: ObjectId) -> Result<String, String> {
         let Some(sidecar) = &self.sync_sidecar else {
             return Err("neo-sync unavailable".into());

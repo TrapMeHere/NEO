@@ -1,68 +1,68 @@
-# 文件、会话与恢复
+# Files, Sessions and Recovery
 
-## 支持格式
+## Supported formats
 
-| 格式 | 读 | 写 | 说明 |
+| Format | Read | Write | Notes |
 |---|---|---|---|
-| PBF（`.osm.pbf`） | ✅ | ✅ | 主格式；并行导入 |
-| OSM XML（`.osm` / `.xml`） | ✅ | ✅ | 可读 JOSM 文件 |
-| osmChange（`.osc`） | ✅ | ✅ | 只含变更，适合审阅/上传 |
-| JOSM 会话（`.jos` / `.joz`） | ✅ | ✅ | 压缩包为 `.joz` |
+| PBF (`.osm.pbf`) | ✅ | ✅ | Primary format; parallel import |
+| OSM XML (`.osm` / `.xml`) | ✅ | ✅ | Can read JOSM files |
+| osmChange (`.osc`) | ✅ | ✅ | Changes only; suitable for review/upload |
+| JOSM session (`.jos` / `.joz`) | ✅ | ✅ | `.joz` is the zipped form |
 
-## 打开文件
+## Opening files
 
-- **文件 → 打开 PBF… / 打开 OSM XML…**
-- 大文件导入会显示进度，可取消；导入失败会在状态栏显示错误。
-- 同一时间只保留一个数据图层；打开新文件会替换当前数据（请先保存）。
+- **File → Open PBF… / Open OSM XML…**
+- Large imports show progress and can be cancelled; failures are shown in the status bar.
+- Only one data layer is kept at a time; opening a new file replaces the current data (save first).
 
-## 保存与导出
+## Saving and exporting
 
-- **保存 XML（Ctrl+S）**：写当前数据集为 OSM XML
-- **导出 osmChange**：只写本次会话的增删改（`create/modify/delete`）
-- **导出 PBF**：写完整数据集为 PBF
-- 保存前若存在未保存修改，工具栏显示「未保存」
+- **Save XML (Ctrl+S)**: write the current data set as OSM XML
+- **Export osmChange**: write only this session's creates/modifies/deletes (`create/modify/delete`)
+- **Export PBF**: write the complete data set as PBF
+- If there are unsaved changes before saving, the toolbar shows "Unsaved"
 
-## 会话文件
+## Session files
 
-**文件 → 保存会话…** 生成 `.jos`（XML）或 `.joz`（ZIP，含数据快照元信息）：
+**File → Save Session…** produces `.jos` (XML) or `.joz` (ZIP with data snapshot metadata):
 
-- 保留视口（中心/缩放）、选择、图层信息与文件引用
-- 打开会话时若数据图层引用的文件不可用，会提示错误
-- 会话不是自动保存；请显式保存
+- Preserves the viewport (center/zoom), selection, layer information, and file references
+- If the file referenced by the data layer is unavailable when opening a session, an error is shown
+- Sessions are not autosave; save explicitly
 
-## 自动保存（journal 快照）
+## Autosave (journal snapshots)
 
-程序每 60 秒把 journal 复制到 `out/autosave/neo-NNNN.jsonl`（保留 3 代），同时把 journal 字节
-与统计写入 `out/autosave/neo-snapshots.sqlite`（保留 10 条，SQLite WAL）。状态栏显示
-「已自动保存 journal 快照 #N」；若 journal 丢失，启动时会尝试从 SQLite 最近快照恢复。
+Every 60 seconds the program copies the journal to `out/autosave/neo-NNNN.jsonl` (keeping 3 generations), and also writes the journal bytes
+and statistics into `out/autosave/neo-snapshots.sqlite` (keeping 10 entries, SQLite WAL). The status bar shows
+"Autosaved journal snapshot #N"; if the journal is lost, startup tries to recover from the most recent SQLite snapshot.
 
-## Journal（自动恢复）
+## Journal (automatic recovery)
 
-所有编辑在提交历史时同步写入 **JSONL journal**（默认 `out/neo-journal.jsonl`）：
+All edits are synchronously written to a **JSONL journal** (default `out/neo-journal.jsonl`) when committed to history:
 
-1. 程序异常退出后重新启动；
-2. **编辑 → 从 journal 恢复**；
-3. NEO 重放命令，把 journal 改名备份为 `.recovered`，并重新打开 journal。
+1. Restart the program after it exits abnormally;
+2. **Edit → Recover from journal**;
+3. NEO replays the commands, renames the journal to `.recovered` as a backup, and opens a new journal.
 
-限制：
+Limitations:
 
-- journal 只记录**命令**，依赖同一份基线数据；基线文件变化后可能无法恢复；
-- 恢复失败会保留原 journal，不会删除。
+- The journal records only **commands** and depends on the same baseline data; recovery may fail after the baseline file changes;
+- A failed recovery keeps the original journal; it is never deleted.
 
-## 数据安全建议
+## Data safety recommendations
 
-- 编辑前先备份源 PBF/XML；
-- 重要编辑及时 `Ctrl+S` 或导出 osmChange；
-- 定期查看 `out/neo-journal.jsonl` 是否增长（说明有未落盘编辑）。
+- Back up the source PBF/XML before editing;
+- Use `Ctrl+S` or export osmChange promptly for important edits;
+- Periodically check whether `out/neo-journal.jsonl` is growing (indicating edits not yet flushed to disk).
 
-## 环境变量（测试/运维）
+## Environment variables (testing/operations)
 
-| 变量 | 作用 |
+| Variable | Effect |
 |---|---|
-| `NEO_PERF_LOG` | 写性能日志到文件 |
-| `NEO_SYNTH_N` | 仅开发/性能测试：启动时生成 N 个节点的合成数据（正式产品默认为空图） |
-| `NEO_START_ZOOM` | 指定初始缩放 |
-| `NEO_TEST_SELECT` | 启动即选中 node/way（测试） |
-| `NEO_LAYER_HIDDEN` | 启动时隐藏图层 |
-| `NEO_LAYER_INACTIVE` | 启动即为只读灰显 |
-| `NEO_SHOW_LAYER_INFO` / `NEO_SHOW_SETTINGS` | 启动即打开信息/设置窗口 |
+| `NEO_PERF_LOG` | Write the performance log to a file |
+| `NEO_SYNTH_N` | Development/performance testing only: generate synthetic data with N nodes at startup (production defaults to an empty map) |
+| `NEO_START_ZOOM` | Specify the initial zoom |
+| `NEO_TEST_SELECT` | Select a node/way immediately at startup (testing) |
+| `NEO_LAYER_HIDDEN` | Hide the layer at startup |
+| `NEO_LAYER_INACTIVE` | Start with the layer read-only/grayed out |
+| `NEO_SHOW_LAYER_INFO` / `NEO_SHOW_SETTINGS` | Open the info/settings window at startup |

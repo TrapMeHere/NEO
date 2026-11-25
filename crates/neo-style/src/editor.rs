@@ -1,8 +1,8 @@
-//! 样式文本的小编辑器：改第 n 条声明的值，再解析确认没有把样式表写坏。
+//! A small editor for style text: change the value of the nth declaration, then re-parse to confirm the stylesheet was not broken.
 
 use crate::mapcss::MapCss;
 
-/// 把第 `nth` 个（从 0 开始）`property:` 的值换成 `value`。
+/// Replace the value of the `nth` (0-based) `property:` with `value`.
 pub fn set_declaration(source: &str, property: &str, nth: usize, value: &str) -> Result<String, String> {
     let needle = format!("{property}:");
     let mut found = 0usize;

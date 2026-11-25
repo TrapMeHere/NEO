@@ -1,4 +1,4 @@
-//! search 面板。
+//! search panel.
 
 use egui_phosphor::regular as ph;
 use neo_core::{ObjectId, ObjectKind};
@@ -8,35 +8,35 @@ use neo_store::DataSet;
 use super::UiActions;
 
 // ---------------------------------------------------------------------------
-// 设置窗口（语言 + 快捷键）
+// Settings window (language + shortcuts)
 // ---------------------------------------------------------------------------
 
-/// 设置窗口：语言切换 + 快捷键一览。
-/// 查找结果。
+/// Settings window: language switch + shortcut overview.
+/// Search result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchHit {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 对象 ID。
+    /// Object ID.
     pub id: ObjectId,
-    /// 展示文本（kind id 名称/关键 tag）。
+    /// Display text (kind id name/key tag).
     pub label: String,
 }
 
-/// 查找窗口状态。
+/// Search window state.
 #[derive(Clone, Debug)]
 pub struct SearchUiState {
-    /// 查询串。支持 `id:123`、`key=value`、纯文本。
+    /// Query string. Supports `id:123`, `key=value`, and plain text.
     pub query: String,
-    /// 是否搜节点。
+    /// Whether to search nodes.
     pub nodes: bool,
-    /// 是否搜 way。
+    /// Whether to search ways.
     pub ways: bool,
-    /// 是否搜 relation。
+    /// Whether to search relations.
     pub relations: bool,
-    /// 上一次刷新用的 key（查询 + 过滤）。
+    /// Key used for the last refresh (query + filters).
     last_key: String,
-    /// 结果（最多 500 条）。
+    /// Results (at most 500).
     hits: Vec<SearchHit>,
 }
 
@@ -53,7 +53,7 @@ impl Default for SearchUiState {
     }
 }
 
-/// 查找窗口：按 ID / `key=value` / 标签文本检索，点击结果选中并定位。
+/// Search window: search by ID / `key=value` / tag text; clicking a result selects and locates it.
 pub fn search_window(
     ctx: &egui::Context,
     actions: &mut UiActions,

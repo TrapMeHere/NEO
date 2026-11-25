@@ -1,25 +1,25 @@
-//! 旁路进程启动与行交换。
+//! Sidecar process startup and line exchange.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-/// 旁路通信错误。
+/// Sidecar communication error.
 #[derive(Debug)]
 pub enum SidecarError {
-    /// 找不到可执行文件。
+    /// Executable not found.
     Missing(PathBuf),
-    /// 启动失败。
+    /// Startup failed.
     Spawn(std::io::Error),
-    /// 读写失败。
+    /// Read/write failed.
     Io(std::io::Error),
-    /// 协议或 JSON。
+    /// Protocol or JSON.
     Protocol(String),
-    /// 版本不兼容。
+    /// Incompatible version.
     Version {
-        /// 编辑器期望。
+        /// Expected by the editor.
         expected: u32,
-        /// 旁路报告。
+        /// Reported by the sidecar.
         got: u32,
     },
 }
@@ -40,7 +40,7 @@ impl std::fmt::Display for SidecarError {
 
 impl std::error::Error for SidecarError {}
 
-/// 解析旁路可执行文件路径：`NEO_<NAME>_EXE`，否则与当前 exe 同目录。
+/// Resolves the sidecar executable path: `NEO_<NAME>_EXE`, otherwise the directory of the current exe.
 pub fn resolve_sidecar(stem: &str) -> PathBuf {
     let env_key = format!("NEO_{}_EXE", stem.replace('-', "_").to_ascii_uppercase());
     if let Ok(path) = std::env::var(&env_key)
@@ -61,7 +61,7 @@ pub fn resolve_sidecar(stem: &str) -> PathBuf {
     PathBuf::from(file)
 }
 
-/// 启动旁路进程（stdin/stdout 管道，stderr 继承）。
+/// Starts a sidecar process (stdin/stdout piped, stderr inherited).
 pub fn spawn_sidecar(stem: &str) -> Result<Child, SidecarError> {
     let path = resolve_sidecar(stem);
     if !path.exists() {
@@ -75,7 +75,7 @@ pub fn spawn_sidecar(stem: &str) -> Result<Child, SidecarError> {
         .map_err(SidecarError::Spawn)
 }
 
-/// 一行请求、一行应答的旁路（同步用）。
+/// One-request, one-reply sidecar (for sync).
 pub struct SidecarProcess {
     child: Child,
     stdin: ChildStdin,
@@ -83,7 +83,7 @@ pub struct SidecarProcess {
 }
 
 impl SidecarProcess {
-    /// 启动。
+    /// Start.
     pub fn spawn(stem: &str) -> Result<Self, SidecarError> {
         let mut child = spawn_sidecar(stem)?;
         let stdin = child
@@ -101,7 +101,7 @@ impl SidecarProcess {
         })
     }
 
-    /// 写一行并读一行。
+    /// Writes one line and reads one line.
     pub fn exchange(&mut self, line: &str) -> Result<String, SidecarError> {
         writeln!(self.stdin, "{line}").map_err(SidecarError::Io)?;
         self.stdin.flush().map_err(SidecarError::Io)?;
@@ -116,7 +116,7 @@ impl SidecarProcess {
         Ok(reply)
     }
 
-    /// 可执行路径（诊断用）。
+    /// Executable path (for diagnostics).
     pub fn path_hint(stem: &str) -> PathBuf {
         resolve_sidecar(stem)
     }

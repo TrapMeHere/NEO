@@ -1,11 +1,11 @@
-//! 紧凑位图，用于 dirty set、可见集、删除标记等。
+//! Compact bitset, used for dirty sets, visible sets, deletion marks, etc.
 //!
-//! 10M 对象的 dirty 标记只需要 1.25 MB（`Vec<u64>`），而 `HashSet<u32>` 会到
-//! 数百 MB 且缓存不友好。位图是编辑路径上的第一选择。
+//! Dirty flags for 10M objects take only 1.25 MB (`Vec<u64>`), whereas `HashSet<u32>` would grow to
+//! hundreds of MB with poor cache behavior. A bitset is the first choice on the editing path.
 
 use neo_core::ByteSize;
 
-/// 紧凑位图。
+/// Compact bitset.
 #[derive(Debug, Default, Clone)]
 pub struct BitSet {
     words: Vec<u64>,
@@ -13,12 +13,12 @@ pub struct BitSet {
 }
 
 impl BitSet {
-    /// 新建空位图。
+    /// Create an empty bitset.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 指定 bit 数量的空位图。
+    /// Empty bitset with the given number of bits.
     pub fn with_bits(len: usize) -> Self {
         Self {
             words: vec![0; len.div_ceil(64)],
@@ -26,19 +26,19 @@ impl BitSet {
         }
     }
 
-    /// 位数。
+    /// Number of bits.
     #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// 是否没有任何位。
+    /// Whether there are no bits at all.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// 确保能容纳 `len` 个 bit。
+    /// Ensure capacity for `len` bits.
     pub fn ensure_len(&mut self, len: usize) {
         if len > self.len {
             self.len = len;
@@ -49,7 +49,7 @@ impl BitSet {
         }
     }
 
-    /// 置位；越界自动扩容。
+    /// Set a bit; grows automatically when out of range.
     #[inline]
     pub fn set(&mut self, index: usize) {
         if index >= self.len {
@@ -59,7 +59,7 @@ impl BitSet {
         self.words[w] |= 1u64 << b;
     }
 
-    /// 清位。
+    /// Clear a bit.
     #[inline]
     pub fn clear(&mut self, index: usize) {
         if index < self.len {
@@ -68,7 +68,7 @@ impl BitSet {
         }
     }
 
-    /// 读取位。
+    /// Read a bit.
     #[inline]
     pub fn get(&self, index: usize) -> bool {
         if index >= self.len {
@@ -78,17 +78,17 @@ impl BitSet {
         (self.words[w] >> b) & 1 == 1
     }
 
-    /// 全部清零（保留容量）。
+    /// Clear all bits (keeping capacity).
     pub fn clear_all(&mut self) {
         self.words.fill(0);
     }
 
-    /// 已置位的 bit 数。
+    /// Number of bits that are set.
     pub fn count_ones(&self) -> usize {
         self.words.iter().map(|w| w.count_ones() as usize).sum()
     }
 
-    /// 迭代所有置位的下标（升序）。
+    /// Iterate all set indices (ascending).
     pub fn iter_set(&self) -> impl Iterator<Item = usize> + '_ {
         self.words.iter().enumerate().flat_map(|(wi, &word)| {
             let base = wi * 64;
@@ -104,7 +104,7 @@ impl BitSet {
         })
     }
 
-    /// 估算内存。
+    /// Estimate memory.
     pub fn mem_bytes(&self) -> ByteSize {
         ByteSize(self.words.capacity() * core::mem::size_of::<u64>())
     }

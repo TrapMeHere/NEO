@@ -1,14 +1,14 @@
-//! 删除规划：把"删除对象"按 JOSM 语义展开成一批原子命令。
+//! Delete planning: expand "delete object" into a batch of atomic commands following JOSM semantics.
 //!
-//! OSM API 拒绝删除仍被 way 引用的节点（HTTP 412 `Node … is still used by ways …`），
-//! 但允许在同一个 changeset 里**先修改 way、再删除节点** —— JOSM/iD 删除顶点就是这么做的。
-//! 因此本地必须先把引用者改掉，否则用户根本无法删除线或多边形上的一个点。
+//! The OSM API rejects deleting a node still referenced by a way (HTTP 412 `Node … is still used by ways …`),
+//! but allows **modifying the way first, then deleting the node** within the same changeset — JOSM/iD delete a vertex exactly this way.
+//! So the referrers must be fixed locally first; otherwise the user cannot delete a point on a line or polygon at all.
 //!
-//! 本模块只负责**生成命令**，不执行；调用方用 [`Editor::execute_batch`] 提交，
-//! 这样"引用者修正 + 删除"共享一次事务与一条 undo 记录。
+//! This module only **generates commands**; it does not execute them. The caller submits via [`Editor::execute_batch`],
+//! so that "referrer fixes + deletion" share one transaction and one undo record.
 //!
-//! 与 `DeleteObject::precheck` 的分工：命令本身仍然保持严格（被引用就拒绝），
-//! 作为最后一道安全网；级联逻辑集中在规划器里，避免命令 undo 复杂化。
+//! Division of labour with `DeleteObject::precheck`: the command itself stays strict (reject when referenced),
+//! as the last safety net; cascade logic is concentrated in the planner so command undo stays simple.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,23 +18,23 @@ use crate::command::{Command, CommandError};
 use crate::commands::{DeleteObject, RelationMemberSpec, SetRelationMembers, SetWayNodes};
 use crate::editor::Editor;
 
-/// 一次删除展开后的计划。
+/// The plan produced by expanding one deletion.
 #[derive(Default)]
 pub struct DeletePlan {
-    /// 已按安全顺序排好的命令：引用者修正在前，删除在后。
+    /// Commands ordered safely: referrer fixes first, deletions last.
     pub commands: Vec<Box<dyn Command>>,
-    /// 会被显式删除的对象（去重、已排序）。
+    /// Objects that will be explicitly deleted (deduplicated, sorted).
     pub targets: Vec<(ObjectKind, ObjectId)>,
-    /// 因删到不足 2 个节点而一并删除的 way。非空时调用方应先向用户确认。
+    /// Ways removed along with the deletion because fewer than 2 nodes remain. If non-empty, the caller should confirm with the user first.
     pub reaped_ways: Vec<ObjectId>,
-    /// 被摘掉节点的 way。
+    /// Ways that had nodes removed.
     pub touched_ways: Vec<ObjectId>,
-    /// 被摘掉成员的 relation。
+    /// Relations that had members removed.
     pub touched_relations: Vec<ObjectId>,
 }
 
 impl DeletePlan {
-    /// 计划是否为空（没有任何可执行命令）。
+    /// Whether the plan is empty (no executable commands).
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
@@ -52,22 +52,22 @@ impl std::fmt::Debug for DeletePlan {
     }
 }
 
-/// 生成一次删除的完整计划。
+/// Build the complete plan for one deletion.
 ///
-/// `targets` 中的对象会被删除，引用它们的 way / relation 会被同步修正：
+/// Objects in `targets` are deleted, and the ways / relations referencing them are fixed up accordingly:
 ///
-/// * 节点仍被 way 引用 → 从该 way 的节点序列中摘掉；若剩余不足 2 个节点，
-///   连同这条 way 一起删除（计入 [`DeletePlan::reaped_ways`]，调用方应提示用户）。
-/// * 节点 / way / relation 仍被 relation 引用 → 从成员列表中剔除该成员。
-/// * 顺序固定为：relation 成员修正 → way 节点修正 → 删 way → 删节点 → 删 relation。
-///   这个顺序保证批量执行时每条命令的 `precheck` 都能通过。
+/// * A node still referenced by a way -> remove it from that way's node sequence; if fewer than 2 nodes remain,
+///   delete the way as well (counted in [`DeletePlan::reaped_ways`]; the caller should notify the user).
+/// * A node / way / relation still referenced by a relation -> drop that member from the member list.
+/// * The order is fixed: fix relation members -> fix way nodes -> delete ways -> delete nodes -> delete relations.
+///   This order guarantees every command's `precheck` passes during batch execution.
 ///
-/// 不存在的对象返回 [`CommandError::NotFound`]；一个有效对象都没有时返回空计划。
+/// Non-existent objects yield [`CommandError::NotFound`]; if no valid object is left, an empty plan is returned.
 pub fn plan_delete(
     editor: &mut Editor,
     targets: &[(ObjectKind, ObjectId)],
 ) -> Result<DeletePlan, CommandError> {
-    // 反查表是只读的，脏标记由写命令设置；规划前必须刷新，否则会漏掉引用者。
+    // The referrer table is read-only and the dirty flag is set by write commands; refresh before planning or referrers will be missed.
     editor.refresh_referrers();
 
     let mut nodes: BTreeSet<ObjectId> = BTreeSet::new();
@@ -117,7 +117,7 @@ pub fn plan_delete(
         }
     }
 
-    // 1. 找出引用被删节点、但自身不在删除集里的 way（这些 way 需要摘点或整体删除）。
+    // 1. Find ways that reference a deleted node but are not themselves in the delete set (these ways need node removal or full deletion).
     let mut shrink_candidates: BTreeSet<ObjectId> = BTreeSet::new();
     {
         let data = editor.data();
@@ -146,7 +146,7 @@ pub fn plan_delete(
         let before = current.len();
         let kept: Vec<ObjectId> = current.into_iter().filter(|node| !nodes.contains(node)).collect();
         if kept.len() == before {
-            // 反查表与节点序列不一致（理论上不应发生）：不要凭空改数据。
+            // Referrer table and node sequence disagree (should not happen in theory): do not invent data changes.
             continue;
         }
         if kept.len() >= 2 {
@@ -156,7 +156,7 @@ pub fn plan_delete(
         }
     }
 
-    // 2. 找出需要改成员列表的 relation：引用被删节点/way/relation，或被并删 way 的。
+    // 2. Find relations whose member lists need changes: those referencing deleted nodes/ways/relations, or referencing ways removed with them.
     let mut relations_to_rewrite: BTreeSet<ObjectId> = BTreeSet::new();
     {
         let data = editor.data();
@@ -206,7 +206,7 @@ pub fn plan_delete(
         }
     }
 
-    // 3. 按依赖顺序组装命令。
+    // 3. Assemble commands in dependency order.
     let mut commands: Vec<Box<dyn Command>> = Vec::new();
     let touched_relations: Vec<ObjectId> = member_updates.keys().copied().collect();
     for (relation, members) in member_updates {
@@ -243,7 +243,7 @@ pub fn plan_delete(
     })
 }
 
-/// 该成员是否会随着本次删除消失。
+/// Whether this member disappears with this deletion.
 fn vanishes(
     kind: ObjectKind,
     id: ObjectId,

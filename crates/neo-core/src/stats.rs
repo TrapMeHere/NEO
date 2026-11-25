@@ -1,26 +1,27 @@
-//! 内存占用估算。
+//! Memory usage estimation.
 //!
-//! 性能文档要求报告"每对象字节数"。`std` 没有稳定的容量查询 API，因此存储层统一实现
-//! [`MemSize`]，用 `capacity * size_of::<T>()` 估算（不含分配器元数据）。
-//! 该数值与 RSS 的差值由基准工具对照报告，见 docs/14。
+//! The performance docs require reporting "bytes per object". `std` has no stable capacity query API, so the
+//! storage layer uniformly implements [`MemSize`], estimating with `capacity * size_of::<T>()` (excluding
+//! allocator metadata). The difference between this figure and RSS is reported side by side by the benchmark
+//! tooling, see docs/14.
 
 use core::mem::size_of;
 
-/// 以字节为单位的容量，便于直接打印。
+/// Capacity in bytes, convenient for direct printing.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct ByteSize(pub usize);
 
 impl ByteSize {
-    /// 0。
+    /// Zero.
     pub const ZERO: Self = Self(0);
 
-    /// 字节数。
+    /// Number of bytes.
     #[inline]
     pub const fn bytes(self) -> usize {
         self.0
     }
 
-    /// 以 MiB 表示。
+    /// Expressed in MiB.
     #[inline]
     pub fn mib(self) -> f64 {
         self.0 as f64 / (1024.0 * 1024.0)
@@ -52,9 +53,9 @@ impl core::fmt::Display for ByteSize {
     }
 }
 
-/// 实现内存估算的类型。
+/// Types that support memory estimation.
 pub trait MemSize {
-    /// 估算占用的堆字节数。
+    /// Estimated heap bytes used.
     fn mem_bytes(&self) -> ByteSize;
 }
 
@@ -65,7 +66,7 @@ impl<T> MemSize for Vec<T> {
     }
 }
 
-/// `Vec<T>` 容量的字节数。
+/// Byte size of a `Vec<T>`'s capacity.
 #[inline]
 pub fn vec_bytes<T>(v: &Vec<T>) -> usize {
     v.capacity() * size_of::<T>()

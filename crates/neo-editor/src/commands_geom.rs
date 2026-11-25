@@ -1,9 +1,9 @@
-//! 几何类命令：分割 / 合并 / 反转路径。
+//! Geometry commands: split / merge / reverse ways.
 //!
-//! 语义尽量贴近 JOSM（docs/13 §3.1）：
-//! * Split：在内部节点处把路径一分为二，新路径复制原标签；
-//! * Merge：两条端点相邻的路径合并（自动处理四种方向），旧路径标记删除；
-//! * Reverse：反转节点顺序，并修正方向性标签（`oneway=yes ↔ -1`）。
+//! Semantics follow JOSM as closely as possible (docs/13 §3.1):
+//! * Split: split a way in two at an interior node; the new way copies the original tags;
+//! * Merge: merge two endpoint-adjacent ways (all four directions handled automatically); the old way is marked deleted;
+//! * Reverse: reverse the node order and fix directional tags (`oneway=yes ↔ -1`).
 
 use std::any::Any;
 
@@ -15,11 +15,11 @@ use crate::commands::RelationMemberSpec;
 use crate::editor::EditContext;
 use crate::journal::JournalCommand;
 
-/// 方向性标签修正（ReverseWay 的核心语义）。
+/// Directional tag fix (the core semantics of ReverseWay).
 ///
-/// 目前覆盖 JOSM `ReverseWayTagCorrector` 的最常用规则：
-/// `oneway=yes → -1`、`oneway=-1 → yes`、`oneway=1 → -1`；其余标签保持不变。
-/// 完整规则（turn:lanes、incline、:forward/:backward 等）在阶段 4 补齐。
+/// Currently covers the most common rules of JOSM's `ReverseWayTagCorrector`:
+/// `oneway=yes -> -1`, `oneway=-1 -> yes`, `oneway=1 -> -1`; all other tags are left unchanged.
+/// Complete rules (turn:lanes, incline, :forward/:backward, etc.) land in stage 4.
 pub fn reverse_direction_tags(tags: &[(String, String)]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::with_capacity(tags.len());
     let mut push_unique = |key: String, value: String| {
@@ -30,7 +30,7 @@ pub fn reverse_direction_tags(tags: &[(String, String)]) -> Vec<(String, String)
         }
     };
     for (k, v) in tags {
-        // 方向性后缀：`*:forward` ↔ `*:backward`（oneway:forward、turn:lanes:forward 等）。
+        // Directional suffix: `*:forward` ↔ `*:backward` (oneway:forward, turn:lanes:forward, etc.).
         if let Some(base) = k.strip_suffix(":forward") {
             push_unique(format!("{base}:backward"), v.clone());
             continue;
@@ -51,23 +51,23 @@ pub fn reverse_direction_tags(tags: &[(String, String)]) -> Vec<(String, String)
     out
 }
 
-/// 在内部节点处分割路径。
+/// Split a way at an interior node.
 pub struct SplitWay {
-    /// 原路径。
+    /// The original way.
     pub way: ObjectId,
-    /// 分割点在该路径节点序列中的下标（1..len-1）。
+    /// Index of the split point in the way's node sequence (1..len-1).
     pub at: u32,
-    /// 新路径的期望 ID（None 自动分配）。
+    /// Expected ID of the new way (None = auto-assign).
     pub new_way: Option<ObjectId>,
     undo_old_nodes: Option<Vec<ObjectId>>,
     applied_new: Option<ObjectId>,
     undo_state: Option<neo_osm::ChangeState>,
-    /// 被追加了新路径的关系：`(relation, 旧成员列表, 旧 change state)`。
+    /// Relation that got the new way appended: `(relation, old member list, old change state)`.
     undo_relations: Vec<(ObjectId, Vec<RelationMemberSpec>, neo_osm::ChangeState)>,
 }
 
 impl SplitWay {
-    /// 构造。
+    /// Construct.
     pub fn new(way: ObjectId, at: u32) -> Self {
         Self {
             way,
@@ -86,7 +86,7 @@ impl Command for SplitWay {
         CommandKind::SplitWay
     }
     fn label(&self) -> &'static str {
-        "分割路径"
+        "Split way"
     }
     fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         let handle = data.way_handle(self.way).ok_or(CommandError::NotFound {
@@ -109,7 +109,7 @@ impl Command for SplitWay {
         let first: Vec<ObjectId> = old[..=at].to_vec();
         let second: Vec<ObjectId> = old[at..].to_vec();
         let new_id = self.new_way.unwrap_or_else(|| ctx.data.next_local_id());
-        // 固定新路径的 ID：undo→redo 不能换 ID，否则选择集/日志里的旧 ID 全部悬空。
+        // Fix the new way's ID: undo->redo must not change IDs, or old IDs in the selection/log dangle.
         self.new_way = Some(new_id);
         let state = ctx.data.change_state(ObjectKind::Way, self.way);
         ctx.set_way_nodes(self.way, &first)?;
@@ -118,8 +118,8 @@ impl Command for SplitWay {
             ctx.data
                 .set_change_state(ObjectKind::Way, self.way, neo_osm::ChangeState::Modified);
         }
-        // 引用原路径的关系：紧跟原路径之后插入新路径（沿用同一角色）。
-        // 不这么做的话关系只覆盖分割后的前半段，route 会静默断裂、multipolygon 少一条边。
+        // Relations referencing the original way: insert the new way right after it (same role).
+        // Otherwise the relation only covers the first half after the split, silently breaking routes and dropping a multipolygon edge.
         let way_handle = ctx.way_handle(self.way)?;
         let relation_handles: Vec<_> = ctx.referrers.relations_of_way(way_handle).to_vec();
         for handle in relation_handles {
@@ -157,14 +157,14 @@ impl Command for SplitWay {
         Ok(())
     }
     fn undo(&mut self, ctx: &mut EditContext<'_>) -> Result<(), CommandError> {
-        // 先恢复关系成员（它们引用着即将被移除的新路径），再撤销路径本身。
+        // Restore relation members first (they reference the new way about to be removed), then undo the way itself.
         for (relation_id, old, state) in std::mem::take(&mut self.undo_relations).into_iter().rev() {
             ctx.set_relation_members(relation_id, &old)?;
             ctx.data
                 .set_change_state(ObjectKind::Relation, relation_id, state);
         }
         if let Some(new_id) = self.applied_new {
-            // 保留 applied_new 供 redo 复用同一 ID。
+            // Keep applied_new so redo reuses the same ID.
             ctx.remove_way(new_id)?;
         }
         if let Some(old) = self.undo_old_nodes.take() {
@@ -187,23 +187,23 @@ impl Command for SplitWay {
     }
 }
 
-/// 合并两条端点相邻的路径。
+/// Merge two endpoint-adjacent ways.
 pub struct MergeWay {
-    /// 保留的路径。
+    /// The way to keep.
     pub a: ObjectId,
-    /// 被并入并删除的路径。
+    /// The way to merge in and delete.
     pub b: ObjectId,
     undo_a_nodes: Option<Vec<ObjectId>>,
     undo_a_tags: Option<Vec<(String, String)>>,
     undo_a_state: Option<neo_osm::ChangeState>,
     undo_b_state: Option<(neo_osm::ChangeState, bool)>,
-    /// 被迁移过成员的 relation：`(relation, 旧成员列表, 旧 change state)`。
+    /// Relation whose members were migrated: `(relation, old member list, old change state)`.
     undo_relations: Vec<(ObjectId, Vec<RelationMemberSpec>, neo_osm::ChangeState)>,
     merged: Option<Vec<ObjectId>>,
 }
 
 impl MergeWay {
-    /// 构造。
+    /// Construct.
     pub fn new(a: ObjectId, b: ObjectId) -> Self {
         Self {
             a,
@@ -218,7 +218,7 @@ impl MergeWay {
     }
 }
 
-/// 计算合并后的节点序列（b 的端点必须与 a 的某个端点重合）。
+/// Compute the merged node sequence (b's endpoint must coincide with one of a's endpoints).
 pub fn merged_nodes(a: &[ObjectId], b: &[ObjectId]) -> Option<Vec<ObjectId>> {
     if a.len() < 2 || b.len() < 2 {
         return None;
@@ -251,7 +251,7 @@ impl Command for MergeWay {
         CommandKind::MergeWay
     }
     fn label(&self) -> &'static str {
-        "合并路径"
+        "Merge ways"
     }
     fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         if self.a == self.b {
@@ -265,7 +265,7 @@ impl Command for MergeWay {
             kind: ObjectKind::Way,
             id: self.b,
         })?;
-        // 被关系引用不再拒绝：apply 会把成员 `b` 就地换成 `a`（JOSM 语义）。
+        // Being referenced by a relation is no longer rejected: apply replaces member `b` with `a` in place (JOSM semantics).
         let an: Vec<ObjectId> = data
             .try_way_node_ids(a)
             .map_err(|_| CommandError::Invalid("way has stale node references".into()))?;
@@ -288,7 +288,7 @@ impl Command for MergeWay {
         let b_state = ctx.data.change_state(ObjectKind::Way, self.b);
         let b_visible = ctx.visible_of(ObjectKind::Way, self.b);
         ctx.set_way_nodes(self.a, &merged)?;
-        // 合并标签：a 优先；b 独有的 key 补进来，避免 bridge/name/ref 静默丢失。
+        // Merge tags: a wins; keys unique to b are added so bridge/name/ref are not silently lost.
         let mut merged_tags = a_tags.clone();
         for (key, value) in b_tags {
             if !a_tags.iter().any(|(k, _)| *k == key) {
@@ -302,8 +302,8 @@ impl Command for MergeWay {
             ctx.data
                 .set_change_state(ObjectKind::Way, self.a, neo_osm::ChangeState::Modified);
         }
-        // 引用 b 的关系：成员就地换成 a（保留角色与顺序），并去掉重复成员。
-        // 这样合并一条 route/multipolygon 的成员路径不会再被拒绝，也不会留下悬空成员。
+        // Relations referencing b: replace the member with a in place (keeping role and order) and drop duplicates.
+        // This way merging a member way of a route/multipolygon is no longer rejected and leaves no dangling members.
         let b_handle = ctx.way_handle(self.b)?;
         let relation_handles: Vec<_> = ctx.referrers.relations_of_way(b_handle).to_vec();
         for handle in relation_handles {
@@ -383,9 +383,9 @@ impl Command for MergeWay {
     }
 }
 
-/// 反转路径 + 方向性标签修正。
+/// Reverse a way + fix directional tags.
 pub struct ReverseWay {
-    /// Way ID。
+    /// Way ID.
     pub way: ObjectId,
     undo_nodes: Option<Vec<ObjectId>>,
     undo_tags: Option<Vec<(String, String)>>,
@@ -393,7 +393,7 @@ pub struct ReverseWay {
 }
 
 impl ReverseWay {
-    /// 构造。
+    /// Construct.
     pub fn new(way: ObjectId) -> Self {
         Self {
             way,
@@ -409,7 +409,7 @@ impl Command for ReverseWay {
         CommandKind::ReverseWay
     }
     fn label(&self) -> &'static str {
-        "反转路径"
+        "Reverse way"
     }
     fn precheck(&self, data: &DataSet, _referrers: &neo_store::Referrers) -> Result<(), CommandError> {
         if data.way_handle(self.way).is_none() {

@@ -1,4 +1,4 @@
-//! 绘制吸附：节点优先，其次线段投影。
+//! Drawing snapping: nodes first, then segment projection.
 
 use neo_core::{Handle, LatLon, ObjectId};
 use neo_store::{DataSet, WaySlot};
@@ -9,36 +9,36 @@ use crate::picking::HitTester;
 use crate::spatial::SpatialIndex;
 use crate::world::WorldPoint;
 
-/// 吸附目标。
+/// Snap target.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SnapTarget {
-    /// 复用已有节点。
+    /// Reuse an existing node.
     Node {
-        /// 节点 ID。
+        /// Node ID.
         id: ObjectId,
     },
-    /// 落在 way 线段上的投影点（随后可插入共享节点）。
+    /// Projection point on a way segment (a shared node can then be inserted).
     WaySegment {
-        /// Way ID。
+        /// Way ID.
         way: ObjectId,
-        /// 线段起点在节点序列中的下标（投影点插在 `seg + 1`）。
+        /// Index of the segment start in the node sequence (the projection point is inserted at `seg + 1`).
         seg: usize,
-        /// 投影经纬度。
+        /// Projected lon/lat.
         at: LatLon,
     },
 }
 
-/// 一次吸附命中。
+/// One snap hit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SnapHit {
-    /// 目标。
+    /// Target.
     pub target: SnapTarget,
-    /// 屏幕像素距离。
+    /// Screen-pixel distance.
     pub screen_dist: f32,
 }
 
 impl SnapHit {
-    /// 吸附后的世界坐标（节点取节点位置；线段取投影点）。
+    /// Snapped world coordinates (nodes use the node position; segments use the projection point).
     pub fn world_point(&self, data: &DataSet) -> Option<WorldPoint> {
         match self.target {
             SnapTarget::Node { id } => data
@@ -49,7 +49,7 @@ impl SnapHit {
         }
     }
 
-    /// 吸附后的经纬度。
+    /// Snapped lon/lat.
     pub fn latlon(&self, data: &DataSet) -> Option<LatLon> {
         match self.target {
             SnapTarget::Node { id } => data
@@ -60,9 +60,9 @@ impl SnapHit {
     }
 }
 
-/// 解析吸附：节点优先于线段；同距取更近者。
+/// Resolve snapping: nodes take priority over segments; at equal distance the nearer one wins.
 ///
-/// `accept_node` / `accept_way` 用于跳过隐藏对象。
+/// `accept_node` / `accept_way` are used to skip hidden objects.
 pub fn resolve_snap(
     data: &DataSet,
     index: &SpatialIndex,
@@ -133,7 +133,7 @@ fn resolve_segment_snap(
             if distance_px > radius_px {
                 continue;
             }
-            // 投影几乎落在端点时改吸附到该节点，避免重复插点。
+            // When the projection nearly lands on an endpoint, snap to that node instead to avoid inserting a duplicate point.
             const END_EPS: f64 = 1e-6;
             let target = if t <= END_EPS {
                 let node_id = data.nodes.id(node_handles[seg]).unwrap_or(ObjectId::NONE);
@@ -162,7 +162,7 @@ fn resolve_segment_snap(
     best.map(|(screen_dist, target)| SnapHit { target, screen_dist })
 }
 
-/// 折线上最近线段下标与投影（供单测/工具复用）。
+/// Nearest segment index and projection on a polyline (for unit tests/tool reuse).
 pub fn closest_way_segment(
     data: &DataSet,
     way: Handle<WaySlot>,
@@ -182,7 +182,7 @@ pub fn closest_way_segment(
     best
 }
 
-/// 供调用方在无过滤器时使用的便捷包装。
+/// Convenience wrapper for callers with no filters.
 pub fn resolve_snap_unfiltered(
     data: &DataSet,
     index: &SpatialIndex,
@@ -246,7 +246,7 @@ mod tests {
         let mid = WorldPoint::from_latlon(latlon(0.0, 0.0005));
         let camera = Camera::new(mid, 18.0, [800, 600]);
         let screen = camera.world_to_screen(mid);
-        // 稍微偏移到线段一侧，避开端点节点吸附。
+        // Shift slightly to one side of the segment to avoid snapping to the endpoint node.
         let offset_screen = [screen[0], screen[1] + 4.0];
         let hit = resolve_snap_unfiltered(&data, &index, &camera, offset_screen, 16.0).expect("should snap");
         match hit.target {

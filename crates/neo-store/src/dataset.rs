@@ -1,15 +1,16 @@
-//! `DataSet`：一个 OSM 数据集的完整内存表示。
+//! `DataSet`: the complete in-memory representation of one OSM data set.
 //!
-//! 组成：
+//! Composition:
 //!
-//! * [`StringPool`] + [`TagStore`]：所有文本与 tag 的唯一归属地；
-//! * [`NodeStore`] / [`WayStore`] / [`RelationStore`]：SoA 数据；
-//! * [`IdIndex`]：外部 ID 到句柄；
-//! * [`ChangeTrack`]：待上传修改；
-//! * 脏位图：给渲染/几何/验证做增量更新的依据（见 ADR-0009）。
+//! * [`StringPool`] + [`TagStore`]: the single home for all text and tags;
+//! * [`NodeStore`] / [`WayStore`] / [`RelationStore`]: SoA data;
+//! * [`IdIndex`]: external ID to handle;
+//! * [`ChangeTrack`]: pending upload changes;
+//! * dirty bitsets: the basis for incremental render/geometry/validation updates (see ADR-0009).
 //!
-//! **线程模型**：`DataSet` 只由单写者（编辑器主线程/命令执行上下文）持有 `&mut`。
-//! 渲染和后台任务读的是发布出去的不可变快照（`Arc<...>`），见 docs/07。
+//! **Threading model**: `DataSet` is only held as `&mut` by a single writer (the editor main thread / command
+//! execution context). Rendering and background tasks read immutable snapshots that have been published
+//! (`Arc<...>`), see docs/07.
 
 use neo_core::{ByteSize, Handle, LatLon, Meta, NeoError, ObjectId, ObjectKind, Result, StringPool, Sym};
 use neo_osm::{ChangeState, Node, Relation, Tags, Way};
@@ -21,87 +22,87 @@ use crate::relation_store::{AnyHandle, RelationRef, RelationSlot, RelationStore,
 use crate::tag_store::{TagSetId, TagStore};
 use crate::way_store::{WayRef, WaySlot, WayStore};
 
-/// 导入策略：遇到悬空引用时跳过还是报错。
+/// Import policy: skip or error out when encountering a dangling reference.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MissingPolicy {
-    /// 跳过该对象（记录计数）。用于 partial data 与不完整下载。
+    /// Skip the object (counting it). Used for partial data and incomplete downloads.
     Skip,
-    /// 返回 [`NeoError::DanglingReference`]。用于完整性校验。
+    /// Return [`NeoError::DanglingReference`]. Used for integrity checks.
     Error,
 }
 
-/// Node 的完整视图（含 tag 内容）。
+/// Full view of a Node (including tag contents).
 #[derive(Clone, Copy, Debug)]
 pub struct NodeView<'a> {
-    /// 快照信息。
+    /// Snapshot info.
     pub info: NodeRef,
-    /// tag 对切片。
+    /// Slice of tag pairs.
     pub tag_pairs: &'a [(Sym, Sym)],
 }
 
 impl NodeView<'_> {
-    /// 外部 ID。
+    /// External ID.
     #[inline]
     pub fn id(&self) -> ObjectId {
         self.info.id
     }
 
-    /// 坐标。
+    /// Coordinates.
     #[inline]
     pub fn pos(&self) -> LatLon {
         self.info.pos
     }
 
-    /// 元数据。
+    /// Metadata.
     #[inline]
     pub fn meta(&self) -> Meta {
         self.info.meta
     }
 
-    /// 查 tag。
+    /// Look up a tag.
     #[inline]
     pub fn tag(&self, key: Sym) -> Option<Sym> {
         self.tag_pairs.iter().find_map(|&(k, v)| (k == key).then_some(v))
     }
 
-    /// 迭代 tag。
+    /// Iterate tags.
     #[inline]
     pub fn tags(&self) -> impl Iterator<Item = (Sym, Sym)> + '_ {
         self.tag_pairs.iter().copied()
     }
 }
 
-/// Way 的完整视图。
+/// Full view of a Way.
 #[derive(Clone, Copy, Debug)]
 pub struct WayView<'a> {
-    /// 快照信息。
+    /// Snapshot info.
     pub info: WayRef,
-    /// tag 对切片。
+    /// Slice of tag pairs.
     pub tag_pairs: &'a [(Sym, Sym)],
-    /// 节点引用。
+    /// Node references.
     pub node_refs: &'a [Handle<NodeSlot>],
 }
 
 impl WayView<'_> {
-    /// 外部 ID。
+    /// External ID.
     #[inline]
     pub fn id(&self) -> ObjectId {
         self.info.id
     }
 
-    /// 查 tag。
+    /// Look up a tag.
     #[inline]
     pub fn tag(&self, key: Sym) -> Option<Sym> {
         self.tag_pairs.iter().find_map(|&(k, v)| (k == key).then_some(v))
     }
 
-    /// 迭代 tag。
+    /// Iterate tags.
     #[inline]
     pub fn tags(&self) -> impl Iterator<Item = (Sym, Sym)> + '_ {
         self.tag_pairs.iter().copied()
     }
 
-    /// 是否闭合（首尾引用相同）。
+    /// Whether the way is closed (first and last references are identical).
     pub fn is_closed(&self) -> bool {
         match (self.node_refs.first(), self.node_refs.last()) {
             (Some(a), Some(b)) => a == b && self.node_refs.len() >= 4,
@@ -110,47 +111,47 @@ impl WayView<'_> {
     }
 }
 
-/// Relation 的完整视图。
+/// Full view of a Relation.
 #[derive(Clone, Copy, Debug)]
 pub struct RelationView<'a> {
-    /// 快照信息。
+    /// Snapshot info.
     pub info: RelationRef,
-    /// tag 对切片。
+    /// Slice of tag pairs.
     pub tag_pairs: &'a [(Sym, Sym)],
-    /// 成员切片。
+    /// Slice of members.
     pub members: &'a [StoredMember],
 }
 
 impl RelationView<'_> {
-    /// 外部 ID。
+    /// External ID.
     #[inline]
     pub fn id(&self) -> ObjectId {
         self.info.id
     }
 
-    /// 查 tag。
+    /// Look up a tag.
     #[inline]
     pub fn tag(&self, key: Sym) -> Option<Sym> {
         self.tag_pairs.iter().find_map(|&(k, v)| (k == key).then_some(v))
     }
 }
 
-/// 一个 OSM 数据集。
+/// One OSM data set.
 #[derive(Debug)]
 pub struct DataSet {
-    /// 字符串驻留池。
+    /// String interning pool.
     pub strings: StringPool,
-    /// tag 竞技场。
+    /// Tag arena.
     pub tags: TagStore,
-    /// 节点。
+    /// Nodes.
     pub nodes: NodeStore,
     /// Way。
     pub ways: WayStore,
     /// Relation。
     pub relations: RelationStore,
-    /// 外部 ID 索引。
+    /// External ID index.
     pub ids: IdIndex,
-    /// 待上传修改。
+    /// Pending upload changes.
     pub changes: ChangeTrack,
     version: u64,
     next_local_id: i64,
@@ -166,7 +167,7 @@ impl Default for DataSet {
 }
 
 impl DataSet {
-    /// 空数据集。
+    /// Empty data set.
     pub fn new() -> Self {
         Self {
             strings: StringPool::new(),
@@ -184,22 +185,22 @@ impl DataSet {
         }
     }
 
-    /// 当前数据版本（每次提交编辑递增；渲染/缓存用它做失效判断）。
+    /// Current data version (incremented on every committed edit; rendering/caches use it for invalidation).
     #[inline]
     pub fn version(&self) -> u64 {
         self.version
     }
 
-    /// 递增版本。
+    /// Increment the version.
     #[inline]
     pub fn bump_version(&mut self) {
         self.version = self.version.wrapping_add(1);
     }
 
-    /// 分配本地新建对象 ID（负数，从 -1 递减）。
+    /// Allocate an ID for a locally created object (negative, decrementing from -1).
     ///
-    /// 会跳过任何已被占用的 ID：导入含负 ID 的 XML/OSC 后，计数器若不前进，
-    /// 新建对象会与已存在对象撞号并静默覆盖 `IdIndex`（数据损坏）。
+    /// Skips any ID that is already taken: after importing XML/OSC containing negative IDs, if the counter
+    /// does not advance, new objects would collide with existing ones and silently overwrite `IdIndex` (data corruption).
     pub fn next_local_id(&mut self) -> ObjectId {
         loop {
             let id = ObjectId(self.next_local_id);
@@ -210,69 +211,69 @@ impl DataSet {
         }
     }
 
-    /// 记录一个已存在的负 ID，保证后续 `next_local_id` 不会回绕到它。
+    /// Record an existing negative ID, ensuring a later `next_local_id` does not wrap onto it.
     fn note_existing_local_id(&mut self, id: ObjectId) {
         if id.is_local() && id.0 <= self.next_local_id {
             self.next_local_id = id.0 - 1;
         }
     }
 
-    /// 字符串驻留。
+    /// Intern a string.
     #[inline]
     pub fn intern(&mut self, s: &str) -> Sym {
         self.strings.intern(s)
     }
 
-    /// 驻留 tag key/value。
+    /// Intern a tag key/value.
     #[inline]
     pub fn intern_tag(&mut self, key: &str, value: &str) -> (Sym, Sym) {
         (self.strings.intern(key), self.strings.intern(value))
     }
 
-    /// 解析符号。
+    /// Resolve a symbol.
     #[inline]
     pub fn resolve(&self, sym: Sym) -> &str {
         self.strings.resolve(sym)
     }
 
-    /// 新增 tag 集合。
+    /// Add a tag set.
     pub fn add_tags(&mut self, pairs: &[(Sym, Sym)]) -> TagSetId {
         self.tags.add(pairs)
     }
 
-    /// 取 tag 集合内容。
+    /// Get the contents of a tag set.
     #[inline]
     pub fn tag_pairs(&self, id: TagSetId) -> &[(Sym, Sym)] {
         self.tags.get(id)
     }
 
-    /// 是否空数据集。
+    /// Whether the data set is empty.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.ways.is_empty() && self.relations.is_empty()
     }
 
-    /// 节点数。
+    /// Number of nodes.
     #[inline]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    /// Way 数。
+    /// Number of Ways.
     #[inline]
     pub fn way_count(&self) -> usize {
         self.ways.len()
     }
 
-    /// Relation 数。
+    /// Number of Relations.
     #[inline]
     pub fn relation_count(&self) -> usize {
         self.relations.len()
     }
 
-    /// 插入一个 node DTO。
+    /// Insert a node DTO.
     ///
-    /// 拒绝重复 ID：`IdIndex` 是 `HashMap`，静默覆盖会让旧对象变成"存活但无 ID"
-    /// 的孤儿（渲染/导出出现重复 ID，上传被服务端拒绝）。
+    /// Reject duplicate IDs: `IdIndex` is a `HashMap`, and silently overwriting would leave the old object as an
+    /// "alive but ID-less" orphan (duplicate IDs appear in render/export, and the server rejects the upload).
     pub fn push_node(&mut self, node: Node) -> Result<Handle<NodeSlot>> {
         if self.ids.node(node.id).is_some() {
             return Err(NeoError::Consistency(format!("duplicate node id {}", node.id.0)));
@@ -285,7 +286,7 @@ impl DataSet {
         Ok(handle)
     }
 
-    /// 插入一个 way DTO。
+    /// Insert a way DTO.
     pub fn push_way(&mut self, way: Way, policy: MissingPolicy) -> Result<Option<Handle<WaySlot>>> {
         if self.ids.way(way.id).is_some() {
             return Err(NeoError::Consistency(format!("duplicate way id {}", way.id.0)));
@@ -315,7 +316,7 @@ impl DataSet {
         Ok(Some(handle))
     }
 
-    /// 插入一个 relation DTO。
+    /// Insert a relation DTO.
     pub fn push_relation(
         &mut self,
         relation: Relation,
@@ -358,7 +359,7 @@ impl DataSet {
         Ok(Some(handle))
     }
 
-    /// 插入一个 `Element` DTO。返回被接受对象的 ID（被跳过时返回 `None`）。
+    /// Insert an `Element` DTO. Returns the accepted object's ID (`None` when skipped).
     pub fn push_element(
         &mut self,
         element: neo_osm::Element,
@@ -381,7 +382,7 @@ impl DataSet {
         }
     }
 
-    /// Node 完整视图。
+    /// Full Node view.
     pub fn node_view(&self, handle: Handle<NodeSlot>) -> Option<NodeView<'_>> {
         let info = self.nodes.get(handle)?;
         Some(NodeView {
@@ -390,7 +391,7 @@ impl DataSet {
         })
     }
 
-    /// Way 完整视图。
+    /// Full Way view.
     pub fn way_view(&self, handle: Handle<WaySlot>) -> Option<WayView<'_>> {
         let info = self.ways.get(handle)?;
         Some(WayView {
@@ -400,7 +401,7 @@ impl DataSet {
         })
     }
 
-    /// Relation 完整视图。
+    /// Full Relation view.
     pub fn relation_view(&self, handle: Handle<RelationSlot>) -> Option<RelationView<'_>> {
         let info = self.relations.get(handle)?;
         Some(RelationView {
@@ -410,34 +411,34 @@ impl DataSet {
         })
     }
 
-    /// 节点坐标。
+    /// Node coordinates.
     #[inline]
     pub fn position(&self, handle: Handle<NodeSlot>) -> Option<LatLon> {
         self.nodes.position(handle)
     }
 
-    /// 按 ID 查节点句柄。
+    /// Look up a node handle by ID.
     #[inline]
     pub fn node_handle(&self, id: ObjectId) -> Option<Handle<NodeSlot>> {
         self.ids.node(id)
     }
 
-    /// 按 ID 查 way 句柄。
+    /// Look up a way handle by ID.
     #[inline]
     pub fn way_handle(&self, id: ObjectId) -> Option<Handle<WaySlot>> {
         self.ids.way(id)
     }
 
-    /// 按 ID 查 relation 句柄。
+    /// Look up a relation handle by ID.
     #[inline]
     pub fn relation_handle(&self, id: ObjectId) -> Option<Handle<RelationSlot>> {
         self.ids.relation(id)
     }
 
-    /// Way 的节点 ID 序列（用于展示；失效引用会被跳过）。
+    /// Node ID sequence of a Way (for display; stale references are skipped).
     ///
-    /// 写路径（OSC/PBF 导出、编辑命令）必须用 [`Self::try_way_node_ids`]：
-    /// 静默跳过悬空引用会把几何写短，属不可逆数据损坏。
+    /// Write paths (OSC/PBF export, editing commands) must use [`Self::try_way_node_ids`]:
+    /// silently skipping dangling references would write shortened geometry, an irreversible data corruption.
     pub fn way_node_ids(&self, handle: Handle<WaySlot>) -> Vec<ObjectId> {
         let Some(refs) = self.ways.nodes(handle) else {
             return Vec::new();
@@ -445,7 +446,7 @@ impl DataSet {
         refs.iter().filter_map(|h| self.nodes.id(*h)).collect()
     }
 
-    /// Way 的节点 ID 序列；任一引用失效时返回错误而不是静默压缩。
+    /// Node ID sequence of a Way; returns an error instead of silently compacting when any reference is stale.
     pub fn try_way_node_ids(&self, handle: Handle<WaySlot>) -> Result<Vec<ObjectId>> {
         let Some(refs) = self.ways.nodes(handle) else {
             return Ok(Vec::new());
@@ -461,7 +462,7 @@ impl DataSet {
         Ok(out)
     }
 
-    /// 修改节点坐标（编辑热路径）：校验 → 写入 → 标脏 → 版本递增。
+    /// Modify node coordinates (edit hot path): validate → write → mark dirty → bump version.
     pub fn set_node_position(&mut self, handle: Handle<NodeSlot>, pos: LatLon) -> Result<LatLon> {
         if !pos.is_valid() {
             return Err(NeoError::InvalidCoordinate(format!(
@@ -481,10 +482,10 @@ impl DataSet {
         Ok(old)
     }
 
-    /// 替换 Way 的节点序列。
+    /// Replace a Way's node sequence.
     ///
-    /// 校验每个节点句柄仍然有效：否则会把悬空句柄写进引用池，后续
-    /// `Referrers`/`WorldCache` 按 index 访问时越界或张冠李戴。
+    /// Validate that every node handle is still valid: otherwise dangling handles would be written into the
+    /// reference pool, and later `Referrers`/`WorldCache` accesses by index would go out of bounds or map to the wrong object.
     pub fn set_way_nodes(&mut self, handle: Handle<WaySlot>, refs: &[Handle<NodeSlot>]) -> Result<()> {
         if !self.ways.contains(handle) {
             return Err(NeoError::StaleHandle {
@@ -506,17 +507,17 @@ impl DataSet {
         Ok(())
     }
 
-    /// 把某个对象标记为待上传修改。
+    /// Mark an object as having pending changes to upload.
     pub fn set_change_state(&mut self, kind: ObjectKind, id: ObjectId, state: ChangeState) {
         self.changes.mark(kind, id, state);
     }
 
-    /// 读取对象修改状态。
+    /// Read an object's change state.
     pub fn change_state(&self, kind: ObjectKind, id: ObjectId) -> ChangeState {
         self.changes.state(kind, id)
     }
 
-    /// 同时设置修改状态与 `visible` 元数据（删除/恢复删除用）。
+    /// Set both the change state and the `visible` metadata (used for delete/undelete).
     pub fn set_change_state_visible(
         &mut self,
         kind: ObjectKind,
@@ -558,14 +559,14 @@ impl DataSet {
             }
             ObjectKind::Changeset => {}
         }
-        // 可见性影响渲染/拾取/上传，必须让缓存失效。
+        // Visibility affects rendering/picking/upload, so caches must be invalidated.
         self.bump_version();
     }
 
-    /// 把对象的外部 ID 从 `old` 改为 `new`（上传成功后负 ID → 服务端 ID）。
+    /// Change an object's external ID from `old` to `new` (negative ID → server ID after a successful upload).
     ///
-    /// 引用方（way 的 nd、relation 成员）存的是句柄，因此不需要改写；只有
-    /// `IdIndex` 与对象自身的 ID 需要更新。
+    /// Referrers (way nds, relation members) store handles, so they need no rewriting; only
+    /// `IdIndex` and the object's own ID need updating.
     pub fn reassign_id(&mut self, kind: ObjectKind, old: ObjectId, new: ObjectId) -> bool {
         if old == new {
             return true;
@@ -608,7 +609,7 @@ impl DataSet {
         }
     }
 
-    /// 修改对象版本（上传成功后写回服务端 version）。
+    /// Modify an object's version (write back the server version after a successful upload).
     pub fn set_version(&mut self, kind: ObjectKind, id: ObjectId, version: u32) -> bool {
         let updated = match kind {
             ObjectKind::Node => self.ids.node(id).and_then(|h| {
@@ -635,37 +636,37 @@ impl DataSet {
         updated
     }
 
-    /// 标记某个对象已同步（上传成功后清除脏状态）。
+    /// Mark an object as synced (clear its dirty state after a successful upload).
     pub fn mark_synced(&mut self, kind: ObjectKind, id: ObjectId) {
         self.changes.mark(kind, id, ChangeState::Unchanged);
     }
 
-    /// 全部变更是否已清空。
+    /// Whether all changes have been cleared.
     pub fn has_pending_changes(&self) -> bool {
         !self.changes.is_empty()
     }
 
-    // ---- 脏集合 ----
+    // ---- dirty sets ----
 
-    /// 标记 way 的几何/样式需要重建。
+    /// Mark a way's geometry/style as needing rebuild.
     #[inline]
     pub fn mark_way_dirty(&mut self, handle: Handle<WaySlot>) {
         self.dirty_ways.set(handle.index() as usize);
     }
 
-    /// 标记节点脏（节点图标/拾取索引）。
+    /// Mark a node dirty (node icon / picking index).
     #[inline]
     pub fn mark_node_dirty(&mut self, handle: Handle<NodeSlot>) {
         self.dirty_nodes.set(handle.index() as usize);
     }
 
-    /// 标记 relation 脏（成员/标签变化）。
+    /// Mark a relation dirty (member/tag changes).
     #[inline]
     pub fn mark_relation_dirty(&mut self, handle: Handle<RelationSlot>) {
         self.dirty_relations.set(handle.index() as usize);
     }
 
-    /// 取出并清空脏 way 列表。
+    /// Take and clear the list of dirty ways.
     pub fn take_dirty_ways(&mut self) -> Vec<Handle<WaySlot>> {
         let out: Vec<Handle<WaySlot>> = self
             .dirty_ways
@@ -680,7 +681,7 @@ impl DataSet {
         out
     }
 
-    /// 取出并清空脏节点列表。
+    /// Take and clear the list of dirty nodes.
     pub fn take_dirty_nodes(&mut self) -> Vec<Handle<NodeSlot>> {
         let out: Vec<Handle<NodeSlot>> = self
             .dirty_nodes
@@ -695,17 +696,17 @@ impl DataSet {
         out
     }
 
-    /// 是否有待重建的几何。
+    /// Whether any geometry needs rebuilding.
     pub fn has_dirty(&self) -> bool {
         self.dirty_nodes.count_ones() > 0 || self.dirty_ways.count_ones() > 0
     }
 
-    /// 构建反向引用索引。
+    /// Build the reverse-reference index.
     pub fn build_referrers(&self) -> Referrers {
         Referrers::build(self)
     }
 
-    /// 统计信息。
+    /// Statistics.
     pub fn stats(&self) -> StoreStats {
         StoreStats {
             nodes: self.nodes.len(),
@@ -720,7 +721,7 @@ impl DataSet {
         }
     }
 
-    /// 估算堆内存。
+    /// Estimate heap memory.
     pub fn mem_bytes(&self) -> ByteSize {
         self.nodes.mem_bytes()
             + self.ways.mem_bytes()
@@ -734,47 +735,47 @@ impl DataSet {
             + self.dirty_relations.mem_bytes()
     }
 
-    /// 迭代所有节点快照。
+    /// Iterate snapshots of all nodes.
     pub fn iter_nodes(&self) -> impl Iterator<Item = NodeRef> + '_ {
         self.nodes.iter()
     }
 
-    /// 迭代所有 way 快照。
+    /// Iterate snapshots of all ways.
     pub fn iter_ways(&self) -> impl Iterator<Item = WayRef> + '_ {
         self.ways.iter()
     }
 
-    /// 迭代所有 relation 快照。
+    /// Iterate snapshots of all relations.
     pub fn iter_relations(&self) -> impl Iterator<Item = RelationRef> + '_ {
         self.relations.iter()
     }
 
-    /// 把 TagSet 解析为 DTO。
+    /// Resolve a TagSet into a DTO.
     pub fn tags_of(&self, id: TagSetId) -> Tags {
         Tags::from_pairs(self.tags.iter(id))
     }
 }
 
-/// 数据集统计（用于基准与 UI 状态栏）。
+/// Data set statistics (for benchmarks and the UI status bar).
 #[derive(Clone, Debug, Default)]
 pub struct StoreStats {
-    /// 节点数。
+    /// Number of nodes.
     pub nodes: usize,
-    /// Way 数。
+    /// Number of Ways.
     pub ways: usize,
-    /// Relation 数。
+    /// Number of Relations.
     pub relations: usize,
-    /// 节点引用总数。
+    /// Total number of node references.
     pub node_refs: usize,
-    /// relation 成员总数。
+    /// Total number of relation members.
     pub relation_members: usize,
-    /// tag set 数。
+    /// Number of tag sets.
     pub tag_sets: usize,
-    /// tag 对总数。
+    /// Total number of tag pairs.
     pub tags: usize,
-    /// 驻留字符串数。
+    /// Number of interned strings.
     pub strings: usize,
-    /// 估算内存。
+    /// Estimate memory.
     pub bytes: ByteSize,
 }
 
@@ -827,7 +828,7 @@ mod tests {
         data.push_node(node(-2, 47.1, 8.1)).unwrap();
         let next = data.next_local_id();
         assert_eq!(next.0, -3);
-        // 即使计数器被重置，也不允许复用已有 ID。
+        // Even if the counter is reset, existing IDs must never be reused.
         data.push_node(node(-10, 47.2, 8.2)).unwrap();
         assert_ne!(data.next_local_id().0, -10);
     }
@@ -844,7 +845,7 @@ mod tests {
         };
         way.nodes = vec![ObjectId(1), ObjectId(1)].into();
         let way_handle = data.push_way(way, MissingPolicy::Error).unwrap().unwrap();
-        // 物理删除节点后，旧句柄不应再能写进 way。
+        // After a node is physically deleted, its old handle must no longer be writable into a way.
         data.nodes.remove(node_handle);
         let err = data.set_way_nodes(way_handle, &[node_handle]).unwrap_err();
         assert!(matches!(err, NeoError::StaleHandle { .. }));

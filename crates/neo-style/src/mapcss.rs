@@ -1,20 +1,20 @@
-//! MapCSS 子集：解析 + 编译为按 Sym 比较的规则。
+//! MapCSS subset: parse and compile into rules compared by Sym.
 //!
-//! 支持：
-//! * 选择器：`way` / `node` / `relation` / `area` / `*`，可带 `[key]`、`[key=value]`；
-//! * 逗号分隔多个选择器；
-//! * 缩放过滤：`|z12-`、`|z14-z18`；
-//! * 声明：`color`、`fill-color`、`width`、`opacity`、`casing-color` /
-//!   `casing-width` / `casing-dashes`（`#rgb/#rrggbb/#rrggbbaa`）。
+//! Supports:
+//! * selectors: `way` / `node` / `relation` / `area` / `*`, optionally with `[key]`, `[key=value]`;
+//! * comma-separated multiple selectors;
+//! * zoom filters: `|z12-`, `|z14-z18`;
+//! * declarations: `color`, `fill-color`, `width`, `opacity`, `casing-color` /
+//!   `casing-width` / `casing-dashes` (`#rgb/#rrggbb/#rrggbbaa`).
 //!
-//! 未支持：`@media`、`eval()`、`setting()`、图案等；
-//! 这些在 docs/11 中列为后续兼容项。解析失败不会让程序崩溃（调用方回退内置调色板）。
+//! Not supported: `@media`, `eval()`, `setting()`, patterns, etc.;
+//! these are listed as future compatibility items in docs/11. A parse failure never crashes the program (the caller falls back to the built-in palette).
 
 #![allow(missing_docs)]
 
 use neo_core::Sym;
 
-/// 选择器元素类型。
+/// Selector element type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Element {
     Any,
@@ -22,15 +22,15 @@ pub enum Element {
     Way,
     Area,
     Relation,
-    /// 闭合 way。求值时按 way/area 匹配。
+    /// Closed way. Matched as way/area during evaluation.
     ClosedWay,
-    /// 画布规则，不作用到几何对象。
+    /// Canvas rule, not applied to geometry objects.
     Canvas,
-    /// 样式元数据，不作用到几何对象。
+    /// Style metadata, not applied to geometry objects.
     Meta,
 }
 
-/// 解析后的选择器（字符串条件）。
+/// Parsed selector (string conditions).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Selector {
     pub element: Element,
@@ -39,34 +39,34 @@ pub struct Selector {
     pub max_zoom: f32,
 }
 
-/// 声明。
+/// Declaration.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Declarations {
     pub color: Option<[u8; 4]>,
     pub fill_color: Option<[u8; 4]>,
-    /// `fill-color: none`，明确不要内置填充。
+    /// `fill-color: none`, explicitly requesting no built-in fill.
     pub clear_fill: bool,
     pub width: Option<f32>,
     pub opacity: Option<f32>,
-    /// `dashes` 列表。渲染器可以忽略，但解析结果保留。
+    /// `dashes` list. The renderer may ignore it, but the parse result keeps it.
     pub dashes: Option<Vec<f32>>,
-    /// `text`：标签键（如 `name`）。
+    /// `text`: label key (e.g. `name`).
     pub text: Option<String>,
-    /// `text-color`。
+    /// `text-color`.
     pub text_color: Option<[u8; 4]>,
-    /// `font-size`（屏幕像素）。
+    /// `font-size` (screen pixels).
     pub font_size: Option<f32>,
-    /// `text-position`（`center`/`above`/`below`）。
+    /// `text-position` (`center`/`above`/`below`).
     pub text_position: Option<String>,
-    /// `icon-image`（记录但暂不绘制）。
+    /// `icon-image` (recorded but not yet drawn).
     pub icon_image: Option<String>,
-    /// `icon-width`（屏幕像素）。
+    /// `icon-width` (screen pixels).
     pub icon_width: Option<f32>,
-    /// `casing-color`：外描边颜色。
+    /// `casing-color`: casing color.
     pub casing_color: Option<[u8; 4]>,
-    /// `casing-width`：外描边宽度（屏幕像素）。
+    /// `casing-width`: casing width (screen pixels).
     pub casing_width: Option<f32>,
-    /// `casing-dashes`：外描边虚线图案（屏幕像素）。
+    /// `casing-dashes`: casing dash pattern (screen pixels).
     pub casing_dashes: Option<Vec<f32>>,
 }
 
@@ -122,22 +122,22 @@ impl Declarations {
     }
 }
 
-/// 一条 MapCSS 规则。
+/// One MapCSS rule.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rule {
     pub selector: Selector,
     pub decls: Declarations,
 }
 
-/// 解析结果。
+/// Parse result.
 #[derive(Clone, Debug, Default)]
 pub struct MapCss {
     pub rules: Vec<Rule>,
-    /// 识别到但未实现的属性（text/icon 等）。不静默丢弃。
+    /// Recognized but unimplemented properties (text/icon etc.). Not silently dropped.
     pub warnings: Vec<String>,
 }
 
-/// 编译后的选择器（Sym 条件）。
+/// Compiled selector (Sym conditions).
 #[derive(Clone, Debug)]
 pub struct CompiledSelector {
     pub element: Element,
@@ -146,21 +146,21 @@ pub struct CompiledSelector {
     pub max_zoom: f32,
 }
 
-/// 编译后的规则。
+/// Compiled rule.
 #[derive(Clone, Debug)]
 pub struct CompiledRule {
     pub selector: CompiledSelector,
     pub decls: Declarations,
 }
 
-/// 编译后的样式表。
+/// Compiled stylesheet.
 #[derive(Clone, Debug, Default)]
 pub struct CompiledMapCss {
     pub rules: Vec<CompiledRule>,
 }
 
 impl CompiledMapCss {
-    /// 计算某对象的最终声明（后规则覆盖前规则）。
+    /// Compute the final declarations for an object (later rules override earlier ones).
     pub fn style(&self, element: Element, tags: &[(Sym, Sym)], zoom: f32) -> Option<Declarations> {
         let mut out = Declarations::default();
         let mut matched = false;
@@ -196,7 +196,7 @@ fn element_matches(sel: Element, actual: Element) -> bool {
 }
 
 impl MapCss {
-    /// 解析样式文本。
+    /// Parse style text.
     pub fn parse(text: &str) -> Result<Self, String> {
         let cleaned = strip_comments(text);
         let mut rules = Vec::new();
@@ -225,7 +225,7 @@ impl MapCss {
         Ok(Self { rules, warnings })
     }
 
-    /// 画布填充色（`canvas { fill-color: ... }`），没有则 `None`。
+    /// Canvas fill color (`canvas { fill-color: ... }`), or `None` if absent.
     pub fn canvas_fill(&self) -> Option<[u8; 4]> {
         self.rules
             .iter()
@@ -233,7 +233,7 @@ impl MapCss {
             .and_then(|rule| rule.decls.fill_color)
     }
 
-    /// 用 `intern` 把标签 key/value 编译成 Sym。
+    /// Compile tag keys/values into Syms with `intern`.
     pub fn compile(self, mut intern: impl FnMut(&str) -> Sym) -> CompiledMapCss {
         let rules = self
             .rules
@@ -378,7 +378,7 @@ fn parse_zoom(part: Option<&str>) -> Result<(f32, f32), String> {
     };
     let (min, max) = match rest.split_once('-') {
         Some((min, max)) => (min, max),
-        // MapCSS 的 `|z18` 表示"仅 z18"，不是 18 以上全部。
+        // MapCSS's `|z18` means "z18 only", not everything above 18.
         None => (rest, rest),
     };
     let min = if min.is_empty() {
@@ -475,7 +475,7 @@ fn parse_f32(value: &str) -> Result<f32, String> {
 
 fn parse_color(value: &str) -> Result<[u8; 4], String> {
     let hex = value.trim().trim_start_matches('#');
-    // 先拒绝非 ASCII：下面的字节切片在多字节 UTF-8 中间会 panic。
+    // Reject non-ASCII first: the byte slicing below would panic in the middle of a multi-byte UTF-8 char.
     if !hex.is_ascii() {
         return Err(format!("bad color: {value}"));
     }
@@ -558,12 +558,12 @@ mod tests {
         .unwrap();
         assert!(
             css.warnings.is_empty(),
-            "casing-* 不应报 unknown property：{:?}",
+            "casing-* must not be reported as an unknown property: {:?}",
             css.warnings
         );
         let compiled = css.compile(|_| Sym::from_raw(0));
         let decl = compiled.style(Element::Way, &[], 15.0).unwrap();
-        // 后规则覆盖前规则。
+        // Later rules override earlier ones.
         assert_eq!(decl.casing_width, Some(6.0));
         assert_eq!(decl.casing_color, Some([0x11, 0x22, 0x33, 255]));
         assert_eq!(decl.casing_dashes, Some(vec![4.0, 2.0]));

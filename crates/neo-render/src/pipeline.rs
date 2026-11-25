@@ -1,37 +1,37 @@
-//! 地图渲染管线：顶点着色器做世界→屏幕变换，片元直出颜色。
+//! Map render pipeline: the vertex shader performs the world→screen transform and the fragment shader outputs color directly.
 //!
-//! 为什么平移/缩放不进顶点 buffer：地图交互的绝大多数帧都在平移/缩放，如果每帧
-//! 重算并重传顶点，带宽和 CPU 都浪费。这里把相机放进 32 字节 uniform，顶点只在
-//! 数据变化时上传（docs/05 §2.6）。
+//! Why pan/zoom do not go into the vertex buffer: the vast majority of map interaction frames are panning/zooming; if vertices
+//! were recomputed and re-uploaded every frame, both bandwidth and CPU would be wasted. Here the camera goes into a 32-byte uniform, and vertices are uploaded
+//! only when data changes (docs/05 §2.6).
 
 use bytemuck::{Pod, Zeroable};
 use neo_geo::{Camera, WorldPoint};
 use neo_scene::MapVertex;
 use wgpu::util::DeviceExt as _;
 
-/// 相机 uniform（32 字节）。
+/// Camera uniform (32 bytes).
 ///
-/// 布局必须与 `shaders/map.wgsl` 的 `Camera` 一致：
+/// The layout must match `Camera` in `shaders/map.wgsl`:
 /// `center: vec2<f32>, viewport: vec2<f32>, scale: f32, grey: f32, pad: vec2<f32>`
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CameraUniform {
-    /// 相机中心相对批次原点的偏移（米）。
+    /// Offset of the camera center relative to the batch origin (meters).
     pub center: [f32; 2],
-    /// 视口尺寸（物理像素）。
+    /// Viewport size (physical pixels).
     pub viewport: [f32; 2],
-    /// 每米像素数。
+    /// Pixels per meter.
     pub scale: f32,
-    /// 灰度系数：0 = 正常颜色，1 = 完全去色（只读图层）。
+    /// Gray factor: 0 = normal colors, 1 = fully desaturated (inactive layers).
     pub grey: f32,
-    /// 对齐填充。
+    /// Alignment padding.
     pub _pad: [f32; 2],
 }
 
 const _: () = assert!(core::mem::size_of::<CameraUniform>() == 32);
 
 impl CameraUniform {
-    /// 从相机 + 批次原点构造。
+    /// Build from camera + batch origin.
     pub fn new(camera: &Camera, origin: WorldPoint, viewport_px: [u32; 2]) -> Self {
         Self {
             center: [
@@ -45,39 +45,39 @@ impl CameraUniform {
         }
     }
 
-    /// 带灰度开关的构造（非活动图层用）。
+    /// Build with a gray toggle (used for inactive layers).
     pub fn with_grey(camera: &Camera, origin: WorldPoint, viewport_px: [u32; 2], grey: bool) -> Self {
         let mut uniform = Self::new(camera, origin, viewport_px);
         uniform.grey = if grey { 1.0 } else { 0.0 };
         uniform
     }
 
-    /// 原始字节。
+    /// Raw bytes.
     pub fn as_bytes(&self) -> &[u8] {
         bytemuck::bytes_of(self)
     }
 }
 
-/// 地图管线（一个 pipeline 处理 Fill/Stroke/Point；混合模式相同）。
+/// Map pipeline (one pipeline handles Fill/Stroke/Point; the blend mode is the same).
 pub struct MapPipeline {
-    /// 管线。
+    /// Pipeline.
     pub pipeline: wgpu::RenderPipeline,
-    /// 相机 uniform buffer。
+    /// Camera uniform buffer.
     pub uniform_buffer: wgpu::Buffer,
-    /// 绑组。
+    /// Bind group.
     pub bind_group: wgpu::BindGroup,
-    /// 颜色附件格式（必须与 render pass 一致）。
+    /// Color attachment format (must match the render pass).
     pub color_format: wgpu::TextureFormat,
-    /// MSAA 采样数（必须与 render pass 一致）。
+    /// MSAA sample count (must match the render pass).
     pub sample_count: u32,
 }
 
 impl MapPipeline {
-    /// 创建管线。
+    /// Create the pipeline.
     ///
-    /// `color_format` 必须等于 render pass 的颜色附件格式；`sample_count` 必须等于
-    /// pass 的 MSAA 采样数（egui 用 `egui_wgpu::RendererOptions::msaa_samples`，
-    /// eframe 用 `NativeOptions::multisampling`）。不匹配会导致运行时校验失败。
+    /// `color_format` must equal the render pass's color attachment format; `sample_count` must equal
+    /// the pass's MSAA sample count (egui uses `egui_wgpu::RendererOptions::msaa_samples`,
+    /// eframe uses `NativeOptions::multisampling`). A mismatch causes a runtime validation failure.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat, sample_count: u32) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("neo-map-shader"),
@@ -181,7 +181,7 @@ impl MapPipeline {
         }
     }
 
-    /// 更新相机 uniform（每帧一次，32 字节）。
+    /// Update the camera uniform (once per frame, 32 bytes).
     pub fn update_camera(
         &self,
         queue: &wgpu::Queue,
@@ -192,7 +192,7 @@ impl MapPipeline {
         self.update_camera_with_grey(queue, camera, origin, viewport_px, false);
     }
 
-    /// 更新相机 uniform，并指定是否对数据去色（非活动图层）。
+    /// Update the camera uniform and specify whether to desaturate the data (inactive layers).
     pub fn update_camera_with_grey(
         &self,
         queue: &wgpu::Queue,
@@ -205,7 +205,7 @@ impl MapPipeline {
         queue.write_buffer(&self.uniform_buffer, 0, uniform.as_bytes());
     }
 
-    /// 在 render pass 中绑定管线与相机。
+    /// Bind the pipeline and camera inside the render pass.
     pub fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);

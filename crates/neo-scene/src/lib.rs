@@ -1,16 +1,16 @@
-//! # neo-scene — 场景装配层
+//! # neo-scene — scene assembly layer
 //!
-//! 输入：只读 [`neo_store::DataSet`] + [`neo_geo::SpatialIndex`] + 相机 + 样式；
-//! 输出：[`batches::SceneFrame`]（顶点/索引/颜色批次）。
+//! Input: read-only [`neo_store::DataSet`] + [`neo_geo::SpatialIndex`] + camera + style;
+//! Output: [`batches::SceneFrame`] (vertex/index/color batches).
 //!
-//! 这一层**不依赖 GPU、不依赖 UI**，因此可以：
+//! This layer **does not depend on the GPU or the UI**, so it can:
 //!
-//! * 在无 GPU 的 CI 里单测；
-//! * 被基准直接测（场景构建耗时是 CPU 侧最大的一块）；
-//! * 被未来的其他后端（SVG/PDF 导出、headless 渲染）复用。
+//! * be unit-tested in CI without a GPU;
+//! * be benchmarked directly (scene build time is the largest CPU-side cost);
+//! * be reused by other future backends (SVG/PDF export, headless rendering).
 //!
-//! 增量策略：几何只在"数据变化 / 相机移动出重基阈值"时重建；平移缩放靠 GPU uniform。
-//! 详见 docs/05 与 ADR-0009。
+//! Incremental strategy: geometry is rebuilt only on "data change / camera moves past the rebase threshold"; pan/zoom rely on a GPU uniform.
+//! See docs/05 and ADR-0009 for details.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

@@ -1,11 +1,11 @@
-//! 场景装配：视口 → 可见对象 → 顶点批次。
+//! Scene assembly: viewport → visible objects → vertex batches.
 //!
-//! 关键性能原则（docs/04 §2.9）：
+//! Key performance principles (docs/04 §2.9):
 //!
-//! * **绘制量由视口决定，而不是由总对象数决定**：先经空间索引裁剪，再做 LOD；
-//! * 几何在 CPU 上生成，但只生成"看得见"的部分；
-//! * 平移/缩放不重建几何（GPU 用 uniform 变换），只有数据变化或需要原点重基时才重建；
-//! * 顶点坐标 = 世界坐标 - 批次原点（f32 米），原点取相机中心。
+//! * **draw volume is determined by the viewport, not by the total object count**: cull via the spatial index first, then apply LOD;
+//! * geometry is generated on the CPU, but only the part that is "visible";
+//! * pan/zoom do not rebuild geometry (the GPU applies the transform via a uniform); rebuild only when data changes or origin rebasing is needed;
+//! * vertex coordinates = world coordinates - batch origin (f32 meters), with the origin taken at the camera center.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -21,7 +21,7 @@ use crate::batches::{
     name_color,
 };
 
-/// 每帧复用的几何 scratch 缓冲区（避免每 way 一次堆分配）。
+/// Geometry scratch buffers reused every frame (avoiding a heap allocation per way).
 #[derive(Default)]
 struct Scratch {
     world: Vec<WorldPoint>,
@@ -35,15 +35,15 @@ struct Scratch {
     offset: Vec<WorldPoint>,
 }
 
-/// 进入 RDP 前的最大点数：超过则先做等比抽稀。
-/// RDP 在病态折线（2000+ 节点且形状碎裂）上可能退化为 O(n²)，预抽稀把最坏情况钉住。
+/// Maximum number of points before RDP: above this, thin out proportionally first.
+/// RDP can degrade to O(n²) on pathological polylines (2000+ nodes with fragmented shape); pre-thinning pins the worst case.
 const RDP_MAX_INPUT: usize = 256;
 
-/// 按 OSM `layer` 分桶的绘制批次；按 layer 升序提交，layer 大的压在上面。
+/// Draw batches bucketed by OSM `layer`; submitted in ascending layer order, so larger layers stack on top.
 ///
-/// 每层的提交顺序固定为 fill → casing → stroke → point：
-/// * `casing` 是结构物外描边（桥/隧道/过水路面的轮廓），必须压在主线下面；
-/// * `point` 最后，避免节点被线盖住。
+/// The per-layer submission order is fixed at fill → casing → stroke → point:
+/// * `casing` is the structure outline (bridges/tunnels/water surfaces on fords) and must sit below the main line;
+/// * `point` comes last so nodes are not covered by lines.
 struct LayerBatches {
     fill: RenderBatch,
     casing: RenderBatch,
@@ -55,7 +55,7 @@ impl Default for LayerBatches {
     fn default() -> Self {
         Self {
             fill: RenderBatch::with_capacity(BatchKind::Fill, 8192, 16384),
-            // 桥/隧道只是少数要素，容量给得比 stroke 小一个量级。
+            // Bridges/tunnels are only a small fraction of features, so the capacity is an order of magnitude smaller than stroke.
             casing: RenderBatch::with_capacity(BatchKind::Casing, 4096, 8192),
             stroke: RenderBatch::with_capacity(BatchKind::Stroke, 65536, 131072),
             point: RenderBatch::with_capacity(BatchKind::Point, 4096, 8192),
@@ -75,10 +75,10 @@ fn total_layer_vertices(layers: &BTreeMap<i16, LayerBatches>) -> usize {
         .sum()
 }
 
-/// way 的绘制层。
+/// Drawing layer of a way.
 ///
-/// 显式 `layer` 优先（与 JOSM 一致）；没有时按结构物语义取 `bias`（桥 +1、隧道 -1），
-/// 否则 0。这样桥面上的路不会被下方交叉路压住、隧道也不会盖住路面，不依赖遍历顺序。
+/// An explicit `layer` wins (consistent with JOSM); otherwise take a `bias` from structure semantics (bridge +1, tunnel -1),
+/// else 0. Thus a road on a bridge is not pressed down by an intersecting road below, and a tunnel does not cover the surface road, without relying on traversal order.
 fn way_layer(data: &DataSet, tags: &[(neo_core::Sym, neo_core::Sym)], bias: i16) -> i16 {
     tags.iter()
         .find(|(key, _)| data.resolve(*key) == "layer")
@@ -93,38 +93,38 @@ fn resolved_tag_names(data: &DataSet, tags: &[(neo_core::Sym, neo_core::Sym)]) -
         .collect()
 }
 
-/// 低于该 zoom 不绘制节点（z16 及以下不显示节点）。
+/// Below this zoom nodes are not drawn (z16 and below show no nodes).
 pub const NODE_MIN_ZOOM: f64 = 17.0;
-/// 达到该 zoom 绘制全部节点；17～18 之间只绘制共享节点。
+/// At this zoom all nodes are drawn; between 17 and 18 only shared nodes are drawn.
 pub const NODE_ALL_ZOOM: f64 = 19.0;
-/// 共享节点判定：被至少这么多条 way 引用。
+/// Shared-node criterion: referenced by at least this many ways.
 pub const SHARED_NODE_MIN_WAYS: usize = 2;
-/// 节点图标和名称从这个 zoom 才画。顶点本身仍按 17/19 的规则。
+/// Node icons and names are drawn only from this zoom on. Vertices themselves still follow the 17/19 rules.
 const NODE_ICON_MIN_ZOOM: f64 = 21.0;
-/// 面名最早出现的 zoom。更早只剩整片大陆，名字没有参照。
+/// Earliest zoom at which area names appear. Earlier than this only whole continents remain, and names have no reference.
 const AREA_NAME_MIN_ZOOM: f64 = 13.0;
-/// 面在屏幕上至少这么大（平方像素）才写名字。面积大的更早达到。
+/// An area must be at least this large on screen (square pixels) to get a name. Larger areas reach it earlier.
 const AREA_NAME_MIN_PX2: f64 = 2_800.0;
-/// 主干道（线宽 ≥ 3px）写名字的 zoom。普通路更晚，避免细线挤成一团。
+/// Zoom at which trunk roads (line width ≥ 3px) get names. Ordinary roads are later, to avoid crowding thin lines.
 const LINE_MAJOR_MIN_ZOOM: f64 = 16.5;
 const LINE_MINOR_MIN_ZOOM: f64 = 18.0;
-/// 线在屏幕上短于这个长度就不写名字。
+/// A line shorter than this on screen gets no name.
 const LINE_MAJOR_MIN_PX: f64 = 200.0;
 const LINE_MINOR_MIN_PX: f64 = 160.0;
-/// 一帧保留的注记上限。满了就换掉优先级最低的。
+/// Maximum number of labels kept for one frame. When full, the lowest-priority one is replaced.
 const LABEL_KEEP: usize = 700;
-/// 面的内圈宽度（屏幕像素）。外缘贴着面的边界，向内铺这么宽。
+/// Inner-ring width of areas (screen pixels). The outer edge hugs the area boundary and the ring is laid inward with this width.
 const AREA_BAND_PX: f64 = 20.0;
-/// 水路和单行道的方向箭头：沿屏幕每隔这么远放一个。
+/// Direction arrows for waterways and oneways: place one every this distance along the screen.
 const ARROW_SPACING_PX: f64 = 80.0;
 const ARROW_LENGTH_PX: f64 = 12.0;
 const ARROW_HALF_WIDTH_PX: f64 = 4.5;
 
-/// 某 zoom 下节点是否可见/可拾取（渲染与拾取共用同一规则）。
+/// Whether a node is visible/pickable at a given zoom (rendering and picking share the same rule).
 ///
-/// * `zoom < NODE_MIN_ZOOM(17)`：不可见；
-/// * `17 <= zoom < NODE_ALL_ZOOM(19)`：只有共享节点（被 ≥2 条 way 引用）可见；
-/// * `zoom >= 19`：全部可见。
+/// * `zoom < NODE_MIN_ZOOM(17)`: invisible;
+/// * `17 <= zoom < NODE_ALL_ZOOM(19)`: only shared nodes (referenced by ≥2 ways) are visible;
+/// * `zoom >= 19`: all are visible.
 pub fn node_visible_at(zoom: f64, way_ref_count: usize) -> bool {
     if zoom < NODE_MIN_ZOOM {
         false
@@ -135,19 +135,19 @@ pub fn node_visible_at(zoom: f64, way_ref_count: usize) -> bool {
     }
 }
 
-/// 场景装配配置。
+/// Scene assembly configuration.
 #[derive(Clone, Debug)]
 pub struct SceneConfig {
-    /// 折线简化容差（屏幕像素）。
+    /// Polyline simplification tolerance (screen pixels).
     pub simplify_tolerance_px: f64,
-    /// 视口外扩比例（避免边缘对象突然出现）。
+    /// Viewport expansion ratio (to avoid edge objects popping in suddenly).
     pub cull_margin: f64,
-    /// 单帧顶点上限（安全阀，防止病态数据卡死）。
+    /// Per-frame vertex cap (safety valve against pathological data locking up).
     pub max_vertices: usize,
-    /// 背景色（由 UI 读取，不在顶点里）。
+    /// Background color (read by the UI, not stored in vertices).
     pub background: [u8; 4],
-    /// Way 抽样步长。`1` 表示视口内的 way 全部进入几何；
-    /// 大于 1 时只保留每 N 条（远景 LOD / 流式总览）。
+    /// Way sampling stride. `1` means all ways in the viewport enter geometry;
+    /// values greater than 1 keep every Nth way (distant LOD / streaming overview).
     pub way_stride: usize,
 }
 
@@ -163,18 +163,18 @@ impl Default for SceneConfig {
     }
 }
 
-/// 场景构建器（可跨帧复用，样式与配置固定）。
+/// Scene builder (reusable across frames with fixed style and config).
 pub struct SceneBuilder {
-    /// 样式表。
+    /// Stylesheet.
     pub style: StyleSheet,
-    /// 配置。
+    /// Configuration.
     pub config: SceneConfig,
-    /// 复用缓冲区。
+    /// Reusable buffers.
     scratch: RefCell<Scratch>,
 }
 
 impl SceneBuilder {
-    /// 构造。
+    /// Construct.
     pub fn new(style: StyleSheet, config: SceneConfig) -> Self {
         Self {
             style,
@@ -183,9 +183,9 @@ impl SceneBuilder {
         }
     }
 
-    /// 用调用方提供的符号驻留器构建默认样式。
+    /// Build the default style using a symbol interner supplied by the caller.
     ///
-    /// 编辑器把名字留在自己的 `DataSet` 里，场景层不再借用可变数据集。
+    /// The editor keeps names in its own `DataSet`, so the scene layer no longer borrows a mutable dataset.
     pub fn with_intern(mut intern: impl FnMut(&str) -> neo_core::Sym) -> Self {
         let keys = StyleKeys {
             highway: intern("highway"),
@@ -205,16 +205,16 @@ impl SceneBuilder {
         Self::new(style, SceneConfig::default())
     }
 
-    /// 为数据集构建默认样式（把 tag key 驻留进这份数据）。
+    /// Build the default style for a dataset (interning the tag keys into this data).
     pub fn with_dataset(data: &mut DataSet) -> Self {
         Self::with_intern(|name| data.intern(name))
     }
 
-    /// 构建一帧场景。
+    /// Build one scene frame.
     ///
-    /// 节点 LOD：`zoom < 17` 不绘制（z16 及以下不显示）；`17..19` 只绘制共享节点
-    /// （被 ≥2 条 way 引用，小圆点）；`zoom >= 19` 绘制全部节点，其中共享节点画小方框、
-    /// 普通节点画圆点。节点图标和名称要到 zoom 21 才出现，名称写在图标右侧。
+    /// Node LOD: `zoom < 17` draws none (z16 and below show nothing); `17..19` draws only shared nodes
+    /// (referenced by ≥2 ways, small dots); `zoom >= 19` draws all nodes, with shared nodes as small squares and
+    /// ordinary nodes as dots. Node icons and names only appear at zoom 21, with the name written to the right of the icon.
     pub fn build(
         &self,
         data: &DataSet,
@@ -229,18 +229,18 @@ impl SceneBuilder {
         let mut stats = SceneStats::default();
         let origin = camera.center;
 
-        // 1) 视口裁剪（外扩 cull_margin）。
+        // 1) viewport culling (expanded by cull_margin).
         let mut bounds = camera.visible_bounds();
         let (w, h) = bounds.size();
         bounds = bounds::expand(bounds, w * self.config.cull_margin, h * self.config.cull_margin);
 
-        // 2) 分桶（预分配，避免大场景下反复扩容拷贝）。
+        // 2) bucketing (preallocated to avoid repeated growth and copying for large scenes).
         let mut layers: BTreeMap<i16, LayerBatches> = BTreeMap::new();
         let mut labels = Vec::new();
         let mut icons = Vec::new();
         let mut areas: Vec<PendingArea> = Vec::new();
 
-        // 3) 零分配遍历：直接经 rstar 迭代器喂给几何构建。
+        // 3) allocation-free traversal: feed geometry construction directly through the rstar iterator.
         let stride = self.config.way_stride.max(1);
         let mut seen_ways = 0usize;
         index.for_each_way(bounds, |entry| {
@@ -273,7 +273,7 @@ impl SceneBuilder {
                 &mut areas,
             );
         });
-        // 3b) multipolygon：外环和洞都记成面，稍后画内圈。
+        // 3b) multipolygon: both outer rings and holes are recorded as areas; inner rings are drawn later.
         for relation in data.iter_relations() {
             if stats.clamped {
                 break;
@@ -325,7 +325,7 @@ impl SceneBuilder {
 
         let area_bands = paint_area_bands(areas, camera, origin, &mut layers);
 
-        // 3) 空批次不提交。
+        // 3) empty batches are not submitted.
         let mut batches: Vec<RenderBatch> = Vec::new();
         for (_, batch) in layers {
             if !batch.fill.is_empty() {
@@ -470,14 +470,14 @@ impl SceneBuilder {
         stats: &mut SceneStats,
         areas: &mut Vec<PendingArea>,
     ) {
-        // LOD 预裁剪（用索引 bbox，先于几何生成）+ 密度抽样：缩得很远时按 stride 抽样，
-        // 既保留路网结构，又把"每帧重建"的 way 数压到可控范围。
+        // LOD pre-culling (using index bboxes before geometry generation) + density sampling: when zoomed far out, sample by stride
+        // to keep the road network structure while holding the number of ways rebuilt per frame in a controllable range.
         let (bw, bh) = bounds.size();
         let screen_diag = ((bw * bw + bh * bh).sqrt() * camera.px_per_meter()) as f32;
         let min_px = self.style.min_way_length_px;
         if screen_diag < min_px {
-            // 密度 LOD：目标抽样数与"低于目标像素数的平方"成正比，使屏幕单位面积内
-            // 实际绘制的 way 数大致恒定（标准矢量瓦片做法），而不是把整类要素砍掉。
+            // Density LOD: the target sample count is proportional to the square of "below-target pixel count", keeping the number of ways
+            // actually drawn per screen area roughly constant (the standard vector-tile approach), rather than cutting a whole feature class.
             let ratio = (min_px / screen_diag.max(0.05)).ceil() as u32;
             let stride = (ratio * ratio).clamp(2, 32);
             if !handle.index().is_multiple_of(stride) {
@@ -510,14 +510,14 @@ impl SceneBuilder {
         let names = resolved_tag_names(data, tags);
         let name_refs: Vec<(&str, &str)> = names.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let way_style = self.style.way_style(tags, camera.zoom as f32, &name_refs);
-        // 节点引用闭合优先；世界坐标首尾相等作兜底（缺节点时仍可能画得出来）。
+        // Prefer node-reference closure; fall back to world-coordinate first/last equality (still drawable when nodes are missing).
         let closed = view.is_closed() || (world.len() >= 4 && world[0] == world[world.len() - 1]);
         let layer = way_layer(data, tags, way_style.layer_bias);
         if let Some(label_key) = way_style.text.as_deref().or(Some("name"))
             && let Some((_, value)) = tags.iter().find(|(key, _)| data.resolve(*key) == label_key)
         {
             let text = data.resolve(*value);
-            // 面状闭合环用质心注记；纯闭合道路仍沿线，避免半周长落在对角。
+            // Closed area rings use centroid labels; purely closed roads still follow the line, avoiding a half-perimeter landing on the diagonal.
             let area_like = way_style.fill_color.is_some() || neo_style::tags_imply_area(&name_refs);
             if closed && area_like {
                 if let Some(pos) = geometry::area_label_point(world, &[]) {
@@ -561,7 +561,7 @@ impl SceneBuilder {
                 color: way_style.color,
             });
         }
-        // 面先记下来。够大画内圈，屏幕上不足一圈宽时再改实心。
+        // Record the area first. Draw an inner ring when big enough; switch to solid when it is less than one ring wide on screen.
         if closed && let Some(color) = way_style.fill_color {
             areas.push(PendingArea {
                 kind: ObjectKind::Way,
@@ -574,7 +574,7 @@ impl SceneBuilder {
             stats.ways += 1;
         }
 
-        // 屏幕空间简化：容差换算成米；短 way 直接跳过 RDP。
+        // Screen-space simplification: convert tolerance to meters; skip RDP for short ways.
         let tolerance_m = self.config.simplify_tolerance_px * camera.meters_per_px();
         if world.len() > 4 {
             let source: &[WorldPoint] = if world.len() > RDP_MAX_INPUT {
@@ -604,7 +604,7 @@ impl SceneBuilder {
             return;
         }
 
-        // 面填充成功后仍然绘制描边（MapCSS 的 fill + casing 组合）。
+        // After a successful area fill, still draw the stroke (MapCSS's fill + casing combination).
         let width_px = way_style.width_px;
         if width_px <= 0.0 {
             return;
@@ -612,8 +612,8 @@ impl SceneBuilder {
         let width_m = camera.px_to_meters(width_px);
         let batch = layers.entry(layer).or_default();
 
-        // ① 结构物外描边：桥梁轮廓、隧道虚线轮廓、过水路面水面。
-        //    单独一批先画（比主线宽，不能被同层的其它主线盖住）。
+        // ① Structure outlines: bridge outlines, tunnel dashed outlines, water surfaces on fords.
+        //       A separate batch drawn first (wider than the main line, must not be covered by other main lines in the same layer).
         if let Some(casing) = &way_style.casing
             && casing.width_px > 0.0
         {
@@ -640,8 +640,8 @@ impl SceneBuilder {
             }
         }
 
-        // ② 路堤/路堑坡侧刻线：贴着主线画，短线颜色由样式层给定。
-        //    路堤还多一条外缘坡脚线（`baseline`），合起来是梯状坡面；路堑只有梳状齿线。
+        // ② Embankment/cutting side hachures: drawn along the main line, with short-line colors given by the style layer.
+        //       Embankments also get an outer slope-foot line (`baseline`), together forming a terraced slope; cuttings only get the comb-like teeth.
         if let Some(hachure) = &way_style.hachure {
             let sides: &[i8] = match hachure.side {
                 HachureSide::Left => &[1],
@@ -683,7 +683,7 @@ impl SceneBuilder {
             }
         }
 
-        // ③ 主线：MapCSS dashes 优先，否则实线。
+        // ③ Main line: MapCSS dashes take priority, otherwise solid.
         let mut dashed = false;
         if let Some(pattern) = &way_style.dashes {
             dashed = dashed_stroke_into(
@@ -791,7 +791,7 @@ impl SceneBuilder {
         let r = camera.px_to_meters(self.style.node_radius_px) as f32;
         let color = node_style.color;
         if square {
-            // 共享节点（z16+）：小方框（两个三角形）。
+            // Shared nodes (z16+): small squares (two triangles).
             point
                 .vertices
                 .push(MapVertex::new([center[0] - r, center[1] - r], color));
@@ -809,7 +809,7 @@ impl SceneBuilder {
                 .indices
                 .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         } else {
-            // 普通节点/低倍率共享节点：小圆点（六边形近似，7 顶点 / 6 三角形）。
+            // Ordinary nodes / shared nodes at low zoom: small dots (hexagon approximation, 7 vertices / 6 triangles).
             const SEGMENTS: usize = 6;
             point.vertices.push(MapVertex::new(center, color));
             for i in 0..SEGMENTS {
@@ -831,10 +831,10 @@ impl SceneBuilder {
     }
 }
 
-/// 按屏幕像素虚线模式描边，返回是否真的画出了至少一段。
+/// Stroke along a screen-pixel dash pattern; returns whether at least one segment was actually drawn.
 ///
-/// `pattern_px` 是屏幕像素（奇偶交替实/虚），换算成米后沿折线走线；模式不足两段
-/// 或换算后为 0 时不画，调用方回退实线。结果覆盖写 `verts`/`indices`。
+/// `pattern_px` is in screen pixels (alternating solid/dash); converted to meters and walked along the polyline. When the pattern has fewer than two segments
+/// or converts to 0, nothing is drawn and the caller falls back to a solid line. The result overwrites `verts`/`indices`.
 #[allow(clippy::too_many_arguments)]
 fn dashed_stroke_into(
     points: &[WorldPoint],
@@ -905,8 +905,8 @@ fn dashed_stroke_into(
 
 #[inline]
 fn rel(p: WorldPoint, origin: WorldPoint) -> [f32; 2] {
-    // 日期变更线：把顶点放到离相机原点最近的"世界副本"，跨 180° 的 way
-    // 不会横穿整张地图（顶点坐标仍是相对原点的米）。
+    // Date line: place vertices on the "world copy" nearest the camera origin, so a way crossing 180°
+    // does not sweep across the whole map (vertex coordinates are still meters relative to the origin).
     let mut dx = p.x - origin.x;
     if dx > neo_geo::EARTH_CIRCUMFERENCE_M * 0.5 {
         dx -= neo_geo::EARTH_CIRCUMFERENCE_M;
@@ -979,10 +979,10 @@ fn paint_area_bands(
     hits
 }
 
-/// 短边够放下内圈时返回条带；否则返回 `None`，调用方改画实心。随当前缩放重算。
+/// Returns a band when the short side can fit the inner ring; otherwise returns `None` and the caller draws solid. Recomputed with the current zoom.
 ///
-/// 有洞时还要求所有洞都远离条带内边界：条带几何不扣洞，洞若落在条带范围内会被整片
-/// 盖住（小内院建筑在 z≈15.7–16 时整洞变实），此时改走“实心 + 挖洞”。
+/// With holes it also requires every hole to be far from the band's inner boundary: band geometry does not subtract holes, so a hole within the band range would be covered
+/// entirely (small inner-courtyard buildings become solid across the whole hole at z≈15.7–16); in that case switch to "solid + hole cutout".
 fn area_band_geometry(
     outer: &[WorldPoint],
     holes: &[Vec<WorldPoint>],
@@ -1047,8 +1047,8 @@ fn push_band(
     fill.push_indexed(&positions, indices, color);
 }
 
-/// 水路沿点序（下游）。`highway` 且 `oneway=yes/1` 沿点序，`oneway=-1` 相反。
-/// 已经画成面的水路（河岸等）不再铺箭头。
+/// Waterways follow point order (downstream). `highway` with `oneway=yes/1` follows point order, `oneway=-1` the opposite.
+/// Waterways already drawn as areas (riverbanks etc.) get no arrows.
 fn way_arrow_forward(
     data: &DataSet,
     tags: &[(neo_core::Sym, neo_core::Sym)],
@@ -1182,10 +1182,10 @@ mod tests {
         assert_eq!(
             way_layer(&data, &[(layer, explicit)], 1),
             2,
-            "显式 layer 优先于结构物偏移"
+            "explicit layer takes precedence over the structure offset"
         );
-        assert_eq!(way_layer(&data, &[], 1), 1, "桥默认 +1");
-        assert_eq!(way_layer(&data, &[], -1), -1, "隧道默认 -1");
+        assert_eq!(way_layer(&data, &[], 1), 1, "bridge defaults to +1");
+        assert_eq!(way_layer(&data, &[], -1), -1, "tunnel defaults to -1");
     }
 
     #[test]
@@ -1235,11 +1235,11 @@ mod tests {
 
     #[test]
     fn donut_with_a_hole_inside_the_band_falls_back_to_solid() {
-        // 1 px/m、带宽 20px：外环 100px 会进入条带模式，内边界是 20..80 的环。
+        // 1 px/m, band width 20px: a 100px outer ring enters band mode, with the inner boundary being the ring 20..80.
         let outer = square(0.0, 100.0);
-        // 洞在深处：条带扫不到，继续用条带 + 洞边条带。
+        // The hole is deep inside: the band does not reach it, so keep using band + hole-edge band.
         assert!(area_band_geometry(&outer, &[square(40.0, 60.0)], 1.0, 20.0).is_some());
-        // 洞贴着外边界、落在条带里：条带会盖住洞，必须退回实心挖洞。
+        // The hole hugs the outer boundary and falls inside the band: the band would cover it, so fall back to solid with hole cutout.
         assert!(area_band_geometry(&outer, &[square(5.0, 15.0)], 1.0, 20.0).is_none());
     }
 
@@ -1271,10 +1271,10 @@ mod tests {
         assert!(lifted[0] > 100);
     }
 
-    // ---- 桥梁 / 隧道 / 路堤 / 路堑 / 过水路面 的场景装配 ----
+    // ---- scene assembly for bridges / tunnels / embankments / cuttings / fords ----
 
-    /// 造一条水平 way。每个 way 自带独立节点，避免共享节点改变节点 LOD，
-    /// 也避免跨 way 的节点吸附干扰断言。
+    /// Build a horizontal way. Each way has its own nodes, avoiding shared nodes changing the node LOD
+    /// and avoiding cross-way node snapping interfering with assertions.
     fn add_way(data: &mut DataSet, id: i64, lat: f64, tags: &[(&str, &str)]) {
         let mut way = Way {
             id: ObjectId::new(id),
@@ -1303,7 +1303,7 @@ mod tests {
             .expect("way handle");
     }
 
-    /// 按 `(纬度, tag)` 列表造一个只含这些水平 way 的场景帧。
+    /// Build a scene frame containing only these horizontal ways from a `(latitude, tag)` list.
     fn scene_for(ways: &[(f64, &[(&str, &str)])]) -> SceneFrame {
         let mut data = DataSet::new();
         let builder = SceneBuilder::with_dataset(&mut data);
@@ -1336,7 +1336,7 @@ mod tests {
             (0.0, &[("highway", "primary")]),
             (0.0002, &[("highway", "primary"), ("bridge", "yes")]),
         ]);
-        // 桥没有显式 layer，按 OSM 约定 +1：地面道路先画，桥的轮廓 + 桥面后画。
+        // Bridges have no explicit layer, so +1 by OSM convention: ground roads are drawn first, then the bridge outline + deck.
         assert_eq!(
             batch_kinds(&frame),
             vec![BatchKind::Stroke, BatchKind::Casing, BatchKind::Stroke]
@@ -1353,7 +1353,7 @@ mod tests {
             (0.0, &[("highway", "primary")]),
             (0.0002, &[("highway", "primary"), ("tunnel", "yes")]),
         ]);
-        // 隧道按 -1 层先画：先虚线轮廓后主线，然后才是地面道路。
+        // Tunnels are drawn first at layer -1: dashed outline, then main line, and only then ground roads.
         assert_eq!(
             batch_kinds(&frame),
             vec![BatchKind::Casing, BatchKind::Stroke, BatchKind::Stroke]
@@ -1362,7 +1362,7 @@ mod tests {
         assert_eq!(casing.vertices[0].color, Colors::default().tunnel_casing);
         assert!(
             casing.triangle_count() > 2,
-            "隧道轮廓应是多段虚线而不是一条连续带"
+            "the tunnel outline must be several dashed segments, not one continuous band"
         );
     }
 
@@ -1394,9 +1394,15 @@ mod tests {
         let embankment = scene_for(&[(0.0, &[("man_made", "embankment")])]);
         let cutting = scene_for(&[(0.0, &[("man_made", "cutting")])]);
         let plain_tris = stroke_triangles(&plain);
-        assert!(stroke_triangles(&embankment) > plain_tris, "路堤应画出坡侧刻线");
-        assert!(stroke_triangles(&cutting) > plain_tris, "路堑应画出坡侧刻线");
-        // 两种符号用不同颜色：路堤金色（带坡脚线），路堑砖红（梳状齿线）。
+        assert!(
+            stroke_triangles(&embankment) > plain_tris,
+            "embankment must draw slope hachures"
+        );
+        assert!(
+            stroke_triangles(&cutting) > plain_tris,
+            "cutting must draw slope hachures"
+        );
+        // The two symbols use different colors: embankments gold (with a slope-foot line), cuttings brick red (comb-like teeth).
         let colors = Colors::default();
         assert!(stroke_has_color(&embankment, colors.embankment));
         assert!(!stroke_has_color(&embankment, colors.cutting));
@@ -1406,7 +1412,7 @@ mod tests {
 
     #[test]
     fn link_roads_keep_their_parent_colour_but_are_thinner() {
-        // 用默认样式表（assets/styles/neo.mapcss）验证：*_link 与本体同色、更细。
+        // Verified with the default stylesheet (assets/styles/neo.mapcss): *_link is the same color as its parent and thinner.
         let mut data = DataSet::new();
         let builder = SceneBuilder::with_dataset(&mut data);
         let key = data.intern("highway");
@@ -1425,15 +1431,15 @@ mod tests {
             let link_style = builder.style.way_style(&link_tags, 18.0, &[("highway", link)]);
             assert_eq!(
                 link_style.color, parent_style.color,
-                "{link} 的颜色应与 {parent} 一致"
+                "{link} color should match {parent}"
             );
             assert_eq!(
                 link_style.text_color, parent_style.text_color,
-                "{link} 的文字色应与 {parent} 一致"
+                "{link} text color should match {parent}"
             );
             assert!(
                 link_style.width_px < parent_style.width_px,
-                "{link} 应比 {parent} 细（{} vs {}）",
+                "{link} should be thinner than {parent} ({} vs {})",
                 link_style.width_px,
                 parent_style.width_px
             );

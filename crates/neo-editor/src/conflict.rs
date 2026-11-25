@@ -1,39 +1,39 @@
-//! 冲突模型（阶段 4）
+//! Conflict model (stage 4)
 //!
-//! 只做**纯数据**的三方合并：base（上传前本地像）、local（当前本地像）、remote（服务端像）。
-//! 不依赖 `neo-api`（409 的翻译在应用层完成），也不依赖 UI；结果是一个普通的
-//! [`ObjectImage`]，由应用层转成编辑命令。
+//! Pure-data three-way merge only: base (local image before upload), local (current local image), remote (server image).
+//! It depends neither on `neo-api` (409 translation is done in the app layer) nor on the UI; the result is a plain
+//! [`ObjectImage`], which the app layer turns into edit commands.
 //!
-//! 与 docs/06 §2.6 的 `MergeCase` / `ConflictResolution` 一一对应。
+//! Corresponds one-to-one with `MergeCase` / `ConflictResolution` in docs/06 §2.6.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use neo_core::{LatLon, ObjectId, ObjectKind};
 use neo_geo::WorldPoint;
 
-/// 对象快照（用于合并的最小信息）。
+/// Object snapshot (the minimal information used for merging).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectImage {
-    /// 对象种类。
+    /// Object kind.
     pub kind: ObjectKind,
-    /// 对象 id。
+    /// Object id.
     pub id: ObjectId,
-    /// 版本。
+    /// Version.
     pub version: i32,
-    /// 是否已删除。
+    /// Whether it is deleted.
     pub deleted: bool,
-    /// 标签。
+    /// Tags.
     pub tags: BTreeMap<String, String>,
-    /// 节点坐标（仅 Node）。
+    /// Node position (Node only).
     pub node_pos: Option<LatLon>,
-    /// 节点序列（仅 Way）。
+    /// Node sequence (Way only).
     pub way_nodes: Vec<ObjectId>,
-    /// 成员 (kind, id, role)（仅 Relation）。
+    /// Members (kind, id, role) (Relation only).
     pub relation_members: Vec<(ObjectKind, ObjectId, String)>,
 }
 
 impl ObjectImage {
-    /// 新对象像。
+    /// The new object image.
     pub fn new(kind: ObjectKind, id: ObjectId, version: i32) -> Self {
         Self {
             kind,
@@ -47,7 +47,7 @@ impl ObjectImage {
         }
     }
 
-    /// 便捷：设置标签。
+    /// Convenience: set tags.
     pub fn with_tags(mut self, tags: &[(&str, &str)]) -> Self {
         for (k, v) in tags {
             self.tags.insert((*k).to_owned(), (*v).to_owned());
@@ -55,84 +55,84 @@ impl ObjectImage {
         self
     }
 
-    /// 便捷：节点坐标。
+    /// Convenience: node position.
     pub fn with_pos(mut self, pos: LatLon) -> Self {
         self.node_pos = Some(pos);
         self
     }
 }
 
-/// 合并情形。
+/// Merge case.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MergeCase {
-    /// 版本不一致（服务端已有更新）。
+    /// Version mismatch (the server already has a newer version).
     VersionMismatch {
-        /// 本地版本。
+        /// Local version.
         local: i32,
-        /// 服务端版本。
+        /// Server version.
         remote: i32,
     },
-    /// 本地删除、远端修改。
+    /// Deleted locally, modified remotely.
     LocalDeletedRemoteModified,
-    /// 远端删除、本地修改。
+    /// Deleted remotely, modified locally.
     RemoteDeletedLocalModified,
-    /// 同一 tag key 双方改成不同值。
+    /// Both sides changed the same tag key to different values.
     TagDiverged {
-        /// 冲突 key。
+        /// Conflicting key.
         key: String,
     },
-    /// 节点双方都移动了。
+    /// Both sides moved the node.
     NodeMoved {
-        /// 本地移动距离（米）。
+        /// Local move distance (metres).
         local_delta_m: f64,
-        /// 远端移动距离（米）。
+        /// Remote move distance (metres).
         remote_delta_m: f64,
     },
-    /// way 节点序列双方都改了。
+    /// Both sides changed the way's node sequence.
     WayNodeListDiverged {
-        /// 本地序列。
+        /// Local sequence.
         local: Vec<ObjectId>,
-        /// 远端序列。
+        /// Remote sequence.
         remote: Vec<ObjectId>,
     },
-    /// relation 成员双方都改了。
+    /// Both sides changed the relation's members.
     RelationMemberDiverged,
-    /// changeset 已关闭。
+    /// The changeset is already closed.
     ChangesetClosed,
 }
 
-/// 用户选择。
+/// User choice.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConflictResolution {
-    /// 保留本地。
+    /// Keep local.
     KeepLocal,
-    /// 采用远端。
+    /// Take remote.
     TakeRemote,
-    /// 手动合并（给定最终标签；几何取本地）。
+    /// Merge manually (given final tags; geometry stays local).
     MergeManually {
-        /// 最终标签。
+        /// Final tags.
         tags: BTreeMap<String, String>,
     },
-    /// 删除对象。
+    /// Delete the object.
     DeleteObject,
-    /// 重建为新对象（远端已删）。
+    /// Recreate as a new object (already deleted remotely).
     RecreateObject,
 }
 
-/// 标签合并结果。
+/// Tag merge result.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TagMerge {
-    /// 合并后的标签。
+    /// Merged tags.
     pub merged: BTreeMap<String, String>,
-    /// 无法自动决定的 key（需要人工）。
+    /// Keys that cannot be decided automatically (need manual work).
     pub conflicts: Vec<String>,
 }
 
-/// 三方合并标签：
+/// Three-way tag merge:
 ///
-/// * 只有一方改动该 key → 取改动方；
-/// * 双方改成相同值 → 取该值；
-/// * 双方改成不同值 → 记入 `conflicts`，默认保留本地。
+/// * Only one side changed the key -> take the changed side;
+/// * Both sides changed it to the same value -> take that value;
+/// * Both sides changed it to different values -> record in `conflicts`, keep local by default.
 pub fn merge_tags(
     base: &BTreeMap<String, String>,
     local: &BTreeMap<String, String>,
@@ -151,20 +151,20 @@ pub fn merge_tags(
             continue;
         }
         if b == l {
-            // 本地未改，取远端（可能是删除）
+            // Local unchanged, take remote (may be a deletion)
             if let Some(value) = r {
                 out.merged.insert(key.clone(), value.clone());
             }
             continue;
         }
         if b == r {
-            // 远端未改，取本地（可能是删除）
+            // Remote unchanged, take local (may be a deletion)
             if let Some(value) = l {
                 out.merged.insert(key.clone(), value.clone());
             }
             continue;
         }
-        // 双方都改了且不同
+        // Both sides changed and differ
         out.conflicts.push(key.clone());
         if let Some(value) = l {
             out.merged.insert(key.clone(), value.clone());
@@ -173,7 +173,7 @@ pub fn merge_tags(
     out
 }
 
-/// 三方分类（用于 UI 展示/自动合并判断）。
+/// Three-way classification (for UI display / auto-merge decisions).
 pub fn classify(base: &ObjectImage, local: &ObjectImage, remote: &ObjectImage) -> MergeCase {
     if local.deleted && !remote.deleted {
         return MergeCase::LocalDeletedRemoteModified;
@@ -221,7 +221,7 @@ pub fn classify(base: &ObjectImage, local: &ObjectImage, remote: &ObjectImage) -
     }
 }
 
-/// 把用户选择落成最终对象像；`KeepLocal`/`MergeManually` 保留本地几何。
+/// Turn the user choice into the final object image; `KeepLocal`/`MergeManually` keep local geometry.
 pub fn resolve(
     case: &MergeCase,
     local: &ObjectImage,

@@ -1,55 +1,55 @@
-//! 核心错误类型。
+//! Core error types.
 //!
-//! 规则：库 crate 用具体错误类型（`thiserror`），`apps/*` 用 `anyhow` 汇总上下文。
+//! Rule: library crates use concrete error types (`thiserror`); `apps/*` aggregate context with `anyhow`.
 
 use crate::ids::{ObjectId, ObjectKind};
 
-/// NEO 各层共用的错误类型。
+/// Error type shared across NEO layers.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum NeoError {
-    /// 坐标越界（纬度 > 90° 或经度 > 180°）。
+    /// Coordinate out of range (latitude > 90° or longitude > 180°).
     #[error("invalid coordinate: {0}")]
     InvalidCoordinate(String),
 
-    /// 悬空引用：对象引用了不存在的图元。
+    /// Dangling reference: an object references a primitive that does not exist.
     #[error("dangling reference: {kind} {id} referenced by {referrer_kind} {referrer}")]
     DanglingReference {
-        /// 被引用对象的种类。
+        /// Kind of the referenced object.
         kind: ObjectKind,
-        /// 被引用对象的 ID。
+        /// ID of the referenced object.
         id: ObjectId,
-        /// 引用者种类。
+        /// Kind of the referrer.
         referrer_kind: ObjectKind,
-        /// 引用者 ID。
+        /// ID of the referrer.
         referrer: ObjectId,
     },
 
-    /// 句柄失效（对象已被删除或槽位已复用）。
+    /// Stale handle (the object was deleted or the slot was reused).
     #[error("stale handle for {kind} (index {index})")]
     StaleHandle {
-        /// 对象种类。
+        /// Object kind.
         kind: ObjectKind,
-        /// 槽位下标。
+        /// Slot index.
         index: u32,
     },
 
-    /// 数据格式/解析错误（PBF、XML、OSC、MapCSS…）。
+    /// Data format/parse error (PBF, XML, OSC, MapCSS, …).
     #[error("parse error: {0}")]
     Parse(String),
 
-    /// 数据一致性错误（索引与存储不一致、往返失败等）。
+    /// Data consistency error (index and storage disagree, round-trip failure, etc.).
     #[error("consistency error: {0}")]
     Consistency(String),
 
-    /// 操作被调用方取消（导入/导出/任务）。
+    /// Operation cancelled by the caller (import/export/task).
     #[error("operation cancelled")]
     Cancelled,
 
-    /// IO 错误。
+    /// IO error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
 
-/// NEO 库层 `Result` 别名。
+/// `Result` alias for NEO library layers.
 pub type Result<T> = core::result::Result<T, NeoError>;

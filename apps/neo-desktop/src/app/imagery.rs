@@ -1,4 +1,4 @@
-//! NeoApp::imagery 方法。行为与拆分前的 app.rs 相同。
+//! NeoApp::imagery methods. Same behavior as before the app.rs split.
 
 use eframe::egui;
 use neo_geo::WorldPoint;
@@ -193,7 +193,7 @@ impl NeoApp {
         }
     }
 
-    /// 发起一张瓦片下载。预算用尽时返回 false，调用方应停止继续排队。
+    /// Starts downloading one tile. Returns false when the budget is exhausted; the caller should stop queueing.
     fn queue_tile(&mut self, template: &str, api_key: &str, key: TileKey, launched: &mut usize) -> bool {
         if *launched >= 48 {
             return false;
@@ -419,7 +419,7 @@ impl NeoApp {
         }
     }
 
-    /// 同一来源超过上限时，保住当前视口和正在垫底的祖先，其余按远离视口、远离当前级别丢掉。
+    /// When one source exceeds its limit, keep the current viewport and the ancestor tiles currently underpinning it; drop the rest by distance from the viewport and from the current level.
     fn evict_source(&mut self, source: u8, z: u32) {
         const CAP: usize = 160;
         let count = self
@@ -457,7 +457,7 @@ impl NeoApp {
             }
         }
         victims.sort_by(|left, right| {
-            // 视口外的先丢，离当前级别更远的先丢，更久没用的先丢。
+            // Drop off-viewport tiles first, then those farther from the current level, then the least recently used.
             u8::from(!left.2)
                 .cmp(&u8::from(!right.2))
                 .then(right.3.cmp(&left.3))
@@ -494,7 +494,7 @@ impl NeoApp {
                     x,
                     y,
                 ) {
-                    // 只补这一格。整张祖先铺上去会和已到达的瓦片叠两次透明度，交界一边亮一边暗。
+                    // Fill only this cell. Laying down the whole ancestor would stack alpha twice over landed tiles, making one side of the seam brighter.
                     under.push((parent, key));
                 }
             }
@@ -627,7 +627,7 @@ fn note_host(url: &str, ok: bool, elapsed_ms: u64) {
     host_table().record_url(url, ok, elapsed_ms, unix_ms());
 }
 
-/// 按当前排序逐个尝试，最多 3 台。成功的留下耗时，失败的进入冷却，下一张瓦片会改走别的子域。
+/// Try hosts in the current order, at most 3. Successful ones keep their latency; failed ones enter cooldown, and the next tile switches to another subdomain.
 fn local_imagery_zoom(preset_max: Option<u32>, preset_id: &str, url: &str, camera_zoom: f64) -> u32 {
     let mut cap = preset_max.unwrap_or(22);
     if preset_id == "tianditu" || url.contains("tianditu.gov.cn") {
@@ -691,7 +691,7 @@ fn tile_window(bounds: neo_geo::WorldBounds, z: u32) -> TileWindow {
     }
 }
 
-/// 能用不超过 4 张瓦片盖住视口的最细级别。当前级本身不算。
+/// The finest level whose viewport can be covered with at most 4 tiles. The current level itself doesn't count.
 fn cover_zoom(bounds: neo_geo::WorldBounds, z: u32) -> Option<u32> {
     if z == 0 {
         return None;
@@ -716,7 +716,7 @@ fn ancestor_key(source: u8, z: u32, x: u32, y: u32, dz: u32) -> TileKey {
     }
 }
 
-/// 子瓦片在祖先纹理里的取样范围。祖先整张对应 `(0,0)–(1,1)`。
+/// Sample range of a child tile within the ancestor texture. A whole ancestor maps to `(0,0)–(1,1)`.
 fn tile_uv(dest: TileKey, source: TileKey) -> egui::Rect {
     if dest.z <= source.z {
         return egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));

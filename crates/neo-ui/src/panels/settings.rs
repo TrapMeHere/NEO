@@ -1,4 +1,4 @@
-//! settings 面板。
+//! settings panel.
 
 use egui::{Color32, RichText, Ui};
 use egui_phosphor::regular as ph;
@@ -6,39 +6,39 @@ use neo_i18n::{t, tf};
 
 use super::UiActions;
 
-/// 设置分类。
+/// Settings category.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsTab {
-    /// 常规（语言、自动保存）。
+    /// General (language, autosave).
     General,
-    /// 语言。
+    /// Language.
     Language,
-    /// OSM 账户（OAuth）。
+    /// OSM account (OAuth).
     Account,
-    /// 编辑（简化容差等）。
+    /// Editing (simplify tolerance, etc.).
     Editing,
-    /// 校验（上传门禁）。
+    /// Validation (upload gate).
     Validation,
-    /// 网络（API 地址）。
+    /// Network (API URL).
     Network,
-    /// 存储（数据目录、自动保存缓存）。
+    /// Storage (data directory, autosave cache).
     Storage,
-    /// 快捷键。
+    /// Keyboard shortcuts.
     Shortcuts,
 }
 
-/// 设置窗口中的账户项。
+/// Account entry in the settings window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountView {
-    /// 稳定 id（OSM 用户 id）。
+    /// Stable id (OSM user id).
     pub id: String,
-    /// 登录名/显示名。
+    /// Login name/display name.
     pub display_name: String,
-    /// 是否为当前账户。
+    /// Whether this is the current account.
     pub active: bool,
 }
 
-/// 可重绑定的快捷键动作（顺序即设置页显示顺序）。
+/// Rebindable shortcut actions (order is the display order on the settings page).
 pub const SHORTCUT_ACTIONS: &[&str] = &[
     "undo",
     "redo",
@@ -84,38 +84,38 @@ fn default_shortcuts() -> std::collections::BTreeMap<String, String> {
     .collect()
 }
 
-/// 设置窗口的 UI 状态（由应用层持有，跨帧保留）。
+/// UI state of the settings window (held by the app layer, persisted across frames).
 #[derive(Clone, Debug)]
 pub struct SettingsUiState {
-    /// 当前分类。
+    /// Current category.
     pub tab: SettingsTab,
     /// OAuth client_id。
     pub client_id: String,
-    /// 回调地址。
+    /// Callback URL.
     pub redirect_uri: String,
-    /// 登录状态/错误提示。
+    /// Login status/error message.
     pub login_status: String,
-    /// 已保存账户。
+    /// Saved accounts.
     pub accounts: Vec<AccountView>,
-    /// 当前选中的账户 id。
+    /// Currently selected account id.
     pub selected: Option<String>,
-    /// 自动保存间隔（秒）。
+    /// Autosave interval (seconds).
     pub autosave_secs: u64,
-    /// 关闭图层/应用时若有未保存编辑则提示。
+    /// Prompt if there are unsaved edits when closing a layer or the app.
     pub confirm_unsaved: bool,
-    /// way 简化容差（屏幕像素）。
+    /// Way simplify tolerance (screen pixels).
     pub simplify_px: f64,
-    /// 绘制时几何吸附。
+    /// Geometric snapping while drawing.
     pub draw_snap_enabled: bool,
-    /// 吸附半径（屏幕像素）。
+    /// Snap radius (screen pixels).
     pub draw_snap_radius_px: f32,
-    /// 数据目录（只读展示）。
+    /// Data directory (read-only display).
     pub data_dir: String,
-    /// OSM API 基地址。
+    /// OSM API base URL.
     pub api_base: String,
-    /// 自定义快捷键：action id → 绑定字符串。
+    /// Custom shortcuts: action id → binding string.
     pub shortcuts: std::collections::BTreeMap<String, String>,
-    /// 正在等待按键的 action。
+    /// Action currently waiting for a key press.
     pub rebinding: Option<String>,
 }
 
@@ -141,7 +141,7 @@ impl Default for SettingsUiState {
     }
 }
 
-/// 设置窗口：左侧分类，右侧内容。
+/// Settings window: categories on the left, content on the right.
 pub fn settings_window(
     ctx: &egui::Context,
     actions: &mut UiActions,
@@ -206,9 +206,9 @@ fn settings_general(ui: &mut Ui, actions: &mut UiActions, state: &mut SettingsUi
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         for (lang, key) in [
+            (neo_i18n::Lang::EnUs, "menu.language.en"),
             (neo_i18n::Lang::ZhCn, "menu.language.zh"),
             (neo_i18n::Lang::ZhTw, "menu.language.zh_tw"),
-            (neo_i18n::Lang::EnUs, "menu.language.en"),
         ] {
             if ui
                 .selectable_label(neo_i18n::current_language() == lang, t(key))

@@ -1,4 +1,4 @@
-//! 流式 LOD：按缩放分级，并用有界瓦片缓存避免长时间会话把场景副本堆满。
+//! Streaming LOD: zoom-based tiers, plus a bounded tile cache to prevent long sessions from filling up with scene copies.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -7,20 +7,20 @@ use neo_geo::{Camera, WorldPoint};
 use crate::batches::SceneFrame;
 use crate::builder::{SceneBuilder, SceneConfig};
 
-/// 缩放分级。数字越小，抽样越狠。
+/// Zoom tier. Smaller numbers mean harsher sampling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LodBand {
-    /// 洲/国家。
+    /// Continent/country.
     Overview,
-    /// 城市。
+    /// City.
     City,
-    /// 街区。
+    /// Street.
     Street,
-    /// 编辑（节点可见的尺度）。
+    /// Edit (the scale at which nodes are visible).
     Edit,
 }
 
-/// 按 zoom 选分级。
+/// Select the tier by zoom.
 pub fn lod_band(zoom: f64) -> LodBand {
     if zoom < 8.0 {
         LodBand::Overview
@@ -33,7 +33,7 @@ pub fn lod_band(zoom: f64) -> LodBand {
     }
 }
 
-/// 该分级下的 way 抽样步长（1 = 不抽样）。
+/// Way sampling stride for this tier (1 = no sampling).
 pub fn way_stride(band: LodBand) -> usize {
     match band {
         LodBand::Overview => 8,
@@ -42,7 +42,7 @@ pub fn way_stride(band: LodBand) -> usize {
     }
 }
 
-/// 把分级写进场景配置（不改动调用方的其他字段）。
+/// Write the tier into the scene config (without touching the caller's other fields).
 pub fn apply_band(config: &mut SceneConfig, band: LodBand) {
     config.way_stride = way_stride(band);
     if matches!(band, LodBand::Overview) {
@@ -50,18 +50,18 @@ pub fn apply_band(config: &mut SceneConfig, band: LodBand) {
     }
 }
 
-/// WebMercator 瓦片键。
+/// WebMercator tile key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TileKey {
-    /// 缩放。
+    /// Zoom.
     pub z: u8,
-    /// 列。
+    /// Column.
     pub x: u32,
-    /// 行。
+    /// Row.
     pub y: u32,
 }
 
-/// 经纬度 → 瓦片。`z` 会被限制在 0..=22。
+/// Lon/lat → tile. `z` is clamped to 0..=22.
 pub fn tile_key(lat: f64, lon: f64, z: u8) -> TileKey {
     let z = z.min(22);
     let n = f64::from(1u32 << z);
@@ -73,14 +73,14 @@ pub fn tile_key(lat: f64, lon: f64, z: u8) -> TileKey {
     TileKey { z, x, y }
 }
 
-/// 相机中心所在的瓦片（zoom 取整）。
+/// Tile containing the camera center (zoom rounded).
 pub fn camera_tile(camera: &Camera) -> TileKey {
     let ll = camera.world_to_latlon(camera.center);
     let (lat, lon) = ll.to_degrees();
     tile_key(lat, lon, camera.zoom.floor() as u8)
 }
 
-/// 有界瓦片缓存。超过容量时丢掉最旧的一帧，避免会话期间单调增长。
+/// Bounded tile cache. When capacity is exceeded, drop the oldest frame to avoid monotonic growth during a session.
 #[derive(Debug)]
 pub struct TileCache {
     cap: usize,
@@ -89,7 +89,7 @@ pub struct TileCache {
 }
 
 impl TileCache {
-    /// 容量至少为 1。
+    /// Capacity is at least 1.
     pub fn new(cap: usize) -> Self {
         Self {
             cap: cap.max(1),
@@ -98,17 +98,17 @@ impl TileCache {
         }
     }
 
-    /// 已缓存帧数。
+    /// Number of cached frames.
     pub fn len(&self) -> usize {
         self.tiles.len()
     }
 
-    /// 是否为空。
+    /// Whether it is empty.
     pub fn is_empty(&self) -> bool {
         self.tiles.is_empty()
     }
 
-    /// 命中则刷新为最近使用。
+    /// On a hit, refresh it as most recently used.
     pub fn get(&mut self, key: &TileKey) -> Option<&SceneFrame> {
         if !self.tiles.contains_key(key) {
             return None;
@@ -121,7 +121,7 @@ impl TileCache {
         self.tiles.get(key)
     }
 
-    /// 插入并在超容量时淘汰最旧项。
+    /// Insert and evict the oldest item when over capacity.
     pub fn insert(&mut self, key: TileKey, frame: SceneFrame) {
         if let std::collections::hash_map::Entry::Occupied(mut e) = self.tiles.entry(key) {
             e.insert(frame);
@@ -139,7 +139,7 @@ impl TileCache {
         self.tiles.insert(key, frame);
     }
 
-    /// 顶点与索引占用的字节（缓存上限的可观测量）。
+    /// Bytes occupied by vertices and indices (an observable measure of the cache bound).
     pub fn retained_bytes(&self) -> usize {
         self.tiles
             .values()
@@ -154,15 +154,15 @@ impl TileCache {
     }
 }
 
-/// 按相机瓦片缓存场景。同一瓦片第二次构建不会再跑 `SceneBuilder`。
+/// Cache scenes by camera tile. A second build for the same tile does not re-run `SceneBuilder`.
 pub struct StreamingScene {
     cache: TileCache,
-    /// 实际构建次数（缓存命中不增加）。
+    /// Actual build count (cache hits do not increase it).
     pub builds: u64,
 }
 
 impl StreamingScene {
-    /// `cap` 是同时保留的瓦片帧数。
+    /// `cap` is the number of tile frames kept simultaneously.
     pub fn new(cap: usize) -> Self {
         Self {
             cache: TileCache::new(cap),
@@ -170,17 +170,17 @@ impl StreamingScene {
         }
     }
 
-    /// 当前缓存帧数。
+    /// Current number of cached frames.
     pub fn cached(&self) -> usize {
         self.cache.len()
     }
 
-    /// 缓存占用字节。
+    /// Bytes used by the cache.
     pub fn retained_bytes(&self) -> usize {
         self.cache.retained_bytes()
     }
 
-    /// 取相机所在瓦片的场景。未命中时按 LOD 分级构建。
+    /// Get the scene for the camera's tile. On a miss, build it according to the LOD tier.
     pub fn frame(
         &mut self,
         prototype: &SceneBuilder,
@@ -204,7 +204,7 @@ impl StreamingScene {
     }
 }
 
-/// 给测试用的空帧（只占固定字节）。
+/// Empty frame for tests (occupies a fixed number of bytes).
 pub fn placeholder_frame(origin: WorldPoint) -> SceneFrame {
     SceneFrame::empty(0, Camera::new(origin, 3.0, [32, 32]))
 }

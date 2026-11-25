@@ -1,171 +1,171 @@
-//! 命令日志（Journal）：JSONL 帧 + replay。
+//! Command journal (Journal): JSONL frames + replay.
 //!
-//! 帧格式（每行一个 JSON）：
+//! Frame format (one JSON per line):
 //! ```text
 //! {"TxBegin":{"id":1}}
 //! {"Cmd":{"MoveNode":{...}}}
 //! {"TxCommit":{"id":1}}
 //! ```
 //!
-//! replay 只应用到最后一个 `TxCommit`；尾部未提交的事务被丢弃，因此"杀进程"不会
-//! 产生半条事务（G3 验收项）。
+//! replay applies only up to the last `TxCommit`; trailing uncommitted transactions are dropped, so "killing the process" never
+//! produces a half transaction (G3 acceptance item).
 
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-/// 一条日志帧。
+/// One journal frame.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum JournalFrame {
-    /// 历史重建：丢弃此帧之前的全部帧，以 `commands` 作为新的已应用历史。
+    /// History rebuild: discard all frames before this one and use `commands` as the new applied history.
     ///
-    /// undo/redo 不产生逆命令，而是把当前 undo 栈整体写成 Rebase；恢复时只重放
-    /// 该帧里的命令，因此"撤销后再崩溃"不会让已撤销的编辑复活。
+    /// undo/redo do not emit inverse commands; instead the whole current undo stack is written as a Rebase. On recovery only
+    /// the commands in this frame are replayed, so "undo then crash" cannot resurrect undone edits.
     Rebase {
-        /// 已应用命令（按应用顺序）。
+        /// Applied commands (in apply order).
         commands: Vec<JournalCommand>,
     },
-    /// 事务开始。
+    /// Transaction begin.
     TxBegin {
-        /// 事务 ID。
+        /// Transaction ID.
         id: u64,
     },
-    /// 命令记录（flatten：`{"kind":"Cmd","op":"MoveNode",...}`）。
+    /// Command record (flattened: `{"kind":"Cmd","op":"MoveNode",...}`).
     Cmd {
-        /// 具体命令。
+        /// The concrete command.
         #[serde(flatten)]
         command: JournalCommand,
     },
-    /// 事务提交。
+    /// Transaction commit.
     TxCommit {
-        /// 事务 ID。
+        /// Transaction ID.
         id: u64,
     },
 }
 
-/// 可重放的命令记录（只含重放所需的最小信息）。
+/// Replayable command record (only the minimal information needed for replay).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op")]
 pub enum JournalCommand {
-    /// 添加节点。
+    /// Add a node.
     AddNode {
-        /// ID（负数 = 本地新建）。
+        /// ID (negative = newly created locally).
         id: i64,
-        /// 1e-7 度纬度。
+        /// Latitude in 1e-7 degrees.
         lat: i32,
-        /// 1e-7 度经度。
+        /// Longitude in 1e-7 degrees.
         lon: i32,
-        /// 标签。
+        /// Tags.
         tags: Vec<(String, String)>,
     },
-    /// 添加 way。
+    /// Add a way.
     AddWay {
-        /// ID。
+        /// ID.
         id: i64,
-        /// 节点 ID 序列。
+        /// Node ID sequence.
         nodes: Vec<i64>,
-        /// 标签。
+        /// Tags.
         tags: Vec<(String, String)>,
     },
-    /// 添加 relation。
+    /// Add a relation.
     AddRelation {
-        /// ID。
+        /// ID.
         id: i64,
-        /// 成员：(kind 0=node/1=way/2=relation, id, role)。
+        /// Members: (kind 0=node/1=way/2=relation, id, role).
         members: Vec<(u8, i64, String)>,
-        /// 标签。
+        /// Tags.
         tags: Vec<(String, String)>,
     },
-    /// 修改 relation 成员。
+    /// Modify relation members.
     SetRelationMembers {
-        /// Relation ID。
+        /// Relation ID.
         relation: i64,
-        /// 成员：(kind, id, role)。
+        /// Members: (kind, id, role).
         members: Vec<(u8, i64, String)>,
     },
-    /// 移动节点。
+    /// Move a node.
     MoveNode {
-        /// 节点 ID。
+        /// Node ID.
         id: i64,
-        /// 新纬度（1e-7 度）。
+        /// New latitude (1e-7 degrees).
         lat: i32,
-        /// 新经度（1e-7 度）。
+        /// New longitude (1e-7 degrees).
         lon: i32,
-        /// 移动前纬度（可选；旧日志没有该字段）。
+        /// Latitude before the move (optional; older logs lack this field).
         #[serde(default)]
         from_lat: Option<i32>,
-        /// 移动前经度（可选；旧日志没有该字段）。
+        /// Longitude before the move (optional; older logs lack this field).
         #[serde(default)]
         from_lon: Option<i32>,
     },
-    /// 修改标签。
+    /// Modify tags.
     SetTags {
-        /// 种类：0=node,1=way,2=relation。
+        /// Kind: 0=node,1=way,2=relation.
         kind: u8,
-        /// ID。
+        /// ID.
         id: i64,
-        /// 新标签。
+        /// New tags.
         tags: Vec<(String, String)>,
     },
-    /// 修改 way 节点序列。
+    /// Modify the way's node sequence.
     SetWayNodes {
-        /// Way ID。
+        /// Way ID.
         way: i64,
-        /// 新节点 ID 序列。
+        /// New node ID sequence.
         nodes: Vec<i64>,
     },
-    /// 删除对象。
+    /// Delete an object.
     Delete {
-        /// 种类。
+        /// Kind.
         kind: u8,
-        /// ID。
+        /// ID.
         id: i64,
     },
-    /// 分割 way。
+    /// Split a way.
     SplitWay {
-        /// 原 way ID。
+        /// Original way ID.
         way: i64,
-        /// 分割下标。
+        /// Split index.
         at: u32,
-        /// 新 way ID（0 表示由实现分配）。
+        /// New way ID (0 means allocated by the implementation).
         new_way: i64,
     },
-    /// 合并 way。
+    /// Merge ways.
     MergeWay {
-        /// 保留的 way。
+        /// The way to keep.
         a: i64,
-        /// 被并入的 way。
+        /// The way merged in.
         b: i64,
     },
-    /// 反转 way。
+    /// Reverse a way.
     ReverseWay {
-        /// Way ID。
+        /// Way ID.
         way: i64,
     },
 }
 
-/// 日志输出目标。
+/// Journal output target.
 pub trait JournalSink: Send {
-    /// 写入一行（实现方负责换行/fsync 策略）。
+    /// Write one line (the implementation handles newline/fsync policy).
     fn write_line(&mut self, line: &str) -> std::io::Result<()>;
-    /// 清空并从头开始（切换数据集 / 保存后重置基线）。
+    /// Clear and start over (after switching datasets / resetting the baseline after save).
     fn reset(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-/// 文件日志（JSONL）。
+/// File journal (JSONL).
 pub struct FileJournal {
     writer: BufWriter<std::fs::File>,
 }
 
 impl FileJournal {
-    /// 追加打开（不存在则创建）。
+    /// Open for append (create if missing).
     ///
-    /// 若上次崩溃留下缺少换行的残行，先补一个换行，避免新帧粘在残行上导致
-    /// 整行无法解析、连带丢失后续所有帧。
+    /// If a previous crash left a trailing line without a newline, append one first so new frames do not stick to it and
+    /// make the whole line unparsable, losing all subsequent frames as well.
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
             std::fs::create_dir_all(parent)?;
@@ -198,7 +198,7 @@ impl JournalSink for FileJournal {
         self.writer.write_all(line.as_bytes())?;
         self.writer.write_all(b"\n")?;
         self.writer.flush()?;
-        // 崩溃恢复承诺依赖"已提交帧已落盘"；flush 只到 OS 缓存。
+        // The crash-recovery promise relies on "committed frames are on disk"; flush only reaches the OS cache.
         self.writer.get_ref().sync_data()
     }
 
@@ -212,10 +212,10 @@ impl JournalSink for FileJournal {
     }
 }
 
-/// 内存日志（测试/回放用）。
+/// In-memory journal (for tests/replay).
 #[derive(Default)]
 pub struct MemoryJournal {
-    /// 原始帧。
+    /// Raw frames.
     pub frames: Vec<JournalFrame>,
 }
 
@@ -233,12 +233,12 @@ impl JournalSink for MemoryJournal {
     }
 }
 
-/// Journal 控制器（没有 sink 时是 no-op）。
+/// Journal controller (no-op when there is no sink).
 pub struct Journal {
     sink: Option<Box<dyn JournalSink>>,
     next_tx: u64,
     enabled: bool,
-    /// 第一次写入失败的原因（之后停止尝试，避免每帧写坏文件）。
+    /// Reason for the first write failure (stop retrying afterwards to avoid corrupting the file frame by frame).
     failure: Option<String>,
 }
 
@@ -249,7 +249,7 @@ impl Default for Journal {
 }
 
 impl Journal {
-    /// 空日志。
+    /// Empty journal.
     pub fn new() -> Self {
         Self {
             sink: None,
@@ -259,30 +259,30 @@ impl Journal {
         }
     }
 
-    /// 设置输出目标并启用。
+    /// Set the output target and enable it.
     pub fn set_sink(&mut self, sink: Box<dyn JournalSink>) {
         self.sink = Some(sink);
         self.enabled = true;
         self.failure = None;
     }
 
-    /// 关闭记录。
+    /// Disable recording.
     pub fn disable(&mut self) {
         self.enabled = false;
         self.sink = None;
     }
 
-    /// 是否启用。
+    /// Whether it is enabled.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    /// 取出并清除最近一次写入失败（供 UI 提示；此时 journal 已停止写入）。
+    /// Take and clear the most recent write failure (for a UI notification; the journal has stopped writing by then).
     pub fn take_failure(&mut self) -> Option<String> {
         self.failure.take()
     }
 
-    /// 清空日志文件（切换数据集 / 保存后重置基线）。
+    /// Clear the journal file (after switching datasets / resetting the baseline after save).
     pub fn reset(&mut self) -> std::io::Result<()> {
         self.next_tx = 1;
         self.failure = None;
@@ -292,7 +292,7 @@ impl Journal {
         }
     }
 
-    /// 用当前已应用历史重建日志（undo/redo 后调用）。
+    /// Rebuild the journal from the currently applied history (called after undo/redo).
     pub fn rebase(&mut self, commands: &[JournalCommand]) -> std::io::Result<()> {
         if !self.enabled {
             return Ok(());
@@ -310,7 +310,7 @@ impl Journal {
         Ok(())
     }
 
-    /// 开始事务，返回 ID。
+    /// Begin a transaction and return its ID.
     pub fn begin(&mut self) -> u64 {
         let id = self.next_tx;
         self.next_tx += 1;
@@ -320,14 +320,14 @@ impl Journal {
         id
     }
 
-    /// 记录一条命令。
+    /// Record one command.
     pub fn command(&mut self, command: JournalCommand) {
         if self.enabled {
             self.emit(&JournalFrame::Cmd { command });
         }
     }
 
-    /// 提交事务。
+    /// Commit the transaction.
     pub fn commit(&mut self, id: u64) {
         if self.enabled {
             self.emit(&JournalFrame::TxCommit { id });
@@ -345,22 +345,22 @@ impl Journal {
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
             .and_then(|line| sink.write_line(&line));
         if let Err(err) = result {
-            // 磁盘满/权限错误时继续编辑，但停止写日志并在 UI 明确告警。
+            // Keep editing on disk-full/permission errors, but stop writing the journal and raise a clear UI alert.
             self.failure = Some(err.to_string());
             self.enabled = false;
         }
     }
 }
 
-/// 读取 JSONL 日志（忽略无法解析的行/尾部半行）。
+/// Read a JSONL journal (ignore unparsable lines / trailing partial lines).
 pub fn read_journal(path: impl AsRef<Path>) -> std::io::Result<Vec<JournalFrame>> {
     Ok(read_journal_report(path)?.0)
 }
 
-/// 读取 JSONL 日志并报告损坏情况。
+/// Read a JSONL journal and report corruption.
 ///
-/// 遇到第一行无法解析时**停止**：继续读入后续帧会在缺失一条命令的情况下重放，
-/// 让数据静默偏离（例如 MoveNode 丢失后后续 SetTags 仍被应用）。
+/// **Stop** at the first unparsable line: continuing to read later frames would replay with a command missing,
+/// silently drifting the data (e.g. a lost MoveNode while later SetTags are still applied).
 pub fn read_journal_report(path: impl AsRef<Path>) -> std::io::Result<(Vec<JournalFrame>, usize)> {
     use std::io::BufRead;
     let file = std::fs::File::open(path)?;
@@ -378,7 +378,7 @@ pub fn read_journal_report(path: impl AsRef<Path>) -> std::io::Result<(Vec<Journ
         if line.trim().is_empty() {
             continue;
         }
-        // 容忍 Windows 工具写出的 UTF-8 BOM。
+        // Tolerate the UTF-8 BOM written by Windows tools.
         let line = line.trim_start_matches('\u{feff}');
         match serde_json::from_str::<JournalFrame>(line) {
             Ok(frame) => frames.push(frame),
@@ -391,21 +391,21 @@ pub fn read_journal_report(path: impl AsRef<Path>) -> std::io::Result<(Vec<Journ
     Ok((frames, bad))
 }
 
-/// 恢复计划：Rebase 基线命令 + 其后完整的已提交帧。
+/// Recovery plan: Rebase baseline commands + the complete committed frames after them.
 #[derive(Debug, Default)]
 pub struct ReplayPlan<'a> {
-    /// Rebase 帧里的基线命令（没有 Rebase 时为空）。
+    /// Baseline commands from the Rebase frame (empty when there is no Rebase).
     pub base: &'a [JournalCommand],
-    /// Rebase 之后、最后一个完整事务之前的帧。
+    /// Frames after the Rebase and before the last complete transaction.
     pub frames: &'a [JournalFrame],
-    /// 被丢弃的尾部帧数。
+    /// Number of trailing frames discarded.
     pub dropped: usize,
 }
 
-/// 计算恢复计划。
+/// Compute the recovery plan.
 ///
-/// 只接受 `TxBegin(id) → Cmd* → TxCommit(id)` 完整配对的尾部；遇到 Rebase 后
-/// 重新以它的命令为基线。未闭合事务、id 不匹配的提交都不会被重放。
+/// Only accepts a trailing `TxBegin(id) -> Cmd* -> TxCommit(id)` complete pair; after encountering a Rebase,
+/// use its commands as the new baseline. Unclosed transactions and commits with mismatched IDs are not replayed.
 pub fn replay_plan(frames: &[JournalFrame]) -> ReplayPlan<'_> {
     let start = frames
         .iter()
@@ -452,10 +452,10 @@ pub fn replay_plan(frames: &[JournalFrame]) -> ReplayPlan<'_> {
     }
 }
 
-/// 把帧截断到最后一个已提交事务（丢弃尾部未提交/不完整事务）。
+/// Truncate the frames at the last committed transaction (drop trailing uncommitted/incomplete transactions).
 pub fn committed_prefix(frames: &[JournalFrame]) -> &[JournalFrame] {
     let plan = replay_plan(frames);
-    // Rebase 帧本身不是 Cmd，但基线命令由调用方单独应用。
+    // A Rebase frame is not a Cmd itself, but its baseline commands are applied separately by the caller.
     plan.frames
 }
 
