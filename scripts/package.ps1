@@ -50,7 +50,7 @@ function Publish-Bundle([string]$BundleDir) {
             throw "missing assets\presets\$name — run node scripts/build-presets.mjs first"
         }
     }
-    foreach ($name in @("zh-CN.json", "en-US.json")) {
+    foreach ($name in @("zh-CN.json", "zh-TW.json", "en-US.json")) {
         if (-not (Test-Path (Join-Path $i18nSrc $name))) {
             throw "missing i18n\$name"
         }
@@ -69,6 +69,7 @@ function Publish-Bundle([string]$BundleDir) {
         Copy-Item $presetReadme $presetsDst -Force
     }
     Copy-Item (Join-Path $i18nSrc "zh-CN.json") $i18nDst -Force
+    Copy-Item (Join-Path $i18nSrc "zh-TW.json") $i18nDst -Force
     Copy-Item (Join-Path $i18nSrc "en-US.json") $i18nDst -Force
 }
 

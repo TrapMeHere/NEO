@@ -42,7 +42,7 @@
 - **统一导出**：文件 → 导出… 选择 OSM XML / osmChange / PBF / 会话
 - **自动保存**：journal 快照 + SQLite 快照库（WAL），启动可恢复
 - **文件格式**：PBF / OSM XML / osmChange / GPX 读写，JOSM 会话 `.jos`/`.joz`
-- **国际化**：中英文即时切换（`i18n/` + `neo-i18n`）；CJK/Unifont 放在旁路 `assets/fonts/`（不进 exe）
+- **国际化**：简体中文 / 繁體中文 / English 即时切换（`i18n/` + `neo-i18n`，缺翻译回退 `zh`）；CJK/Unifont 放在旁路 `assets/fonts/`（不进 exe）
 - **图层**：显示/隐藏、活动图层；非活动图层灰显 50% 且只读
 
 > 状态：**v0.1.0 开发中**。阶段 2/3 完成，阶段 4–6 的代码已落地但 Gate 未全过（插件隔离通过，三平台安装包与 10M/1h 稳定性未复测）。详见
@@ -134,7 +134,7 @@ crates/
 apps/
   neo-desktop   eframe + wgpu 桌面应用        neo-prototype 性能原型
 docs/           技术设计 + 用户/开发指南（mdBook）
-i18n/           zh-CN.json / en-US.json
+i18n/           zh-CN.json / zh-TW.json / en-US.json
 .github/        CI / Release / Pages / 模板
 ```
 

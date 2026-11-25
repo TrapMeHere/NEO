@@ -368,7 +368,7 @@
   "export.session": "JOSM session (.jos/.joz)",
   "export.xml": "OSM XML (.osm)",
   "menu.language.en": "English",
-  "menu.language.zh": "中文",
+  "menu.language.zh": "Simplified Chinese",
   "selection.more": "…{n}",
   "settings.shortcuts_capture": "{action}",
   "settings.tab.account": "Account",
@@ -419,5 +419,6 @@
   "validate.summary": "{errors} errors · {warnings} warnings",
   "app.mode.split": "Split way",
   "menu.tools.split_point": "Split way at point",
-  "tool.split_point": "Split at point"
+  "tool.split_point": "Split at point",
+  "menu.language.zh_tw": "Traditional Chinese"
 }

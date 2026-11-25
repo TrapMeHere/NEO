@@ -74,7 +74,7 @@ cargo test -p neo-i18n
 python scripts/check-i18n.py
 ```
 
-新增文本：同时编辑 `i18n/zh-CN.json` 与 `i18n/en-US.json`，代码使用
+新增文本：编辑 `i18n/zh-CN.json` 与 `i18n/en-US.json`（`zh-TW.json` 可后补，缺失回退简体），代码使用
 `neo_i18n::t("key")` / `tf("key", &[("n","3")])`。
 
 ## 文档站

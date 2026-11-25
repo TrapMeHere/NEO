@@ -6,9 +6,11 @@
 
 ### 语言 / Language
 
-- **中文**（默认）与 **English**
+- **简体中文**（默认）、**繁體中文**、**English**
 - 点击即时生效，无需重启
-- 也可用环境变量指定：`NEO_LANG=en-US` / `NEO_LANG=zh-CN`
+- 也可用环境变量指定：`NEO_LANG=zh-CN` / `NEO_LANG=zh-TW` / `NEO_LANG=en-US`；
+  不带地区的 `NEO_LANG=zh` 回退到简体中文
+- 繁體中文缺翻译时自动回退到简体中文（`zh`）的对应文本
 
 ### 快捷键
 
@@ -53,14 +55,16 @@ NEO 内置 OAuth 客户端（授权码 + PKCE），无需填写 client_id 或密
 
 ```
 i18n/
-├── zh-CN.json
+├── zh-CN.json   # 简体（默认，同时是 zh 回退表）
+├── zh-TW.json   # 繁體（缺 key 回退 zh-CN）
 ├── en-US.json
 └── README.md
 ```
 
 - 代码：`use neo_i18n::{t, tf};` → `t("menu.file")`、`tf("status.selected", &[("n","3")])`
 - 编译期 `include_str!` 嵌入，release 不依赖外部文件
-- 新增文本需同时改中英两份 JSON；`cargo test -p neo-i18n` 检查 key 对齐，
-  `python scripts/check-i18n.py` 检查代码用到的 key 是否缺失
-- 新增语言：添加 JSON + 在 `crates/neo-i18n/src/lib.rs` 的 `Lang` 枚举中登记
-  （当前为编译期双语表；如需任意语言可扩展为目录扫描）
+- 新增文本需改 `zh-CN.json` 与 `en-US.json`；`zh-TW.json` 可稍后补齐（缺省回退简体）。
+  `cargo test -p neo-i18n` 检查 key 与占位符对齐，`python scripts/check-i18n.py`
+  检查代码用到的 key 是否缺失、zh-TW 是否有越界 key
+- 新增语言：添加 JSON + 在 `crates/neo-i18n/src/lib.rs` 的 `Lang` 枚举中登记，
+  并实现 `fallback()`（当前为编译期语言表；如需任意语言可扩展为目录扫描）

@@ -19,7 +19,7 @@ Cargo workspace 的成员是 `crates/*` 与 `apps/*`；版本、依赖版本、l
 | `neo-tools` | 高层编辑动作（选择/绘制/拖拽/合并等） | core, editor |
 | `neo-persist` | JOSM 会话 `.jos`/`.joz` | core, osm, store |
 | `neo-ui` | egui 面板、主题、i18n 调用、UiActions | core, osm, store, geo, scene, render, editor, tools, i18n |
-| `neo-i18n` | zh-CN/en-US 文本目录（编译期嵌入） | 无 |
+| `neo-i18n` | zh-CN/zh-TW/en-US 文本目录（编译期嵌入，zh 作回退） | 无 |
 | `neo-api` | OSM API 0.6 / 上传（阶段 5） | core, osm |
 | `neo-query` | 跨层只读查询（插件/校验/任务） | core, osm, store, geo |
 | `neo-validate` | 校验规则（阶段 4） | core, osm, store, geo |

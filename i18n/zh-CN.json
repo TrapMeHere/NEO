@@ -368,7 +368,7 @@
   "export.session": "JOSM 会话（.jos/.joz）",
   "export.xml": "OSM XML（.osm）",
   "menu.language.en": "English",
-  "menu.language.zh": "中文",
+  "menu.language.zh": "简体中文",
   "selection.more": "…{n}",
   "settings.shortcuts_capture": "{action}",
   "settings.tab.account": "OSM 账户",
@@ -419,5 +419,6 @@
   "validate.summary": "{errors} 错误 · {warnings} 警告",
   "app.mode.split": "按点分割",
   "menu.tools.split_point": "按点分割路径",
-  "tool.split_point": "按点分割"
+  "tool.split_point": "按点分割",
+  "menu.language.zh_tw": "繁體中文"
 }

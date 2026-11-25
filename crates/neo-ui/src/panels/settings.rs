@@ -207,6 +207,7 @@ fn settings_general(ui: &mut Ui, actions: &mut UiActions, state: &mut SettingsUi
     ui.horizontal(|ui| {
         for (lang, key) in [
             (neo_i18n::Lang::ZhCn, "menu.language.zh"),
+            (neo_i18n::Lang::ZhTw, "menu.language.zh_tw"),
             (neo_i18n::Lang::EnUs, "menu.language.en"),
         ] {
             if ui
@@ -295,6 +296,7 @@ fn settings_language(ui: &mut Ui, actions: &mut UiActions) {
     ui.add_space(6.0);
     for (lang, key) in [
         (neo_i18n::Lang::ZhCn, "menu.language.zh"),
+        (neo_i18n::Lang::ZhTw, "menu.language.zh_tw"),
         (neo_i18n::Lang::EnUs, "menu.language.en"),
     ] {
         if ui

@@ -222,7 +222,7 @@ fn preset_row(ui: &mut egui::Ui, state: &mut ImageryUiState, lat: f64, lon: f64)
     ui.checkbox(&mut state.region_only, t("imagery.region_only"));
     if let Some(code) = country {
         let (english, chinese) = neo_style::imagery::country_names(code).unwrap_or((code, code));
-        let name = if neo_i18n::current_language() == neo_i18n::Lang::ZhCn {
+        let name = if neo_i18n::current_language().is_chinese() {
             chinese
         } else {
             english
