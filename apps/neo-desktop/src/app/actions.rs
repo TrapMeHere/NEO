@@ -588,6 +588,7 @@ impl NeoApp {
         }
         if let Some(lang) = actions.set_language {
             neo_i18n::set_language(lang);
+            self.persist_state();
         }
         if (actions.open_file || actions.open_pbf || actions.open_xml)
             && let Some(path) = rfd::FileDialog::new()

@@ -35,10 +35,10 @@ let text = tf("status.selected", &[("n", "3")]);   // {n} placeholder
 
 - `t(key)`: one UI string, with the fallback chain described above.
 - `tf(key, &[("name", "value")])`: replaces `{name}` placeholders.
-- English is the default UI language. At startup the desktop app reads the OS locale and
-  selects the matching translation, otherwise it stays on English; `NEO_LANG` always
-  overrides it (`NEO_LANG=en-US`, `zh-CN`, `zh-TW`; a bare `zh` means Simplified).
-- The language can also be switched at runtime from the in-app **Language** menu.
+- English is the default UI language. At startup the desktop app uses the language saved
+  from the in-app **Language** menu; without a saved choice it reads the OS locale and
+  selects the matching translation, otherwise it stays on English. `NEO_LANG` always
+  overrides both (`NEO_LANG=en-US`, `zh-CN`, `zh-TW`; a bare `zh` means Simplified).
 - Adding text: add the key to `i18n/en-US.json` first (source). Translations in
   `zh-CN.json` / `zh-TW.json` are optional at first — the runtime falls back.
 

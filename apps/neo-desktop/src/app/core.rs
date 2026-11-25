@@ -306,6 +306,7 @@ impl NeoApp {
             data_path: None,
             label: String::new(),
             autosave_secs: Some(self.settings.autosave_secs),
+            language: Some(neo_i18n::current_language().code().to_owned()),
             simplify_px: Some(self.settings.simplify_px),
             draw_snap_enabled: Some(self.settings.draw_snap_enabled),
             draw_snap_radius_px: Some(self.settings.draw_snap_radius_px),

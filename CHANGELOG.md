@@ -8,7 +8,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Changed
 
 - Repository baseline language switched to English: English is now the default UI language and `i18n/en-US.json` is the source language; `zh-CN`/`zh-TW` are translations (fallback chain `zh-TW → zh-CN → en-US`); documentation, code comments, scripts and CI templates are now written in English
-- The desktop app now detects the operating system UI locale at startup (English fallback) and selects the matching translation; `NEO_LANG` still overrides it
+- The desktop app now is English-first: it remembers the language chosen in the Settings menu, otherwise detects the operating system UI locale at startup (English fallback) and selects the matching translation; `NEO_LANG` still overrides both
 - Tools menu regrouped by function: select/draw, measure, paths (split at point ↔ merge end-to-end, reverse, simplify), nodes (glue ↔ unglue, align, distribute, mirror in pairs), areas and other geometry
 - English words that were previously left untranslated inside the Chinese UI strings (way/node/tag, etc.) are now translated into Chinese, including i18n strings and hints in code
 - The tag panel is unified for single and multi selection, with no "bulk tags" title or explanatory text: multi-select shows the **union** of tags; when values differ or some objects lack a key the value column shows "……" and a dropdown lets you pick a value to write to all selected objects; edits apply on blur

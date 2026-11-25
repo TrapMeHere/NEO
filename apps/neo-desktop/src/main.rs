@@ -65,8 +65,14 @@ fn main() -> eframe::Result {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
-    // English is the default UI language; pick a shipped translation when the OS locale matches.
-    neo_i18n::set_language(app::locale::startup_language());
+    // English is the default UI language. A saved choice wins over the OS locale unless
+    // `NEO_LANG` forces a language.
+    let language = if std::env::var_os("NEO_LANG").is_some() {
+        app::locale::startup_language()
+    } else {
+        app::saved_language().unwrap_or_else(app::locale::startup_language)
+    };
+    neo_i18n::set_language(language);
 
     // Window/taskbar icon (the exe file icon is embedded by build.rs from assets/neo.ico).
     let mut viewport = egui::ViewportBuilder::default()

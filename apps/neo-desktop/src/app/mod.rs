@@ -98,6 +98,9 @@ struct AppState {
     /// Autosave interval (seconds)
     #[serde(default)]
     autosave_secs: Option<u64>,
+    /// UI language saved by the user; `None` means auto-detect from the OS locale.
+    #[serde(default)]
+    language: Option<String>,
     /// Way simplification tolerance (pixels)
     #[serde(default)]
     simplify_px: Option<f64>,
@@ -209,6 +212,16 @@ fn load_state() -> AppState {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
+}
+
+/// UI language the user explicitly selected in a previous session, if any.
+///
+/// `None` means "no saved choice": the app then follows the OS locale (or `NEO_LANG`).
+pub(crate) fn saved_language() -> Option<neo_i18n::Lang> {
+    load_state()
+        .language
+        .as_deref()
+        .and_then(neo_i18n::Lang::from_code)
 }
 
 fn save_state(state: &AppState) {

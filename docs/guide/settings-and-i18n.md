@@ -10,8 +10,10 @@ Entry: **Help → Settings…** (gear icon). It contains:
 - On startup NEO detects the operating system's UI locale and picks the matching translation;
   unsupported locales stay on English
 - Changes apply immediately, no restart required
-- The language can also be set with an environment variable, which overrides auto-detection:
-  `NEO_LANG=en-US` / `NEO_LANG=zh-CN` / `NEO_LANG=zh-TW`; a bare `NEO_LANG=zh` means Simplified Chinese
+- The choice is remembered in `neo-state.json`; without a saved choice the app follows the OS locale
+- The language can also be set with an environment variable, which overrides both the saved choice
+  and auto-detection: `NEO_LANG=en-US` / `NEO_LANG=zh-CN` / `NEO_LANG=zh-TW`; a bare `NEO_LANG=zh`
+  means Simplified Chinese
 - Missing translations fall back through Traditional Chinese → Simplified Chinese → English
 
 ### Shortcuts

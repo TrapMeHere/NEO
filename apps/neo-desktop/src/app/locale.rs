@@ -62,3 +62,14 @@ fn os_locale() -> Option<String> {
         None
     }
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::os_locale;
+
+    #[test]
+    fn os_locale_is_readable_on_windows() {
+        let locale = os_locale().expect("Windows must expose the user default locale");
+        assert!(!locale.is_empty(), "locale name must not be empty");
+    }
+}
