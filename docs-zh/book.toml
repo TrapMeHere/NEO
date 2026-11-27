@@ -1,0 +1,35 @@
+[book]
+title = "NEO 文档"
+authors = ["NEO contributors"]
+language = "zh-CN"
+description = "Rust + wgpu 原生 OpenStreetMap 编辑器：用户指南与开发指南"
+src = "."
+git-repository-url = "https://github.com/TrapMeHere/NEO"
+edit-url-template = "https://github.com/TrapMeHere/NEO/edit/master/docs-zh/{path}"
+site-url = "/NEO/"
+
+[build]
+build-dir = "../book/zh"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+additional-css = ["theme/neo.css", "theme/lang-switch.css"]
+additional-js = ["theme/lang-switch.js"]
+git-repository-icon = "fa-github"
+no-section-label = false
+curly-quotes = false
+
+[output.html.search]
+enable = true
+limit-results = 30
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = false
+
+[output.html.print]
+enable = true

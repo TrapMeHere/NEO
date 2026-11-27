@@ -5,6 +5,8 @@ on:
     branches: [main, master]
     paths:
       - "docs/**"
+      - "docs-zh/**"
+      - "site/**"
       - "theme/**"
       - "book.toml"
       - ".github/workflows/pages.yml"
@@ -32,8 +34,14 @@ jobs:
         with:
           mdbook-version: "0.4.52"
 
-      - name: Build documentation
+      - name: Build English documentation
         run: mdbook build
+
+      - name: Build Chinese documentation
+        run: mdbook build docs-zh
+
+      - name: Add the language landing page
+        run: cp site/index.html book/index.html
 
       # Prerequisite: repo Settings -> Pages -> Build and deployment -> Source = GitHub Actions.
       # When this is not enabled, this step fails with a 404 (the error message already states why) instead of silently skipping the deployment.

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NEO Documentation</title>
+  <meta name="description" content="NEO - Next Editor for OSM: user guide and developer documentation in English and Chinese.">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #1a1f27;
+      --panel: #222a36;
+      --text: #e6e9ef;
+      --muted: #9aa7b8;
+      --accent: #5a8fd8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 50% 20%, #273244 0, var(--bg) 60%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    }
+    main {
+      padding: 40px 36px;
+      max-width: 560px;
+      text-align: center;
+    }
+    h1 { margin: 0 0 6px; font-size: 34px; letter-spacing: 0.5px; }
+    p.sub { margin: 0 0 28px; color: var(--muted); font-size: 15px; }
+    .langs { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; }
+    .langs a {
+      display: block;
+      min-width: 150px;
+      padding: 14px 22px;
+      border: 1px solid #3a4a5f;
+      border-radius: 10px;
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      font-size: 17px;
+      transition: border-color 0.15s ease, transform 0.15s ease;
+    }
+    .langs a:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .langs small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+    .hint { margin-top: 24px; color: var(--muted); font-size: 12px; }
+  </style>
+  <script>
+    // Prefer the browser language; users can still pick a language explicitly.
+    (function () {
+      try {
+        var languages = navigator.languages && navigator.languages.length
+          ? navigator.languages
+          : [navigator.language || "en"];
+        var prefersChinese = languages.some(function (lang) {
+          return String(lang).toLowerCase().indexOf("zh") === 0;
+        });
+        if (window.location.search.indexOf("stay") === -1) {
+          window.location.replace(prefersChinese ? "zh/" : "en/");
+        }
+      } catch (error) {
+        /* stay on this page; the links below still work */
+      }
+    })();
+  </script>
+</head>
+<body>
+  <main>
+    <h1>NEO</h1>
+    <p class="sub">Next Editor for OSM · documentation</p>
+    <nav class="langs" aria-label="Documentation language">
+      <a href="en/" hreflang="en">English <small>Documentation</small></a>
+      <a href="zh/" hreflang="zh-CN">中文 <small>文档</small></a>
+    </nav>
+    <p class="hint">Redirecting based on your browser language…</p>
+  </main>
+</body>
+</html>

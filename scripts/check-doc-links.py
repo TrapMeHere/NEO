@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check relative Markdown links inside docs/ and README files.
+"""Check relative Markdown links inside the documentation (bilingual) and README files.
 
 Fails on links that point to missing files (anchors are not resolved; only the target
 file is checked). External http(s) links are ignored.
@@ -19,7 +19,11 @@ SKIP_PREFIXES = ("http://", "https://", "mailto:", "#")
 def main() -> int:
     missing: list[str] = []
     checked = 0
-    files = sorted(list(ROOT.glob("docs/**/*.md")) + [ROOT / "README.md"])
+    files = sorted(
+        list(ROOT.glob("docs/**/*.md"))
+        + list(ROOT.glob("docs-zh/**/*.md"))
+        + [ROOT / "README.md"]
+    )
     for path in files:
         text = path.read_text(encoding="utf-8")
         for match in LINK.finditer(text):
@@ -30,9 +34,8 @@ def main() -> int:
             if not target:
                 continue
             # `.research/` is in .gitignore (local evidence notes), so it is not a repo gate target.
-            if target.replace("\\", "/").startswith("../.research/") or "/.research/" in target.replace(
-                "\\", "/"
-            ):
+            normalized = target.replace("\\", "/")
+            if normalized.startswith("../.research/") or "/.research/" in normalized:
                 continue
             checked += 1
             resolved = (path.parent / target).resolve()
@@ -42,9 +45,9 @@ def main() -> int:
         print("missing link targets:")
         for m in missing:
             print("  " + m)
-    else:
-        print(f"OK: {checked} relative links resolved, 0 missing")
-    return 1 if missing else 0
+        return 1
+    print(f"OK: {checked} relative links resolved, 0 missing")
+    return 0
 
 
 if __name__ == "__main__":

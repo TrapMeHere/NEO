@@ -7,7 +7,7 @@
 - [Project introduction (documentation site home)](introduction.md)
 - [User guide](guide/quick-start.md): installation, getting started, interface, editing, files, settings, performance, FAQ
 - [Developer guide](dev/architecture.md): architecture, workspace, build and test, contribution, release, roadmap
-- [Documentation site](https://trapmehere.github.io/NEO/) (published from this directory + `book.toml` via mdBook)
+- [Documentation site](https://trapmehere.github.io/NEO/) (English at `/en/` from this directory + `book.toml`, Chinese at `/zh/` from `docs-zh/`, published via mdBook)
 - [Architecture Decision Records (ADR)](adr/)
 
 > This directory is the **source of truth for architecture**; code comments reference the files and sections here. If the two disagree, the documentation wins and the code must be fixed.

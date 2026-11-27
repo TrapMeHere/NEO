@@ -4,15 +4,18 @@ authors = ["NEO contributors"]
 language = "en"
 description = "Native OpenStreetMap editor in Rust + wgpu: user guide and developer guide"
 src = "docs"
-build-dir = "book"
 git-repository-url = "https://github.com/TrapMeHere/NEO"
 edit-url-template = "https://github.com/TrapMeHere/NEO/edit/master/docs/{path}"
 site-url = "/NEO/"
 
+[build]
+build-dir = "book/en"
+
 [output.html]
 default-theme = "navy"
 preferred-dark-theme = "navy"
-additional-css = ["theme/neo.css"]
+additional-css = ["theme/neo.css", "theme/lang-switch.css"]
+additional-js = ["theme/lang-switch.js"]
 git-repository-icon = "fa-github"
 no-section-label = false
 curly-quotes = false

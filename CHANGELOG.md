@@ -7,6 +7,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ### Added
 
+- Bilingual documentation site: English at `/en/`, Chinese at `/zh/`, built from `docs/` and `docs-zh/` with mdBook; a fixed language switcher in the top-right corner links every page to its counterpart
+
 - UI translations for French (`fr-FR`), German (`de-DE`), Russian (`ru-RU`), Arabic (`ar-EG`), Vietnamese (`vi-VN`), Japanese (`ja-JP`), Korean (`ko-KR`) and Malay (`ms-MY`); the Language menu, `NEO_LANG` and the OS-locale auto-detection recognize all of them, and the i18n checker validates every locale table
 
 ### Changed

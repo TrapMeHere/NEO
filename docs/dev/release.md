@@ -19,9 +19,9 @@ Follow SemVer; for each release:
 
 | Workflow | Trigger | Contents |
 |---|---|---|
-| `.github/workflows/ci.yml` | push / PR | fmt, clippy, workspace tests, i18n, release build, mdBook build |
+| `.github/workflows/ci.yml` | push / PR | fmt, clippy, workspace tests, i18n, release build, mdBook build (English + Chinese) |
 | `.github/workflows/release.yml` | tag `v*` | verify tag = Cargo version → test → build Windows release → package zip + sha256 → GitHub Release |
-| `.github/workflows/pages.yml` | push to master (docs / theme / book.toml changes) / manual | build mdBook from `docs/` → GitHub Pages |
+| `.github/workflows/pages.yml` | push to master (docs / docs-zh / site / theme / book.toml changes) / manual | build bilingual mdBook (`docs/` → `/en/`, `docs-zh/` → `/zh/`) → GitHub Pages |
 
 ### Release artifacts
 
@@ -39,8 +39,13 @@ the job fails and prompts you to fix the version number first—avoiding release
 
 ## GitHub Pages
 
-The site is built from `docs/` + `book.toml` (mdBook), with `site-url = "/NEO/"` corresponding to
-`https://trapmehere.github.io/NEO/`:
+The site is built from `docs/` + `book.toml` (English) and `docs-zh/` + `docs-zh/book.toml`
+(Chinese), with `site-url = "/NEO/"` corresponding to `https://trapmehere.github.io/NEO/`:
+
+- English: `/en/` (source `docs/`)
+- Chinese: `/zh/` (source `docs-zh/`)
+- Language landing page: `site/index.html` (redirects by browser language)
+- Fixed top-right language switcher: `theme/lang-switch.js` + `theme/lang-switch.css`
 
 - Home: `docs/introduction.md`
 - User guide: `docs/guide/`
@@ -61,7 +66,10 @@ Local preview:
 
 ```bash
 cargo install mdbook --version 0.4.52 --locked
-mdbook serve --open
+mdbook build            # English -> book/en
+mdbook build docs-zh    # Chinese -> book/zh
+cp site/index.html book/index.html
+# preview: python -m http.server -d book 8000  ->  http://localhost:8000/en/ (or /zh/)
 ```
 
 ## Rollback

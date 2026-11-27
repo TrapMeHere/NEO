@@ -86,7 +86,7 @@ Full tutorial: [quick start](docs/guide/quick-start.md) ·
 
 | Entry | Contents |
 |---|---|
-| [Docs site](https://trapmehere.github.io/NEO/) | Tutorials + developer guide + technical design (mdBook) |
+| [Docs site](https://trapmehere.github.io/NEO/) | Tutorials + developer guide + technical design (mdBook); English at `/en/`, Chinese at `/zh/` |
 | [docs/introduction.md](docs/introduction.md) | Project introduction and screenshots |
 | [docs/guide/](docs/guide/quick-start.md) | Installation, quick start, interface, editing, files/sessions, settings, performance, FAQ |
 | [docs/dev/](docs/dev/architecture.md) | Architecture, workspace, build/test, contributing, release, roadmap |

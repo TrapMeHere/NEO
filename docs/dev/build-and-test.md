@@ -38,6 +38,20 @@ cargo test -p neo-geo picking
 
 CI on `master` runs format / clippy / check / test / `--all-features` check in order, then the i18n, dependency, documentation-link and write-API scripts; `.github/workflows/test.yml` is a legacy workflow for the retired `test` branch and does not run on `master`.
 
+## Documentation site
+
+The documentation site is bilingual: English (`docs/`) is served at `/en/` and Chinese
+(`docs-zh/`) at `/zh/`. Build both books and add the language landing page:
+
+```bash
+mdbook build          # English -> book/en
+mdbook build docs-zh  # Chinese -> book/zh
+cp site/index.html book/index.html
+```
+
+The fixed language switcher lives in `theme/lang-switch.js` + `theme/lang-switch.css`
+(copied into `docs-zh/theme/` for the Chinese book).
+
 ## Test layers
 
 | Layer | Location | Contents |
