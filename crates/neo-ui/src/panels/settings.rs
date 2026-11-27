@@ -204,11 +204,19 @@ pub fn settings_window(
 fn settings_general(ui: &mut Ui, actions: &mut UiActions, state: &mut SettingsUiState) {
     ui.heading(t("settings.general"));
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for (lang, key) in [
             (neo_i18n::Lang::EnUs, "menu.language.en"),
             (neo_i18n::Lang::ZhCn, "menu.language.zh"),
             (neo_i18n::Lang::ZhTw, "menu.language.zh_tw"),
+            (neo_i18n::Lang::Fr, "menu.language.fr"),
+            (neo_i18n::Lang::De, "menu.language.de"),
+            (neo_i18n::Lang::Ru, "menu.language.ru"),
+            (neo_i18n::Lang::ArEg, "menu.language.ar"),
+            (neo_i18n::Lang::Vi, "menu.language.vi"),
+            (neo_i18n::Lang::Ja, "menu.language.ja"),
+            (neo_i18n::Lang::Ko, "menu.language.ko"),
+            (neo_i18n::Lang::Ms, "menu.language.ms"),
         ] {
             if ui
                 .selectable_label(neo_i18n::current_language() == lang, t(key))
@@ -295,9 +303,17 @@ fn settings_language(ui: &mut Ui, actions: &mut UiActions) {
     ui.heading(t("settings.language"));
     ui.add_space(6.0);
     for (lang, key) in [
+        (neo_i18n::Lang::EnUs, "menu.language.en"),
         (neo_i18n::Lang::ZhCn, "menu.language.zh"),
         (neo_i18n::Lang::ZhTw, "menu.language.zh_tw"),
-        (neo_i18n::Lang::EnUs, "menu.language.en"),
+        (neo_i18n::Lang::Fr, "menu.language.fr"),
+        (neo_i18n::Lang::De, "menu.language.de"),
+        (neo_i18n::Lang::Ru, "menu.language.ru"),
+        (neo_i18n::Lang::ArEg, "menu.language.ar"),
+        (neo_i18n::Lang::Vi, "menu.language.vi"),
+        (neo_i18n::Lang::Ja, "menu.language.ja"),
+        (neo_i18n::Lang::Ko, "menu.language.ko"),
+        (neo_i18n::Lang::Ms, "menu.language.ms"),
     ] {
         if ui
             .selectable_label(neo_i18n::current_language() == lang, t(key))

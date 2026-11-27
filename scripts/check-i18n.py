@@ -1,10 +1,11 @@
 """Validate i18n tables.
 
 `i18n/en-US.json` is the source/base language: every key used by the code must exist
-there, and every key in it must be referenced by code. `zh-CN.json` and `zh-TW.json` are
-translations: they may temporarily miss keys (the runtime falls back to English and to
-Simplified Chinese respectively), but they must never contain keys that are absent from
-the English base. Placeholders (`{name}`) must match the base for every translated key.
+there, and every key in it must be referenced by code. Every other `i18n/*.json` file is
+a translation: it may temporarily miss keys (the runtime falls back to English, or to
+Simplified Chinese for Traditional Chinese), but it must never contain keys that are
+absent from the English base. Placeholders (`{name}`) must match the base for every
+translated key.
 
 Usage: python scripts/check-i18n.py
 """
@@ -25,9 +26,6 @@ I18N = ROOT / "i18n"
 
 BASE_LOCALE = "en-US"
 BASE_FILE = "en-US.json"
-# Translations; missing keys are allowed because the runtime falls back.
-OVERLAY_LOCALES = {"zh-CN": "zh-CN.json", "zh-TW": "zh-TW.json"}
-
 PLACEHOLDER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 
@@ -83,14 +81,14 @@ def quoted_keys() -> set[str]:
 
 def load_locales() -> dict[str, dict[str, str]]:
     tables: dict[str, dict[str, str]] = {}
-    for locale, file_name in {BASE_LOCALE: BASE_FILE, **OVERLAY_LOCALES}.items():
-        path = I18N / file_name
-        if not path.exists():
-            raise SystemExit(f"missing locale file: {path}")
+    for path in sorted(I18N.glob("*.json")):
+        locale = path.stem
         table = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(table, dict) or not table:
             raise SystemExit(f"locale file is empty or invalid: {path}")
         tables[locale] = table
+    if BASE_LOCALE not in tables:
+        raise SystemExit(f"missing base locale: {I18N / BASE_FILE}")
     return tables
 
 
@@ -111,6 +109,10 @@ def main() -> int:
 
     tables = load_locales()
     base = tables[BASE_LOCALE]
+    base_keys = set(base)
+    overlays = {
+        locale: table for locale, table in tables.items() if locale != BASE_LOCALE
+    }
     quoted = quoted_keys()
 
     ok = True
@@ -119,20 +121,20 @@ def main() -> int:
     missing_base = sorted(k for k in keys if k not in base)
     problems.append((f"missing {BASE_LOCALE} keys", missing_base))
 
-    base_keys = set(base)
-    for locale, file_name in OVERLAY_LOCALES.items():
-        extra = sorted(set(tables[locale]) - base_keys)
-        problems.append((f"{locale} has keys absent from {BASE_FILE} ({file_name})", extra))
+    for locale in overlays:
+        extra = sorted(set(overlays[locale]) - base_keys)
+        problems.append((f"{locale} has keys absent from {BASE_FILE}", extra))
 
     problems.append(
         ("keys in JSON but not referenced by code", sorted(k for k in base_keys if k not in quoted))
     )
 
-    for locale in OVERLAY_LOCALES:
-        mismatched = []
-        for key, value in tables[locale].items():
-            if key in base and placeholders(base[key]) != placeholders(value):
-                mismatched.append(key)
+    for locale, table in overlays.items():
+        mismatched = [
+            key
+            for key, value in table.items()
+            if key in base and placeholders(base[key]) != placeholders(value)
+        ]
         problems.append((f"{locale} placeholder mismatch vs {BASE_LOCALE}", sorted(mismatched)))
 
     for label, items in problems:
@@ -140,8 +142,8 @@ def main() -> int:
             ok = False
             print(f"{label}: {items}")
 
-    for locale in OVERLAY_LOCALES:
-        covered = len(set(tables[locale]) & base_keys)
+    for locale, table in overlays.items():
+        covered = len(set(table) & base_keys)
         total = len(base_keys)
         percent = 100.0 * covered / total if total else 100.0
         print(f"{locale} coverage: {covered}/{total} ({percent:.1f}%; missing keys fall back)")

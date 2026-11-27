@@ -3,21 +3,28 @@
 //! All user-visible text lives in the repository `i18n/` directory:
 //!
 //! * `i18n/en-US.json` — English (default UI language, source/base language; every key must exist here)
-//! * `i18n/zh-CN.json` — Simplified Chinese (translation of en-US)
-//! * `i18n/zh-TW.json` — Traditional Chinese, Taiwan (translation of en-US)
+//! * `i18n/zh-CN.json` — Simplified Chinese
+//! * `i18n/zh-TW.json` — Traditional Chinese (Taiwan)
+//! * `i18n/fr-FR.json` — French
+//! * `i18n/de-DE.json` — German
+//! * `i18n/ru-RU.json` — Russian
+//! * `i18n/ar-EG.json` — Arabic (Egypt)
+//! * `i18n/vi-VN.json` — Vietnamese
+//! * `i18n/ja-JP.json` — Japanese
+//! * `i18n/ko-KR.json` — Korean
+//! * `i18n/ms-MY.json` — Malay
 //!
-//! English is the baseline language. At startup the desktop app detects the operating
-//! system locale and picks the matching language, falling back to English. `NEO_LANG`
-//! always overrides the detection. Chinese files are translations of the English base.
-//! Resolution order: `zh-TW` falls back to `zh-CN`, which falls back to English; English
-//! is the root and returns the key itself when a key is missing.
+//! English is the baseline language. At startup the desktop app uses the language saved
+//! from the Language menu; without a saved choice it detects the operating system locale
+//! and picks the matching language, falling back to English. `NEO_LANG` always overrides.
+//!
+//! All non-English tables are translations of the English base. `zh-TW` falls back to
+//! `zh-CN`; every other translation falls back to English. English itself is the root and
+//! returns the key when a key is missing.
 //!
 //! At startup the loader prefers `i18n/*.json` next to the executable and falls back to the
 //! copies embedded at compile time when files are missing or broken. Use [`t`] for a single
 //! string and [`tf`] for `{name}` placeholder substitution.
-//!
-//! The language can be switched at runtime with the `NEO_LANG` environment variable or the
-//! in-app "Language" menu.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -32,19 +39,51 @@ pub enum Lang {
     /// English (default UI language; source/base language).
     #[default]
     EnUs,
-    /// Simplified Chinese (translation of en-US).
+    /// Simplified Chinese.
     ZhCn,
-    /// Traditional Chinese, Taiwan (translation of en-US).
+    /// Traditional Chinese (Taiwan).
     ZhTw,
+    /// French.
+    Fr,
+    /// German.
+    De,
+    /// Russian.
+    Ru,
+    /// Arabic (Egypt).
+    ArEg,
+    /// Vietnamese.
+    Vi,
+    /// Japanese.
+    Ja,
+    /// Korean.
+    Ko,
+    /// Malay.
+    Ms,
 }
 
+/// All supported languages, in menu order (English first).
+const ALL: [Lang; 11] = [
+    Lang::EnUs,
+    Lang::ZhCn,
+    Lang::ZhTw,
+    Lang::Fr,
+    Lang::De,
+    Lang::Ru,
+    Lang::ArEg,
+    Lang::Vi,
+    Lang::Ja,
+    Lang::Ko,
+    Lang::Ms,
+];
+
 impl Lang {
-    /// Parses a language/locale code (`en`, `en-US`, `zh`, `zh-CN`, `zh_TW.UTF-8`,
-    /// `zh-Hant`, `zh-Hans`, `de-DE`, ...).
+    /// Parses a language/locale code (`en-US`, `zh_CN.UTF-8`, `fr-FR`, `de-DE`, `ru-RU`,
+    /// `ar-EG`, `vi-VN`, `ja-JP`, `ko-KR`, `ms-MY`, ...).
     ///
     /// Only languages NEO ships translations for are recognized; anything else returns
     /// `None` so callers can fall back to the default (English). A bare `zh` is treated as
-    /// Simplified Chinese, and `zh-Hant`/`zh-TW`/`zh-HK` as Traditional Chinese.
+    /// Simplified Chinese, and `zh-Hant`/`zh-TW`/`zh-HK` as Traditional Chinese. Any
+    /// Arabic variant maps to Arabic (Egypt) for now.
     pub fn from_code(code: &str) -> Option<Self> {
         let normalized = code.trim().to_ascii_lowercase().replace('_', "-");
         // Drop POSIX suffixes such as "zh-cn.utf-8" or "sr-rs@latin".
@@ -55,10 +94,17 @@ impl Lang {
             }
             return Some(Self::ZhCn);
         }
-        if base == "en" || base.starts_with("en-") || base == "english" {
-            return Some(Self::EnUs);
-        }
-        match base {
+        let language = base.split('-').next().unwrap_or(base);
+        match language {
+            "en" | "english" => Some(Self::EnUs),
+            "fr" | "french" => Some(Self::Fr),
+            "de" | "german" => Some(Self::De),
+            "ru" | "russian" => Some(Self::Ru),
+            "ar" | "arabic" => Some(Self::ArEg),
+            "vi" | "vietnamese" => Some(Self::Vi),
+            "ja" | "japanese" => Some(Self::Ja),
+            "ko" | "korean" => Some(Self::Ko),
+            "ms" | "malay" => Some(Self::Ms),
             "cn" | "chinese" => Some(Self::ZhCn),
             "traditional" => Some(Self::ZhTw),
             _ => None,
@@ -71,17 +117,29 @@ impl Lang {
             Self::EnUs => "en-US",
             Self::ZhCn => "zh-CN",
             Self::ZhTw => "zh-TW",
+            Self::Fr => "fr-FR",
+            Self::De => "de-DE",
+            Self::Ru => "ru-RU",
+            Self::ArEg => "ar-EG",
+            Self::Vi => "vi-VN",
+            Self::Ja => "ja-JP",
+            Self::Ko => "ko-KR",
+            Self::Ms => "ms-MY",
         }
     }
 
     /// Fallback language used when the current table misses a key.
     ///
-    /// `zh-TW` → `zh-CN` → English; English is the base and has no further fallback.
+    /// `zh-TW` → `zh-CN`; every other translation falls back to English. English is the
+    /// base and has no further fallback.
     pub fn fallback(self) -> Option<Self> {
         match self {
             Self::EnUs => None,
             Self::ZhCn => Some(Self::EnUs),
             Self::ZhTw => Some(Self::ZhCn),
+            Self::Fr | Self::De | Self::Ru | Self::ArEg | Self::Vi | Self::Ja | Self::Ko | Self::Ms => {
+                Some(Self::EnUs)
+            }
         }
     }
 
@@ -90,45 +148,74 @@ impl Lang {
         matches!(self, Self::ZhCn | Self::ZhTw)
     }
 
+    /// Whether this language is written right-to-left.
+    pub fn is_rtl(self) -> bool {
+        matches!(self, Self::ArEg)
+    }
+
     fn file_name(self) -> &'static str {
         match self {
             Self::EnUs => "en-US.json",
             Self::ZhCn => "zh-CN.json",
             Self::ZhTw => "zh-TW.json",
+            Self::Fr => "fr-FR.json",
+            Self::De => "de-DE.json",
+            Self::Ru => "ru-RU.json",
+            Self::ArEg => "ar-EG.json",
+            Self::Vi => "vi-VN.json",
+            Self::Ja => "ja-JP.json",
+            Self::Ko => "ko-KR.json",
+            Self::Ms => "ms-MY.json",
         }
     }
 
     fn index(self) -> u8 {
-        match self {
-            Self::EnUs => 0,
-            Self::ZhCn => 1,
-            Self::ZhTw => 2,
-        }
+        ALL.iter().position(|&lang| lang == self).unwrap_or(0) as u8
     }
 
     fn from_index(index: u8) -> Self {
-        match index {
-            1 => Self::ZhCn,
-            2 => Self::ZhTw,
-            _ => Self::EnUs,
-        }
+        ALL.get(index as usize).copied().unwrap_or(Self::EnUs)
     }
 }
 
 const ZH_JSON: &str = include_str!("../../../i18n/zh-CN.json");
 const ZH_TW_JSON: &str = include_str!("../../../i18n/zh-TW.json");
 const EN_JSON: &str = include_str!("../../../i18n/en-US.json");
+const FR_JSON: &str = include_str!("../../../i18n/fr-FR.json");
+const DE_JSON: &str = include_str!("../../../i18n/de-DE.json");
+const RU_JSON: &str = include_str!("../../../i18n/ru-RU.json");
+const AR_JSON: &str = include_str!("../../../i18n/ar-EG.json");
+const VI_JSON: &str = include_str!("../../../i18n/vi-VN.json");
+const JA_JSON: &str = include_str!("../../../i18n/ja-JP.json");
+const KO_JSON: &str = include_str!("../../../i18n/ko-KR.json");
+const MS_JSON: &str = include_str!("../../../i18n/ms-MY.json");
 
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 static ZH: OnceLock<HashMap<String, String>> = OnceLock::new();
 static ZH_TW: OnceLock<HashMap<String, String>> = OnceLock::new();
 static EN: OnceLock<HashMap<String, String>> = OnceLock::new();
+static FR: OnceLock<HashMap<String, String>> = OnceLock::new();
+static DE: OnceLock<HashMap<String, String>> = OnceLock::new();
+static RU: OnceLock<HashMap<String, String>> = OnceLock::new();
+static AR: OnceLock<HashMap<String, String>> = OnceLock::new();
+static VI: OnceLock<HashMap<String, String>> = OnceLock::new();
+static JA: OnceLock<HashMap<String, String>> = OnceLock::new();
+static KO: OnceLock<HashMap<String, String>> = OnceLock::new();
+static MS: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 fn embedded(lang: Lang) -> &'static str {
     match lang {
         Lang::EnUs => EN_JSON,
         Lang::ZhCn => ZH_JSON,
         Lang::ZhTw => ZH_TW_JSON,
+        Lang::Fr => FR_JSON,
+        Lang::De => DE_JSON,
+        Lang::Ru => RU_JSON,
+        Lang::ArEg => AR_JSON,
+        Lang::Vi => VI_JSON,
+        Lang::Ja => JA_JSON,
+        Lang::Ko => KO_JSON,
+        Lang::Ms => MS_JSON,
     }
 }
 
@@ -172,6 +259,14 @@ fn catalog(lang: Lang) -> &'static HashMap<String, String> {
         Lang::EnUs => EN.get_or_init(|| load_table(Lang::EnUs)),
         Lang::ZhCn => ZH.get_or_init(|| load_table(Lang::ZhCn)),
         Lang::ZhTw => ZH_TW.get_or_init(|| load_table(Lang::ZhTw)),
+        Lang::Fr => FR.get_or_init(|| load_table(Lang::Fr)),
+        Lang::De => DE.get_or_init(|| load_table(Lang::De)),
+        Lang::Ru => RU.get_or_init(|| load_table(Lang::Ru)),
+        Lang::ArEg => AR.get_or_init(|| load_table(Lang::ArEg)),
+        Lang::Vi => VI.get_or_init(|| load_table(Lang::Vi)),
+        Lang::Ja => JA.get_or_init(|| load_table(Lang::Ja)),
+        Lang::Ko => KO.get_or_init(|| load_table(Lang::Ko)),
+        Lang::Ms => MS.get_or_init(|| load_table(Lang::Ms)),
     }
 }
 
@@ -255,6 +350,11 @@ pub fn looks_like_table(path: &Path) -> bool {
     path.extension().and_then(|ext| ext.to_str()) == Some("json")
 }
 
+/// All supported languages (English first).
+pub fn all_languages() -> &'static [Lang] {
+    &ALL
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,12 +380,18 @@ mod tests {
     #[test]
     fn default_language_is_english() {
         assert_eq!(Lang::default(), Lang::EnUs);
-        assert_eq!(current_language(), Lang::EnUs);
         assert_eq!(Lang::EnUs.fallback(), None);
         assert_eq!(Lang::ZhCn.fallback(), Some(Lang::EnUs));
         assert_eq!(Lang::ZhTw.fallback(), Some(Lang::ZhCn));
+        for lang in ALL {
+            if !lang.is_chinese() && lang != Lang::EnUs {
+                assert_eq!(lang.fallback(), Some(Lang::EnUs));
+            }
+        }
         assert!(Lang::ZhTw.is_chinese() && Lang::ZhCn.is_chinese());
         assert!(!Lang::EnUs.is_chinese());
+        assert!(Lang::ArEg.is_rtl());
+        assert!(!Lang::Fr.is_rtl());
     }
 
     #[test]
@@ -300,18 +406,29 @@ mod tests {
         assert_eq!(Lang::from_code("zh_tw.utf8"), Some(Lang::ZhTw));
         assert_eq!(Lang::from_code("zh-Hant"), Some(Lang::ZhTw));
         assert_eq!(Lang::from_code("zh-HK"), Some(Lang::ZhTw));
-        assert_eq!(Lang::from_code("fr-FR"), None);
+        assert_eq!(Lang::from_code("fr-FR"), Some(Lang::Fr));
+        assert_eq!(Lang::from_code("fr_CA.UTF-8"), Some(Lang::Fr));
+        assert_eq!(Lang::from_code("de-DE"), Some(Lang::De));
+        assert_eq!(Lang::from_code("de_AT"), Some(Lang::De));
+        assert_eq!(Lang::from_code("ru-RU"), Some(Lang::Ru));
+        assert_eq!(Lang::from_code("ar-EG"), Some(Lang::ArEg));
+        assert_eq!(Lang::from_code("ar"), Some(Lang::ArEg));
+        assert_eq!(Lang::from_code("vi-VN"), Some(Lang::Vi));
+        assert_eq!(Lang::from_code("ja-JP"), Some(Lang::Ja));
+        assert_eq!(Lang::from_code("ko-KR"), Some(Lang::Ko));
+        assert_eq!(Lang::from_code("ms-MY"), Some(Lang::Ms));
+        assert_eq!(Lang::from_code("fr"), Some(Lang::Fr));
+        assert_eq!(Lang::from_code("xx-YY"), None);
         assert_eq!(Lang::from_code("C"), None);
     }
 
     #[test]
     fn language_codes_and_files_are_unique() {
-        let langs = [Lang::EnUs, Lang::ZhCn, Lang::ZhTw];
-        let codes: BTreeSet<&str> = langs.iter().map(|lang| lang.code()).collect();
-        let files: BTreeSet<&str> = langs.iter().map(|lang| lang.file_name()).collect();
-        assert_eq!(codes.len(), langs.len());
-        assert_eq!(files.len(), langs.len());
-        for lang in langs {
+        let codes: BTreeSet<&str> = ALL.iter().map(|lang| lang.code()).collect();
+        let files: BTreeSet<&str> = ALL.iter().map(|lang| lang.file_name()).collect();
+        assert_eq!(codes.len(), ALL.len());
+        assert_eq!(files.len(), ALL.len());
+        for lang in ALL {
             assert!(looks_like_table(Path::new(lang.file_name())));
             assert_eq!(Lang::from_code(lang.code()), Some(lang));
             assert_eq!(Lang::from_index(lang.index()), lang);
@@ -321,24 +438,30 @@ mod tests {
     #[test]
     fn translations_are_subsets_of_the_english_base_with_same_placeholders() {
         let english = table(EN_JSON);
-        let simplified = table(ZH_JSON);
-        let traditional = table(ZH_TW_JSON);
         assert!(english.len() > 300, "English base looks empty: {}", english.len());
-        // Translations may temporarily miss keys (they fall back), but must never invent keys.
-        assert!(
-            simplified.keys().all(|key| english.contains_key(key)),
-            "zh-CN.json contains keys missing from the en-US.json base"
-        );
-        assert!(
-            traditional.keys().all(|key| english.contains_key(key)),
-            "zh-TW.json contains keys missing from the en-US.json base"
-        );
-        for (key, value) in &english {
-            for (locale, other) in [("zh-CN", &simplified), ("zh-TW", &traditional)] {
-                if let Some(other) = other.get(key) {
+        let locales: [(&str, &str); 10] = [
+            ("zh-CN", ZH_JSON),
+            ("zh-TW", ZH_TW_JSON),
+            ("fr-FR", FR_JSON),
+            ("de-DE", DE_JSON),
+            ("ru-RU", RU_JSON),
+            ("ar-EG", AR_JSON),
+            ("vi-VN", VI_JSON),
+            ("ja-JP", JA_JSON),
+            ("ko-KR", KO_JSON),
+            ("ms-MY", MS_JSON),
+        ];
+        for (locale, json) in locales {
+            let translation = table(json);
+            assert!(
+                translation.keys().all(|key| english.contains_key(key)),
+                "{locale}.json contains keys missing from en-US.json"
+            );
+            for (key, value) in &translation {
+                if let Some(base) = english.get(key) {
                     assert_eq!(
+                        placeholders(base),
                         placeholders(value),
-                        placeholders(other),
                         "`{key}` has inconsistent placeholders between en-US and {locale}"
                     );
                 }
@@ -357,5 +480,7 @@ mod tests {
         set_language(Lang::EnUs);
         assert_eq!(current_language(), Lang::EnUs);
         assert_eq!(t("menu.file"), "File");
+        set_language(Lang::Fr);
+        assert_eq!(current_language(), Lang::Fr);
     }
 }

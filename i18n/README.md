@@ -6,7 +6,15 @@ All **user-visible text** lives in this directory; the code no longer hardcodes 
 |---|---|---|
 | `en-US.json` | English | **Default UI and source/base language**: every key used by the code must exist here |
 | `zh-CN.json` | Simplified Chinese | Translation of `en-US` |
-| `zh-TW.json` | Traditional Chinese (Taiwan) | Translation of `en-US`; may lag behind and fall back to `zh-CN` |
+| `zh-TW.json` | Traditional Chinese (Taiwan) | Translation of `en-US`; falls back to `zh-CN` |
+| `fr-FR.json` | French | Translation of `en-US`; falls back to English |
+| `de-DE.json` | German | Translation of `en-US`; falls back to English |
+| `ru-RU.json` | Russian | Translation of `en-US`; falls back to English |
+| `ar-EG.json` | Arabic (Egypt) | Translation of `en-US`; falls back to English |
+| `vi-VN.json` | Vietnamese | Translation of `en-US`; falls back to English |
+| `ja-JP.json` | Japanese | Translation of `en-US`; falls back to English |
+| `ko-KR.json` | Korean | Translation of `en-US`; falls back to English |
+| `ms-MY.json` | Malay | Translation of `en-US`; falls back to English |
 
 JSON is a flat `"key": "text"` mapping in UTF-8. The `neo-i18n` crate embeds the files at
 **compile time** with `include_str!`, so a release exe does not need to ship them (the
@@ -18,7 +26,7 @@ without rebuilding).
 `t()` resolves keys in this order:
 
 1. current language table;
-2. fallback chain `zh-TW → zh-CN → en-US`;
+2. fallback chain `zh-TW → zh-CN → en-US` (other translations fall back directly to `en-US`);
 3. the key itself (so missing translations are visible).
 
 This means a new English string shows up in the Chinese UI as English until it is
@@ -38,7 +46,8 @@ let text = tf("status.selected", &[("n", "3")]);   // {n} placeholder
 - English is the default UI language. At startup the desktop app uses the language saved
   from the in-app **Language** menu; without a saved choice it reads the OS locale and
   selects the matching translation, otherwise it stays on English. `NEO_LANG` always
-  overrides both (`NEO_LANG=en-US`, `zh-CN`, `zh-TW`; a bare `zh` means Simplified).
+  overrides both (`NEO_LANG=en-US`, `zh-CN`, `zh-TW`, `fr-FR`, `de-DE`, `ru-RU`, `ar-EG`,
+  `vi-VN`, `ja-JP`, `ko-KR`, `ms-MY`; a bare `zh` means Simplified).
 - Adding text: add the key to `i18n/en-US.json` first (source). Translations in
   `zh-CN.json` / `zh-TW.json` are optional at first — the runtime falls back.
 

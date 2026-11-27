@@ -267,7 +267,7 @@
   "menu.help.plugins": "外掛…",
   "menu.help.about": "關於 NEO",
   "settings.title": "設定",
-  "settings.language": "語言 / Language",
+  "settings.language": "語言",
   "settings.general": "常規",
   "settings.general.autosave": "自動儲存間隔",
   "settings.editing": "編輯",
@@ -368,7 +368,7 @@
   "export.session": "JOSM 會話（.jos/.joz）",
   "export.xml": "OSM XML（.osm）",
   "menu.language.en": "English",
-  "menu.language.zh": "簡體中文",
+  "menu.language.zh": "简体中文",
   "selection.more": "…{n}",
   "settings.shortcuts_capture": "{action}",
   "settings.tab.account": "OSM 賬戶",
@@ -420,5 +420,13 @@
   "app.mode.split": "按點分割",
   "menu.tools.split_point": "按點分割路徑",
   "tool.split_point": "按點分割",
-  "menu.language.zh_tw": "繁體中文"
+  "menu.language.zh_tw": "繁體中文",
+  "menu.language.fr": "Français",
+  "menu.language.de": "Deutsch",
+  "menu.language.ru": "Русский",
+  "menu.language.ar": "العربية",
+  "menu.language.vi": "Tiếng Việt",
+  "menu.language.ja": "日本語",
+  "menu.language.ko": "한국어",
+  "menu.language.ms": "Bahasa Melayu"
 }

@@ -41,7 +41,7 @@
 - **Unified export**: File → Export… choose OSM XML / osmChange / PBF / session
 - **Autosave**: journal snapshots + SQLite snapshot store (WAL); recoverable at startup
 - **File formats**: read/write PBF / OSM XML / osmChange / GPX, JOSM sessions `.jos`/`.joz`
-- **Internationalization**: English-first UI (default), with Simplified/Traditional Chinese translations (`i18n/` + `neo-i18n`); the app detects the OS locale at startup to pick the UI language (`NEO_LANG` overrides) and missing translations follow the fallback chain zh-TW → zh-CN → en-US; CJK/Unifont fonts live under `assets/fonts/` (not embedded in the exe)
+- **Internationalization**: English-first UI (default) with translations for Simplified/Traditional Chinese, French, German, Russian, Arabic (Egypt), Vietnamese, Japanese, Korean and Malay (`i18n/` + `neo-i18n`); the app detects the OS locale at startup to pick the UI language (`NEO_LANG` overrides) and missing translations fall back to English (zh-TW → zh-CN first); CJK/Unifont fonts live under `assets/fonts/` (not embedded in the exe)
 
 > Status: **v0.1.0 in development**. Phases 2/3 are complete; code for phases 4–6 has landed but not all gates are green (plugin isolation passes; three-platform installers and the 10M/1h stability run have not been re-verified). See
 > [roadmap](docs/16-roadmap-and-risks.md) and [TODO](TODO.md).
@@ -132,7 +132,7 @@ crates/
 apps/
   neo-desktop   eframe + wgpu desktop app      neo-prototype performance prototype
 docs/           technical design + user/developer guides (mdBook)
-i18n/           en-US.json / zh-CN.json / zh-TW.json
+i18n/           en-US + zh-CN/zh-TW + fr/de/ru/ar/vi/ja/ko/ms translations
 .github/        CI / Release / Pages / templates
 ```
 

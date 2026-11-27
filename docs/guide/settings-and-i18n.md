@@ -6,14 +6,16 @@ Entry: **Help → Settings…** (gear icon). It contains:
 
 ### Language
 
-- **English** (default UI and source language), **Simplified Chinese** and **Traditional Chinese**
+- **English** (default UI and source language), **Simplified Chinese**, **Traditional Chinese**,
+  **French**, **German**, **Russian**, **Arabic (Egypt)**, **Vietnamese**, **Japanese**,
+  **Korean** and **Malay**
 - On startup NEO detects the operating system's UI locale and picks the matching translation;
   unsupported locales stay on English
 - Changes apply immediately, no restart required
 - The choice is remembered in `neo-state.json`; without a saved choice the app follows the OS locale
 - The language can also be set with an environment variable, which overrides both the saved choice
-  and auto-detection: `NEO_LANG=en-US` / `NEO_LANG=zh-CN` / `NEO_LANG=zh-TW`; a bare `NEO_LANG=zh`
-  means Simplified Chinese
+  and auto-detection: `NEO_LANG=en-US` / `zh-CN` / `zh-TW` / `fr-FR` / `de-DE` / `ru-RU` / `ar-EG` /
+  `vi-VN` / `ja-JP` / `ko-KR` / `ms-MY`; a bare `NEO_LANG=zh` means Simplified Chinese
 - Missing translations fall back through Traditional Chinese → Simplified Chinese → English
 
 ### Shortcuts
@@ -63,6 +65,14 @@ i18n/
 ├── en-US.json   # English: default UI and source/base language (all keys must exist here)
 ├── zh-CN.json   # Simplified Chinese: translation of en-US
 ├── zh-TW.json   # Traditional Chinese: translation of en-US
+├── fr-FR.json   # French
+├── de-DE.json   # German
+├── ru-RU.json   # Russian
+├── ar-EG.json   # Arabic (Egypt)
+├── vi-VN.json   # Vietnamese
+├── ja-JP.json   # Japanese
+├── ko-KR.json   # Korean
+├── ms-MY.json   # Malay
 └── README.md
 ```
 
@@ -73,6 +83,9 @@ i18n/
   fall back along the chain `zh-TW` → `zh-CN` → `en-US` at runtime
 - The desktop app detects the OS locale at startup (`apps/neo-desktop/src/app/locale.rs`); `NEO_LANG`
   overrides it
+- Arabic is provided as a translation, but the current egui text layout does not shape Arabic
+  cursive joining or mirror the layout right-to-left yet; expect imperfect Arabic rendering until
+  RTL text support is added
 - `cargo test -p neo-i18n` checks key/placeholder consistency; `python scripts/check-i18n.py`
   checks that every code key exists in the source table and that translations do not invent keys
 - Adding a language: add a JSON file + register it in the `Lang` enum in

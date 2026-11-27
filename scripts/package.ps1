@@ -50,10 +50,11 @@ function Publish-Bundle([string]$BundleDir) {
             throw "missing assets\presets\$name — run node scripts/build-presets.mjs first"
         }
     }
-    foreach ($name in @("zh-CN.json", "zh-TW.json", "en-US.json")) {
-        if (-not (Test-Path (Join-Path $i18nSrc $name))) {
-            throw "missing i18n\$name"
-        }
+    if (-not (Test-Path $i18nSrc)) {
+        throw "missing i18n"
+    }
+    if (-not (Get-ChildItem $i18nSrc -Filter *.json)) {
+        throw "missing i18n\*.json"
     }
     $fontsDst = Join-Path $BundleDir "assets\fonts"
     $presetsDst = Join-Path $BundleDir "assets\presets"
@@ -68,9 +69,7 @@ function Publish-Bundle([string]$BundleDir) {
     if (Test-Path $presetReadme) {
         Copy-Item $presetReadme $presetsDst -Force
     }
-    Copy-Item (Join-Path $i18nSrc "zh-CN.json") $i18nDst -Force
-    Copy-Item (Join-Path $i18nSrc "zh-TW.json") $i18nDst -Force
-    Copy-Item (Join-Path $i18nSrc "en-US.json") $i18nDst -Force
+    Copy-Item (Join-Path $i18nSrc "*.json") $i18nDst -Force
 }
 
 $bundleDir = Join-Path $root "out\neo-desktop\release"

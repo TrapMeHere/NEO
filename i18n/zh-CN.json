@@ -267,7 +267,7 @@
   "menu.help.plugins": "插件…",
   "menu.help.about": "关于 NEO",
   "settings.title": "设置",
-  "settings.language": "语言 / Language",
+  "settings.language": "语言",
   "settings.general": "常规",
   "settings.general.autosave": "自动保存间隔",
   "settings.editing": "编辑",
@@ -420,5 +420,13 @@
   "app.mode.split": "按点分割",
   "menu.tools.split_point": "按点分割路径",
   "tool.split_point": "按点分割",
-  "menu.language.zh_tw": "繁體中文"
+  "menu.language.zh_tw": "繁體中文",
+  "menu.language.fr": "Français",
+  "menu.language.de": "Deutsch",
+  "menu.language.ru": "Русский",
+  "menu.language.ar": "العربية",
+  "menu.language.vi": "Tiếng Việt",
+  "menu.language.ja": "日本語",
+  "menu.language.ko": "한국어",
+  "menu.language.ms": "Bahasa Melayu"
 }

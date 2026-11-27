@@ -267,7 +267,7 @@
   "menu.help.plugins": "Plugins…",
   "menu.help.about": "About NEO",
   "settings.title": "Settings",
-  "settings.language": "Language / 语言",
+  "settings.language": "Language",
   "settings.general": "General",
   "settings.general.autosave": "Autosave interval",
   "settings.editing": "Editing",
@@ -368,7 +368,7 @@
   "export.session": "JOSM session (.jos/.joz)",
   "export.xml": "OSM XML (.osm)",
   "menu.language.en": "English",
-  "menu.language.zh": "Simplified Chinese",
+  "menu.language.zh": "简体中文",
   "selection.more": "…{n}",
   "settings.shortcuts_capture": "{action}",
   "settings.tab.account": "Account",
@@ -420,5 +420,13 @@
   "app.mode.split": "Split way",
   "menu.tools.split_point": "Split way at point",
   "tool.split_point": "Split at point",
-  "menu.language.zh_tw": "Traditional Chinese"
+  "menu.language.zh_tw": "繁體中文",
+  "menu.language.fr": "Français",
+  "menu.language.de": "Deutsch",
+  "menu.language.ru": "Русский",
+  "menu.language.ar": "العربية",
+  "menu.language.vi": "Tiếng Việt",
+  "menu.language.ja": "日本語",
+  "menu.language.ko": "한국어",
+  "menu.language.ms": "Bahasa Melayu"
 }

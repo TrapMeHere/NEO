@@ -5,6 +5,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Added
+
+- UI translations for French (`fr-FR`), German (`de-DE`), Russian (`ru-RU`), Arabic (`ar-EG`), Vietnamese (`vi-VN`), Japanese (`ja-JP`), Korean (`ko-KR`) and Malay (`ms-MY`); the Language menu, `NEO_LANG` and the OS-locale auto-detection recognize all of them, and the i18n checker validates every locale table
+
 ### Changed
 
 - Repository baseline language switched to English: English is now the default UI language and `i18n/en-US.json` is the source language; `zh-CN`/`zh-TW` are translations (fallback chain `zh-TW → zh-CN → en-US`); documentation, code comments, scripts and CI templates are now written in English
